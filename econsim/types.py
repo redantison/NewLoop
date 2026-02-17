@@ -1,0 +1,107 @@
+"""Core datatypes for EconomySim."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Dict
+
+import numpy as np
+
+
+@dataclass
+class Node:
+    """Economic entity with stock and memo ledgers."""
+
+    node_id: str
+    stocks: Dict[str, float] = field(default_factory=dict)
+    memo: Dict[str, float] = field(default_factory=dict)
+
+    def get(self, key: str, default: float = 0.0) -> float:
+        return float(self.stocks.get(key, default))
+
+    def set(self, key: str, value: float) -> None:
+        self.stocks[key] = float(value)
+
+    def add(self, key: str, delta: float) -> None:
+        self.stocks[key] = float(self.stocks.get(key, 0.0) + delta)
+
+
+@dataclass
+class HouseholdState:
+    """Vectorized household sector state (population mode)."""
+
+    n: int
+    wages0_q: np.ndarray
+    deposits: np.ndarray
+    mortgage_loans: np.ndarray
+    revolving_loans: np.ndarray
+    mpc_q: np.ndarray
+    base_real_cons_q: np.ndarray
+
+    prev_income: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=float))
+    prev_ubi: float = 0.0
+    prev_wages_total: float = 0.0
+
+    def ensure_memos(self) -> None:
+        if (self.prev_income.size == 0) or (self.prev_income.shape[0] != self.n):
+            self.prev_income = np.asarray(self.wages0_q, dtype=float).copy()
+
+    def sum_deposits(self) -> float:
+        return float(np.sum(self.deposits))
+
+    def sum_loans(self) -> float:
+        return float(np.sum(self.mortgage_loans) + np.sum(self.revolving_loans))
+
+
+@dataclass
+class TickResult:
+    """Snapshot of the economy at the end of each quarter."""
+
+    t: int
+    automation: float
+    automation_flow: float
+    automation_info: float
+    automation_info_flow: float
+    automation_phys: float
+    automation_phys_flow: float
+
+    price_level: float
+    inflation: float
+
+    gini: float
+    gini_market: float
+    gini_disp: float
+    gini_wealth: float
+    private_eq_per_h: float
+    private_roe_q: float
+    private_inv_cov: float
+
+    vat_per_h: float
+    inc_tax_per_h: float
+    corp_tax_per_h: float
+    vat_credit_per_h: float
+    gov_dep_per_h: float
+    fund_dep_per_h: float
+    capex_per_h: float
+
+    ubi_per_h: float
+    ubi_from_fund_dep_per_h: float
+    ubi_from_gov_dep_per_h: float
+    ubi_issued_per_h: float
+    trust_equity_pct: float
+    trust_debt: float
+    wages_total: float
+    total_consumption: float
+
+    real_avg_income: float
+    real_consumption: float
+
+    pop_gini: float
+    pop_inc_med: float
+    pop_inc_p90: float
+    pop_dti_med: float
+    pop_dti_p90: float
+    pop_dti_w_med: float
+    pop_dti_w_p90: float
+
+    trust_active: bool
