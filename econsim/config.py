@@ -33,7 +33,8 @@ config = {
         # Income tax (marginal above threshold) on wages + dividends (excludes UBI)
         "income_tax_rate": 0.15,          # 15% marginal rate
         "income_tax_cutoff_pct": 31.0,    # threshold percentile (same analogue as above; can be tuned)
-        # Corporate income tax on all profits (firms + bank). Dividends and retained earnings are computed after-tax.
+        # Corporate tax applies to retained earnings only (distributed dividends are not taxed at the corporate level).
+        # Household dividend recipients are taxed via income tax; FUND recipients are untaxed.
         "corporate_tax_rate": 0.25,
         # Optional dynamic corporate tax policy (easy to disable/revert):
         # raise corporate tax as wages fall relative to baseline wages.

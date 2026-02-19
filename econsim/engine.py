@@ -627,7 +627,10 @@ class EconomySim:
             trust_interest = fund_loan * rL
             bank_profit_pre_tax = float(interest_hh.sum() + trust_interest + fa_interest + fh_interest)
 
-            # Corporate income tax on all profits (firms + bank).
+            # Corporate income tax policy:
+            # - Distributed dividends are NOT taxed at the corporate level.
+            # - Retained earnings ARE taxed at the corporate level.
+            # Household recipients are still taxed via income_tax_i; FUND is untaxed.
             # Optional policy: raise tax rate as wages fall relative to baseline.
             corp_tax_rate = float(self.params.get("corporate_tax_rate", 0.0))
             corp_tax_rate = max(0.0, min(1.0, corp_tax_rate))
@@ -649,27 +652,34 @@ class EconomySim:
                 corp_tax_rate = base_rate + slope * (1.0 - wage_index)
                 corp_tax_rate = max(tax_min, min(tax_max, corp_tax_rate))
 
-            corp_tax_fa = corp_tax_rate * p_fa_pre_tax
-            corp_tax_fh = corp_tax_rate * p_fh_pre_tax
-            corp_tax_bk = corp_tax_rate * max(0.0, bank_profit_pre_tax)
-
-            p_fa = max(0.0, p_fa_pre_tax - corp_tax_fa)
-            p_fh = max(0.0, p_fh_pre_tax - corp_tax_fh)
-            bank_profit = max(0.0, bank_profit_pre_tax - corp_tax_bk)
-
             # Dividend payout policy: allow retained earnings for reinvestment.
+            # Dividends are set off pre-tax profits; retained profits bear corporate tax.
             payout_firms = float(self.params.get("dividend_payout_rate_firms", 1.0))
             payout_bank = float(self.params.get("dividend_payout_rate_bank", 1.0))
             payout_firms = max(0.0, min(1.0, payout_firms))
             payout_bank = max(0.0, min(1.0, payout_bank))
 
-            div_fa_total = payout_firms * p_fa
-            div_fh_total = payout_firms * p_fh
-            div_bk_total = payout_bank * bank_profit
+            div_fa_total = payout_firms * p_fa_pre_tax
+            div_fh_total = payout_firms * p_fh_pre_tax
+            div_bk_total = payout_bank * max(0.0, bank_profit_pre_tax)
 
-            retained_fa = p_fa - div_fa_total
-            retained_fh = p_fh - div_fh_total
-            retained_bk = bank_profit - div_bk_total
+            retained_fa_pre_tax = max(0.0, p_fa_pre_tax - div_fa_total)
+            retained_fh_pre_tax = max(0.0, p_fh_pre_tax - div_fh_total)
+            retained_bk_pre_tax = max(0.0, bank_profit_pre_tax - div_bk_total)
+
+            corp_tax_fa = corp_tax_rate * retained_fa_pre_tax
+            corp_tax_fh = corp_tax_rate * retained_fh_pre_tax
+            corp_tax_bk = corp_tax_rate * retained_bk_pre_tax
+
+            retained_fa = max(0.0, retained_fa_pre_tax - corp_tax_fa)
+            retained_fh = max(0.0, retained_fh_pre_tax - corp_tax_fh)
+            retained_bk = max(0.0, retained_bk_pre_tax - corp_tax_bk)
+
+            # Keep after-tax profit diagnostics consistent with accounting identity:
+            # after_tax_profit = distributed_dividends + retained_after_tax
+            p_fa = div_fa_total + retained_fa
+            p_fh = div_fh_total + retained_fh
+            bank_profit = div_bk_total + retained_bk
 
             div_fund = (div_fa_total * f_fa) + (div_fh_total * f_fh) + (div_bk_total * f_bk)
             div_house_total = (div_fa_total * (1.0 - f_fa)) + (div_fh_total * (1.0 - f_fh)) + (div_bk_total * (1.0 - f_bk))
@@ -1535,4 +1545,3 @@ class EconomySim:
             writer.writeheader()
             for r in self.history:
                 writer.writerow(r.__dict__)
-
