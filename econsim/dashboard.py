@@ -1,3 +1,4 @@
+# Author: Roger Ison   roger@miximum.info
 """Terminal dashboard runner for EconomySim."""
 
 from __future__ import annotations

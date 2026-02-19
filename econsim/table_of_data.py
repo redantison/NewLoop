@@ -1,3 +1,4 @@
+# Author: Roger Ison   roger@miximum.info
 from __future__ import annotations
 
 from dataclasses import dataclass

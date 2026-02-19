@@ -1,3 +1,4 @@
+# Author: Roger Ison   roger@miximum.info
 """Reusable plotting layer for EconomySim outputs."""
 
 from __future__ import annotations

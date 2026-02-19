@@ -1,3 +1,4 @@
+# Author: Roger Ison   roger@miximum.info
 """Economy simulation engine and stock-flow logic."""
 
 from __future__ import annotations

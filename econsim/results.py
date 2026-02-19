@@ -1,3 +1,4 @@
+# Author: Roger Ison   roger@miximum.info
 """Reusable simulation-output helpers for CLI, plotting, and Streamlit layers."""
 
 from __future__ import annotations

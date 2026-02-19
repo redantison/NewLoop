@@ -1,3 +1,4 @@
+# Author: Roger Ison   roger@miximum.info
 """EconomySim - Population Prototype (Phase 1)
 
 Phase 1 goals:

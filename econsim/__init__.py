@@ -1,3 +1,4 @@
+# Author: Roger Ison   roger@miximum.info
 """EconomySim package exports."""
 
 from __future__ import annotations

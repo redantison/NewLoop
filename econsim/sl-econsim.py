@@ -1,3 +1,4 @@
+# Author: Roger Ison   roger@miximum.info
 """Streamlit app entrypoint for EconomySim.
 
 Run with:

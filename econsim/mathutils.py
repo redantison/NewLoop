@@ -1,3 +1,4 @@
+# Author: Roger Ison   roger@miximum.info
 """Numeric helpers used by EconomySim engine."""
 
 from __future__ import annotations

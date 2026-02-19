@@ -1,3 +1,4 @@
+# Author: Roger Ison   roger@miximum.info
 """Package-native EconomySim entrypoint and public exports."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# Author: Roger Ison   roger@miximum.info
 """Parameter schema and helpers for the Streamlit app."""
 
 from __future__ import annotations

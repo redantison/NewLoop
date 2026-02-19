@@ -1,3 +1,4 @@
+# Author: Roger Ison   roger@miximum.info
 """Policy sweep runner for EconomySim (silent runs + compact summary table).
 
 Default grid is 2D:

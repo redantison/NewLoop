@@ -1,3 +1,4 @@
+# Author: Roger Ison   roger@miximum.info
 """Core datatypes for EconomySim."""
 
 from __future__ import annotations
