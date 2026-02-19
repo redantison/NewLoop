@@ -75,6 +75,8 @@ def run_cli(config: Dict[str, Any], n_quarters: int = 80) -> None:
         "VATCr|Rr",
         "GOVdep|Rr",
         "FUNDdep|Rr",
+        "TrClm|Rr",
+        "TrBal$|Rr",
         "UBI,F,G,I|Cc",
         "Wages|Rr",
         "CAPEX|Rr",
@@ -127,29 +129,68 @@ def run_cli(config: Dict[str, Any], n_quarters: int = 80) -> None:
         row[15] = _fmt_compact(sim.state.get("vat_credit_total", 0.0) / denom, 5).strip()
         row[16] = _fmt_compact(sim.nodes["GOV"].get("deposits", 0.0) / denom, 8).strip()
         row[17] = _fmt_compact(sim.nodes["FUND"].get("deposits", 0.0) / denom, 8).strip()
-        row[18] = " ".join([
+
+        # Trust balance diagnostics:
+        # trust_balance_total = FUND deposits + market value of FUND equity claims - FUND loans.
+        def _fund_share_frac(issuer: str, key: str) -> float:
+            shares_out = float(sim.nodes[issuer].get("shares_outstanding", 0.0))
+            if shares_out <= 0.0:
+                return 0.0
+            frac = float(sim.nodes["FUND"].get(key, 0.0)) / shares_out
+            return max(0.0, min(1.0, frac))
+
+        fa_equity_proxy = max(
+            0.0,
+            float(sim.nodes["FA"].get("deposits", 0.0))
+            + float(sim.nodes["FA"].get("K", 0.0)) * P_now
+            - float(sim.nodes["FA"].get("loans", 0.0)),
+        )
+        fh_equity_proxy = max(
+            0.0,
+            float(sim.nodes["FH"].get("deposits", 0.0))
+            + float(sim.nodes["FH"].get("K", 0.0)) * P_now
+            - float(sim.nodes["FH"].get("loans", 0.0)),
+        )
+        bank_equity_proxy = max(0.0, float(sim.nodes["BANK"].get("equity", 0.0)))
+
+        fund_equity_claim_total = (
+            _fund_share_frac("FA", "shares_FA") * fa_equity_proxy
+            + _fund_share_frac("FH", "shares_FH") * fh_equity_proxy
+            + _fund_share_frac("BANK", "shares_BANK") * bank_equity_proxy
+        )
+
+        trust_balance_total = (
+            float(sim.nodes["FUND"].get("deposits", 0.0))
+            + float(fund_equity_claim_total)
+            - float(sim.nodes["FUND"].get("loans", 0.0))
+        )
+        trust_claim_per_h = trust_balance_total / denom
+
+        row[18] = _fmt_compact(trust_claim_per_h, 8).strip()
+        row[19] = _fmt_compact(trust_balance_total, 8).strip()
+        row[20] = " ".join([
             _fmt_compact(r.ubi_per_h, 5).strip(),
             _fmt_compact(r.ubi_from_fund_dep_per_h, 5).strip(),
             _fmt_compact(r.ubi_from_gov_dep_per_h, 5).strip(),
             _fmt_compact(r.ubi_issued_per_h, 5).strip(),
         ])
-        row[19] = _fmt_compact(r.wages_total, 8, 1).strip()
-        row[20] = _fmt_compact(sim.state.get("capex_total", 0.0) / denom, 8).strip()
-        row[21] = _fmt_compact(avg_inc_nom, 8).strip()
-        row[22] = _fmt_compact(r.real_avg_income, 8).strip()
+        row[21] = _fmt_compact(r.wages_total, 8, 1).strip()
+        row[22] = _fmt_compact(sim.state.get("capex_total", 0.0) / denom, 8).strip()
+        row[23] = _fmt_compact(avg_inc_nom, 8).strip()
+        row[24] = _fmt_compact(r.real_avg_income, 8).strip()
         # Consumption (per household)
         cons_per_h = float(r.total_consumption) / denom
         rcons_per_h = cons_per_h / P_now
 
-        row[23] = _fmt_compact(cons_per_h, 8, 1).strip()
-        row[24] = _fmt_compact(rcons_per_h, 8, 1).strip()
+        row[25] = _fmt_compact(cons_per_h, 8, 1).strip()
+        row[26] = _fmt_compact(rcons_per_h, 8, 1).strip()
 
         # Household loans (per household)
         hh_loan_per_h = float(sim.nodes["HH"].get("loans", 0.0)) / denom
-        row[25] = _fmt_compact(hh_loan_per_h, 8).strip()
+        row[27] = _fmt_compact(hh_loan_per_h, 8).strip()
 
         # Equity capture
-        row[26] = float(r.trust_equity_pct)
+        row[28] = float(r.trust_equity_pct)
 
         # --- BANK state (per household) ---
         bank_dep_liab_per_h = float(sim.nodes["BANK"].get("deposit_liab", 0.0)) / denom
@@ -171,9 +212,9 @@ def run_cli(config: Dict[str, Any], n_quarters: int = 80) -> None:
         max_abs_loan_identity_gap = max(max_abs_loan_identity_gap, abs(loan_identity_gap))
         max_abs_bank_balance_gap = max(max_abs_bank_balance_gap, abs(bank_balance_gap))
 
-        row[27] = _fmt_compact(bank_reserves_per_h, 8).strip()
-        row[28] = _fmt_compact(bank_dep_liab_per_h, 8).strip()
-        row[29] = _fmt_compact(bank_loan_assets_per_h, 8).strip()
+        row[29] = _fmt_compact(bank_reserves_per_h, 8).strip()
+        row[30] = _fmt_compact(bank_dep_liab_per_h, 8).strip()
+        row[31] = _fmt_compact(bank_loan_assets_per_h, 8).strip()
 
     print(dashboard)
     print()
@@ -224,6 +265,8 @@ def run_cli(config: Dict[str, Any], n_quarters: int = 80) -> None:
         ("VATCr", "VAT credit granted per household this quarter (nominal transfer; gross)") ,
         ("GOVdep","Government deposits per household (stock, end of quarter)") ,
         ("FUNDdep","Trust/Fund deposits per household (stock, end of quarter)") ,
+        ("TrClm", "Per-household beneficial claim on trust balance (stock)") ,
+        ("TrBal$", "Total trust balance (FUND deposits + FUND equity claims - FUND loans; compact)") ,
         ("UBI,F,G,I",  "UBI bundle (per-household): UBI UBI_F UBI_G UBI_I, one-space separated") ,
         ("Wages", "Total wages paid economy-wide this quarter (nominal total)") ,
         ("CAPEX", "Firm capital expenditures per household this quarter (nominal flow; lagged-from-retained)") ,
