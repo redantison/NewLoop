@@ -691,8 +691,9 @@ class EconomySim:
             else:
                 target_pool_nom = float(target_pool_real_pop) * float(P)
                 ubi = max(0.0, (target_pool_nom - w_total) / float(hh.n))
-            # Temporary monotonic policy test: do not allow policy UBI to decline.
-            ubi = max(float(hh.prev_ubi), float(ubi))
+            # Optional monotonic policy floor: do not allow policy UBI to decline.
+            if bool(self.params.get("ubi_monotonic_floor", True)):
+                ubi = max(float(hh.prev_ubi), float(ubi))
 
             # 5) Allocate wages and (temporary) household dividends by baseline wage weights
             wage_scale = w_total / w0_sum

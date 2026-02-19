@@ -54,6 +54,7 @@ PARAMETER_CONTROLS: tuple[ParamControl, ...] = (
     ParamControl(("corporate_tax_rate_max",), "Corporate Tax Max Rate", "Taxes", "float", 0.0, 1.0, 0.01),
     ParamControl(("gov_tax_rebate_rate",), "Government Tax Rebate Rate", "Taxes", "float", 0.0, 1.0, 0.01),
     ParamControl(("ubi_issuance_share",), "UBI Issuance Share", "UBI", "float", 0.0, 1.0, 0.01),
+    ParamControl(("ubi_monotonic_floor",), "UBI Monotonic Floor", "UBI", "bool"),
     ParamControl(("automation_path",), "Automation Path", "Automation", "select", options=("two_hump", "linear")),
     ParamControl(("automation_horizon_quarters",), "Automation Horizon Quarters", "Automation", "float", 4.0, 240.0, 1.0),
     ParamControl(("automation_w_info",), "Automation Weight: Info", "Automation", "float", 0.0, 1.0, 0.01),

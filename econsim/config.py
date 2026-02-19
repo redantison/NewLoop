@@ -48,6 +48,7 @@ config = {
         "mortgage_principal_pay_rate_q": 0.01,   # 1%/q max paydown if cash available
         "send_fund_residual_to_gov": False, # Trust belongs to citizens; do not sweep FUND deposits to GOV by default
         "ubi_issuance_share": 0.15,         # fixed share of each quarter's UBI paid via issuance
+        "ubi_monotonic_floor": True,        # if True, policy UBI cannot decline quarter-to-quarter
         "gov_tax_rebate_rate": 1.00,        # share of remaining GOV deposits rebated each tick by household tax-paid weights
         "hard_assert_sfc": False,          # set True to hard-fail on any mismatch
         # Dashboard display mode for money columns: "nominal" or "price_normalized" (base-period dollars).
