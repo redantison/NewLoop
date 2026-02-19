@@ -42,7 +42,7 @@ config = {
         "corporate_tax_rate_base": 0.25,
         "corporate_tax_wage_sensitivity": 0.20,  # +20pp when wage index falls from 1.0 to 0.0
         "corporate_tax_rate_min": 0.25,
-        "corporate_tax_rate_max": 0.45,
+        "corporate_tax_rate_max": 0.35,
         "loan_rate_per_quarter": 0.0125,   # 5% annual
         "revolving_principal_pay_rate_q": 0.05,  # 5%/q max paydown if cash available
         "mortgage_principal_pay_rate_q": 0.01,   # 1%/q max paydown if cash available
