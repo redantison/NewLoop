@@ -224,10 +224,63 @@ def plot_distribution_compare(
     *,
     title: str,
     x_label: str,
+    x_limits: tuple[float, float] | None = None,
     ax: Any = None,
     bins: int = 60,
 ) -> Any:
-    """Overlay before/after histograms for one distribution."""
+    """Overlay before/after cumulative distributions (ECDF) for one distribution."""
+    import matplotlib.pyplot as plt
+    from matplotlib.ticker import FuncFormatter
+
+    b = np.asarray(before, dtype=float)
+    a = np.asarray(after, dtype=float)
+    b = b[np.isfinite(b)]
+    a = a[np.isfinite(a)]
+
+    if b.size == 0 or a.size == 0:
+        raise ValueError("Distribution plot requires non-empty before and after arrays.")
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(9, 4.5))
+    else:
+        fig = ax.figure
+
+    b_sorted = np.sort(b)
+    a_sorted = np.sort(a)
+    y_b = np.arange(1, b_sorted.size + 1, dtype=float) / float(b_sorted.size)
+    y_a = np.arange(1, a_sorted.size + 1, dtype=float) / float(a_sorted.size)
+    ax.step(b_sorted, y_b, where="post", linewidth=2.0, label="Before")
+    ax.step(a_sorted, y_a, where="post", linewidth=2.0, label="After")
+
+    med_b = float(np.median(b))
+    med_a = float(np.median(a))
+    ax.axvline(med_b, linestyle="--", linewidth=1.2, alpha=0.8)
+    ax.axvline(med_a, linestyle="--", linewidth=1.2, alpha=0.8)
+
+    ax.set_title(title)
+    ax.set_xlabel(x_label)
+    ax.set_ylabel("Cumulative Share of Households")
+    if x_limits is not None:
+        x_lo, x_hi = float(x_limits[0]), float(x_limits[1])
+        if x_hi > x_lo:
+            ax.set_xlim(x_lo, x_hi)
+    ax.set_ylim(0.0, 1.0)
+    ax.yaxis.set_major_formatter(FuncFormatter(lambda val, _: f"{100.0 * float(val):.2f}%"))
+    ax.grid(alpha=0.25)
+    ax.legend(loc="best")
+    return fig
+
+
+def plot_distribution_share(
+    before: Sequence[float],
+    after: Sequence[float],
+    *,
+    title: str,
+    x_label: str,
+    ax: Any = None,
+    bins: int = 60,
+) -> Any:
+    """Overlay before/after share-per-bin histograms."""
     import matplotlib.pyplot as plt
     from matplotlib.ticker import FuncFormatter
 
@@ -254,17 +307,10 @@ def plot_distribution_compare(
     else:
         fig = ax.figure
 
-    # Plot probability mass per bin (share of households), not density.
-    # This avoids near-zero y-values when wealth bins are wide.
     w_b = np.full(b.size, 1.0 / float(b.size), dtype=float)
     w_a = np.full(a.size, 1.0 / float(a.size), dtype=float)
     ax.hist(b, bins=edges, weights=w_b, histtype="step", linewidth=2.0, label="Before")
     ax.hist(a, bins=edges, weights=w_a, histtype="step", linewidth=2.0, label="After")
-
-    med_b = float(np.median(b))
-    med_a = float(np.median(a))
-    ax.axvline(med_b, linestyle="--", linewidth=1.2, alpha=0.8)
-    ax.axvline(med_a, linestyle="--", linewidth=1.2, alpha=0.8)
 
     ax.set_title(title)
     ax.set_xlabel(x_label)
@@ -272,6 +318,105 @@ def plot_distribution_compare(
     ax.yaxis.set_major_formatter(FuncFormatter(lambda val, _: f"{100.0 * float(val):.2f}%"))
     ax.grid(alpha=0.25)
     ax.legend(loc="best")
+    return fig
+
+
+def plot_income_distribution(
+    income_before: Sequence[float],
+    income_after: Sequence[float],
+    *,
+    value_label: str,
+) -> Any:
+    """Single-panel income before/after ECDF."""
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(9, 4.5), constrained_layout=True)
+    plot_distribution_compare(
+        income_before,
+        income_after,
+        title="Income Distribution (Before vs After)",
+        x_label=value_label,
+        ax=ax,
+    )
+    return fig
+
+
+def plot_income_distribution_dual(
+    income_before: Sequence[float],
+    income_after: Sequence[float],
+    *,
+    value_label: str,
+) -> Any:
+    """Two-panel income distributions: cumulative + share-per-bin."""
+    import matplotlib.pyplot as plt
+
+    fig, axs = plt.subplots(1, 2, figsize=(13, 4.5), constrained_layout=True)
+    plot_distribution_compare(
+        income_before,
+        income_after,
+        title="Income Distribution (Cumulative)",
+        x_label=value_label,
+        ax=axs[0],
+    )
+    plot_distribution_share(
+        income_before,
+        income_after,
+        title="Income Distribution (% per Bin)",
+        x_label=value_label,
+        ax=axs[1],
+    )
+    return fig
+
+
+def plot_wealth_distributions_full_zoom(
+    wealth_before: Sequence[float],
+    wealth_after: Sequence[float],
+    *,
+    value_label: str,
+    zoom_lo_pct: float = 2.0,
+    zoom_hi_pct: float = 98.0,
+) -> Any:
+    """Two-panel wealth ECDF: full range + zoomed percentile window."""
+    import matplotlib.pyplot as plt
+
+    w_b = np.asarray(wealth_before, dtype=float)
+    w_a = np.asarray(wealth_after, dtype=float)
+    w_b = w_b[np.isfinite(w_b)]
+    w_a = w_a[np.isfinite(w_a)]
+    if w_b.size == 0 or w_a.size == 0:
+        raise ValueError("Wealth distribution plot requires non-empty before and after arrays.")
+
+    lo = float(max(0.0, min(100.0, zoom_lo_pct)))
+    hi = float(max(0.0, min(100.0, zoom_hi_pct)))
+    if hi <= lo:
+        hi = min(100.0, lo + 1.0)
+        lo = max(0.0, hi - 1.0)
+
+    all_w = np.concatenate([w_b, w_a])
+    x_lo = float(np.percentile(all_w, lo))
+    x_hi = float(np.percentile(all_w, hi))
+    if x_hi <= x_lo:
+        x_lo = float(np.min(all_w))
+        x_hi = float(np.max(all_w))
+        if x_hi <= x_lo:
+            x_hi = x_lo + 1.0
+
+    fig, axs = plt.subplots(1, 2, figsize=(13, 4.5), constrained_layout=True)
+    plot_distribution_compare(
+        w_b,
+        w_a,
+        title="Wealth Distribution (Full Range)",
+        x_label=value_label,
+        ax=axs[0],
+    )
+    plot_distribution_compare(
+        w_b,
+        w_a,
+        title=f"Wealth Distribution (Zoomed p{int(round(lo))} to p{int(round(hi))})",
+        x_label=value_label,
+        x_limits=(x_lo, x_hi),
+        ax=axs[1],
+    )
     return fig
 
 

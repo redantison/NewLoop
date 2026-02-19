@@ -26,8 +26,9 @@ if __package__ in (None, ""):
         metric_options,
         plot_default_dashboard,
         plot_gini_series,
-        plot_income_wealth_distributions,
+        plot_income_distribution_dual,
         plot_metric_lines,
+        plot_wealth_distributions_full_zoom,
     )
     from econsim.config import get_default_config
     from econsim.results import run_simulation, summarize_rows
@@ -50,8 +51,9 @@ else:
         metric_options,
         plot_default_dashboard,
         plot_gini_series,
-        plot_income_wealth_distributions,
+        plot_income_distribution_dual,
         plot_metric_lines,
+        plot_wealth_distributions_full_zoom,
     )
     from .config import get_default_config
     from .results import run_simulation, summarize_rows
@@ -555,15 +557,32 @@ def main() -> None:
         if income_before and income_after and wealth_before and wealth_after:
             st.subheader("Population Distributions")
             value_label = "Base-period dollars (real)" if display_value_mode == "real" else "Nominal dollars"
-            dist_fig = plot_income_wealth_distributions(
+
+            income_fig = plot_income_distribution_dual(
                 income_before,
                 income_after,
+                value_label=value_label,
+            )
+            st.pyplot(income_fig, clear_figure=False)
+            plt.close(income_fig)
+
+            zoom_window = st.slider(
+                "Wealth zoom percentile window",
+                min_value=0,
+                max_value=100,
+                value=(2, 98),
+                step=1,
+                help="Zooms the right-hand wealth panel to this percentile band while keeping a full-range panel for context.",
+            )
+            wealth_fig = plot_wealth_distributions_full_zoom(
                 wealth_before,
                 wealth_after,
                 value_label=value_label,
+                zoom_lo_pct=float(zoom_window[0]),
+                zoom_hi_pct=float(zoom_window[1]),
             )
-            st.pyplot(dist_fig, clear_figure=False)
-            plt.close(dist_fig)
+            st.pyplot(wealth_fig, clear_figure=False)
+            plt.close(wealth_fig)
 
     st.subheader("Quarterly Data")
     limit_tail = st.checkbox("Show only tail rows", value=False)
