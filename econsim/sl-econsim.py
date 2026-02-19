@@ -26,6 +26,7 @@ if __package__ in (None, ""):
         metric_options,
         plot_default_dashboard,
         plot_gini_series,
+        plot_income_wealth_distributions,
         plot_metric_lines,
     )
     from econsim.config import get_default_config
@@ -49,6 +50,7 @@ else:
         metric_options,
         plot_default_dashboard,
         plot_gini_series,
+        plot_income_wealth_distributions,
         plot_metric_lines,
     )
     from .config import get_default_config
@@ -111,6 +113,29 @@ COMPACT_NUMBER_COLUMNS = {
 }
 
 DECIMAL_COLUMNS = {"price_level", "private_inv_cov"}
+
+DISPLAY_VALUE_MODES: tuple[str, str] = ("nominal", "real")
+
+# Columns to deflate when display mode is "real".
+MONETARY_COLUMNS = {
+    "private_eq_per_h",
+    "vat_per_h",
+    "inc_tax_per_h",
+    "corp_tax_per_h",
+    "vat_credit_per_h",
+    "gov_dep_per_h",
+    "fund_dep_per_h",
+    "capex_per_h",
+    "ubi_per_h",
+    "ubi_from_fund_dep_per_h",
+    "ubi_from_gov_dep_per_h",
+    "ubi_issued_per_h",
+    "trust_debt",
+    "wages_total",
+    "total_consumption",
+    "pop_inc_med",
+    "pop_inc_p90",
+}
 
 
 def _compact_number(value: float, decimals: int = 2) -> str:
@@ -253,6 +278,8 @@ def _apply_control_defaults(st: Any, base_params: Dict[str, Any]) -> None:
         default_value = get_by_path(base_params, control.path, default=control.fallback_default)
         st.session_state[key] = default_value
     st.session_state["run__quarters"] = RUN_DEFAULT_QUARTERS
+    raw_mode = str(base_params.get("dashboard_value_mode", "nominal")).strip().lower()
+    st.session_state["view__value_mode"] = "real" if raw_mode in {"price_normalized", "price-normalized", "real"} else "nominal"
     _apply_metric_defaults(st)
 
 
@@ -263,6 +290,9 @@ def _ensure_control_defaults(st: Any, base_params: Dict[str, Any]) -> None:
             st.session_state[key] = get_by_path(base_params, control.path, default=control.fallback_default)
     if "run__quarters" not in st.session_state:
         st.session_state["run__quarters"] = RUN_DEFAULT_QUARTERS
+    if "view__value_mode" not in st.session_state:
+        raw_mode = str(base_params.get("dashboard_value_mode", "nominal")).strip().lower()
+        st.session_state["view__value_mode"] = "real" if raw_mode in {"price_normalized", "price-normalized", "real"} else "nominal"
     if "line_metric_primary" not in st.session_state or "line_metric_secondary" not in st.session_state:
         _apply_metric_defaults(st)
 
@@ -304,6 +334,57 @@ def _rows_csv(rows: Sequence[Dict[str, Any]]) -> str:
     return out.getvalue()
 
 
+def _rows_for_value_mode(rows: Sequence[Dict[str, Any]], value_mode: str) -> List[Dict[str, Any]]:
+    mode = str(value_mode).strip().lower()
+    if mode != "real":
+        return [dict(r) for r in rows]
+
+    out_rows: List[Dict[str, Any]] = []
+    for row in rows:
+        p = float(row.get("price_level", 1.0))
+        if p <= 0.0:
+            p = 1e-9
+        out = dict(row)
+        for key in MONETARY_COLUMNS:
+            if key in out:
+                out[key] = float(out[key]) / p
+        out_rows.append(out)
+    return out_rows
+
+
+def _population_dist_for_value_mode(
+    population_distributions: Dict[str, Dict[str, Any]] | None,
+    value_mode: str,
+    p0: float,
+) -> Dict[str, Dict[str, Any]] | None:
+    if not population_distributions:
+        return None
+
+    before = population_distributions.get("before")
+    after = population_distributions.get("after")
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        return None
+
+    if str(value_mode).strip().lower() != "real":
+        return {"before": dict(before), "after": dict(after)}
+
+    p0_eff = float(p0) if float(p0) > 0.0 else 1e-9
+
+    def _scaled(snapshot: Dict[str, Any]) -> Dict[str, Any]:
+        p = float(snapshot.get("price_level", 1.0))
+        if p <= 0.0:
+            p = 1e-9
+        scale = p0_eff / p
+        income = [float(v) * scale for v in snapshot.get("income", [])]
+        wealth = [float(v) * scale for v in snapshot.get("wealth", [])]
+        out = dict(snapshot)
+        out["income"] = income
+        out["wealth"] = wealth
+        return out
+
+    return {"before": _scaled(before), "after": _scaled(after)}
+
+
 def _render_parameter_controls(st: Any, grouped_controls: Dict[str, List[Any]]) -> tuple[bool, bool, int]:
     with st.sidebar:
         st.header("Run Controls")
@@ -317,6 +398,14 @@ def _render_parameter_controls(st: Any, grouped_controls: Dict[str, List[Any]]) 
             max_value=RUN_MAX_QUARTERS,
             step=RUN_STEP_QUARTERS,
             key="run__quarters",
+        )
+        st.radio(
+            "Display Values",
+            options=list(DISPLAY_VALUE_MODES),
+            key="view__value_mode",
+            horizontal=True,
+            format_func=lambda m: "Nominal" if m == "nominal" else "Real (Price-normalized)",
+            help="Controls how monetary values are displayed in charts/tables. Simulation mechanics are unchanged.",
         )
 
         for section in SECTION_ORDER:
@@ -354,9 +443,13 @@ def _render_parameter_controls(st: Any, grouped_controls: Dict[str, List[Any]]) 
     return run_clicked, reset_clicked, int(quarters)
 
 
-def _cached_run_rows(n_quarters: int, cfg_json: str) -> List[Dict[str, Any]]:
+def _cached_run_payload(n_quarters: int, cfg_json: str) -> Dict[str, Any]:
     cfg = json.loads(cfg_json)
-    return run_simulation(n_quarters=int(n_quarters), cfg=cfg).rows
+    run = run_simulation(n_quarters=int(n_quarters), cfg=cfg)
+    return {
+        "rows": run.rows,
+        "population_distributions": run.population_distributions or {},
+    }
 
 
 def main() -> None:
@@ -382,6 +475,8 @@ def main() -> None:
 
     if "rows" not in st.session_state:
         st.session_state["rows"] = []
+    if "population_distributions" not in st.session_state:
+        st.session_state["population_distributions"] = {}
     if "last_run_cfg_json" not in st.session_state:
         st.session_state["last_run_cfg_json"] = ""
     if "last_run_quarters" not in st.session_state:
@@ -389,17 +484,19 @@ def main() -> None:
 
     current_cfg = _build_cfg_from_state(st, base_cfg)
     current_cfg_json = _cfg_json(current_cfg)
-    cache_run = st.cache_data(show_spinner=False)(_cached_run_rows)
+    cache_run = st.cache_data(show_spinner=False)(_cached_run_payload)
 
     should_run = run_clicked or (not st.session_state["rows"])
     if should_run:
         with st.spinner("Running simulation..."):
-            st.session_state["rows"] = cache_run(quarters, current_cfg_json)
+            payload = cache_run(quarters, current_cfg_json)
+        st.session_state["rows"] = list(payload.get("rows", []))
+        st.session_state["population_distributions"] = dict(payload.get("population_distributions", {}))
         st.session_state["last_run_cfg_json"] = current_cfg_json
         st.session_state["last_run_quarters"] = int(quarters)
 
-    rows: List[Dict[str, Any]] = st.session_state["rows"]
-    if rows:
+    rows_raw: List[Dict[str, Any]] = list(st.session_state["rows"])
+    if rows_raw:
         config_stale = (
             st.session_state.get("last_run_cfg_json", "") != current_cfg_json
             or int(st.session_state.get("last_run_quarters", 0)) != int(quarters)
@@ -407,8 +504,20 @@ def main() -> None:
         if config_stale:
             st.warning("Parameters changed since last run. Click `Run Simulation` to generate new data.")
 
+    display_value_mode = str(st.session_state.get("view__value_mode", "nominal")).strip().lower()
+    rows = _rows_for_value_mode(rows_raw, display_value_mode)
+    pop_dist = _population_dist_for_value_mode(
+        st.session_state.get("population_distributions", {}),
+        display_value_mode,
+        float(current_cfg.get("parameters", {}).get("price_level_initial", 1.0)),
+    )
+
     summary = summarize_rows(rows)
     _render_summary(summary, st)
+    st.caption(
+        "Displayed monetary values are "
+        + ("price-normalized (real, base-period dollars)." if display_value_mode == "real" else "nominal.")
+    )
 
     if not rows:
         return
@@ -435,6 +544,26 @@ def main() -> None:
     dashboard_fig = plot_default_dashboard(rows)
     st.pyplot(dashboard_fig, clear_figure=False)
     plt.close(dashboard_fig)
+
+    if pop_dist is not None:
+        before = pop_dist.get("before", {})
+        after = pop_dist.get("after", {})
+        income_before = before.get("income", [])
+        income_after = after.get("income", [])
+        wealth_before = before.get("wealth", [])
+        wealth_after = after.get("wealth", [])
+        if income_before and income_after and wealth_before and wealth_after:
+            st.subheader("Population Distributions")
+            value_label = "Base-period dollars (real)" if display_value_mode == "real" else "Nominal dollars"
+            dist_fig = plot_income_wealth_distributions(
+                income_before,
+                income_after,
+                wealth_before,
+                wealth_after,
+                value_label=value_label,
+            )
+            st.pyplot(dist_fig, clear_figure=False)
+            plt.close(dist_fig)
 
     st.subheader("Quarterly Data")
     limit_tail = st.checkbox("Show only tail rows", value=False)

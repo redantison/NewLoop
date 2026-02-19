@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List, Mapping, Sequence
 
+import numpy as np
+
 METRIC_LABELS: Dict[str, str] = {
     "automation": "Automation",
     "automation_info": "Automation (Info)",
@@ -213,4 +215,90 @@ def plot_default_dashboard(rows: Sequence[Mapping[str, Any]]) -> Any:
         secondary_ylabel="Real Avg Income",
     )
 
+    return fig
+
+
+def plot_distribution_compare(
+    before: Sequence[float],
+    after: Sequence[float],
+    *,
+    title: str,
+    x_label: str,
+    ax: Any = None,
+    bins: int = 60,
+) -> Any:
+    """Overlay before/after histograms for one distribution."""
+    import matplotlib.pyplot as plt
+    from matplotlib.ticker import FuncFormatter
+
+    b = np.asarray(before, dtype=float)
+    a = np.asarray(after, dtype=float)
+    b = b[np.isfinite(b)]
+    a = a[np.isfinite(a)]
+
+    if b.size == 0 or a.size == 0:
+        raise ValueError("Distribution plot requires non-empty before and after arrays.")
+
+    q_lo = float(min(np.percentile(b, 1.0), np.percentile(a, 1.0)))
+    q_hi = float(max(np.percentile(b, 99.0), np.percentile(a, 99.0)))
+    if q_hi <= q_lo:
+        q_lo = float(min(b.min(), a.min()))
+        q_hi = float(max(b.max(), a.max()))
+        if q_hi <= q_lo:
+            q_hi = q_lo + 1.0
+
+    edges = np.linspace(q_lo, q_hi, int(max(20, bins)))
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(9, 4.5))
+    else:
+        fig = ax.figure
+
+    # Plot probability mass per bin (share of households), not density.
+    # This avoids near-zero y-values when wealth bins are wide.
+    w_b = np.full(b.size, 1.0 / float(b.size), dtype=float)
+    w_a = np.full(a.size, 1.0 / float(a.size), dtype=float)
+    ax.hist(b, bins=edges, weights=w_b, histtype="step", linewidth=2.0, label="Before")
+    ax.hist(a, bins=edges, weights=w_a, histtype="step", linewidth=2.0, label="After")
+
+    med_b = float(np.median(b))
+    med_a = float(np.median(a))
+    ax.axvline(med_b, linestyle="--", linewidth=1.2, alpha=0.8)
+    ax.axvline(med_a, linestyle="--", linewidth=1.2, alpha=0.8)
+
+    ax.set_title(title)
+    ax.set_xlabel(x_label)
+    ax.set_ylabel("Share of Households")
+    ax.yaxis.set_major_formatter(FuncFormatter(lambda val, _: f"{100.0 * float(val):.2f}%"))
+    ax.grid(alpha=0.25)
+    ax.legend(loc="best")
+    return fig
+
+
+def plot_income_wealth_distributions(
+    income_before: Sequence[float],
+    income_after: Sequence[float],
+    wealth_before: Sequence[float],
+    wealth_after: Sequence[float],
+    *,
+    value_label: str,
+) -> Any:
+    """Build a 1x2 before/after distribution figure for income and wealth."""
+    import matplotlib.pyplot as plt
+
+    fig, axs = plt.subplots(1, 2, figsize=(13, 4.5), constrained_layout=True)
+    plot_distribution_compare(
+        income_before,
+        income_after,
+        title="Income Distribution (Before vs After)",
+        x_label=value_label,
+        ax=axs[0],
+    )
+    plot_distribution_compare(
+        wealth_before,
+        wealth_after,
+        title="Wealth Distribution (Before vs After)",
+        x_label=value_label,
+        ax=axs[1],
+    )
     return fig

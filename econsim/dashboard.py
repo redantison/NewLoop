@@ -6,6 +6,9 @@ from __future__ import annotations
 import sys
 from typing import Any, Dict
 
+import numpy as np
+
+from .mathutils import calculate_gini_np
 from .table_of_data import TableOfData
 
 from .engine import EconomySim
@@ -46,6 +49,178 @@ def run_cli(config: Dict[str, Any], n_quarters: int = 80) -> None:
 
         return s.rjust(width)
 
+    def _dist_stats(values: np.ndarray) -> Dict[str, float]:
+        xs = np.asarray(values, dtype=float)
+        if xs.size == 0:
+            return {
+                "n": 0.0,
+                "min": 0.0,
+                "p10": 0.0,
+                "p25": 0.0,
+                "p50": 0.0,
+                "p75": 0.0,
+                "p90": 0.0,
+                "p99": 0.0,
+                "max": 0.0,
+                "mean": 0.0,
+                "gini": 0.0,
+            }
+        ys = np.sort(xs)
+        return {
+            "n": float(ys.size),
+            "min": float(ys[0]),
+            "p10": float(np.percentile(ys, 10.0)),
+            "p25": float(np.percentile(ys, 25.0)),
+            "p50": float(np.percentile(ys, 50.0)),
+            "p75": float(np.percentile(ys, 75.0)),
+            "p90": float(np.percentile(ys, 90.0)),
+            "p99": float(np.percentile(ys, 99.0)),
+            "max": float(ys[-1]),
+            "mean": float(np.mean(ys)),
+            "gini": float(calculate_gini_np(ys)),
+        }
+
+    def _household_vectors_snapshot() -> Dict[str, np.ndarray] | None:
+        if sim.hh is None or sim.hh.n <= 0:
+            return None
+
+        hh = sim.hh
+        dep_i = np.asarray(hh.deposits, dtype=float)
+        loan_i = np.asarray(hh.mortgage_loans, dtype=float) + np.asarray(hh.revolving_loans, dtype=float)
+
+        # Disposable-income proxy: solver stores last-quarter disposable income in prev_income.
+        # At t=0 this defaults to wages0_q.
+        income_i = np.asarray(hh.prev_income, dtype=float)
+        if income_i.shape[0] != hh.n:
+            income_i = np.asarray(hh.wages0_q, dtype=float)
+
+        # Align wealth proxy with engine's gini_wealth construction.
+        w0 = np.asarray(hh.wages0_q, dtype=float)
+        w0_sum = float(w0.sum()) if w0.shape[0] == hh.n else 0.0
+        if w0_sum > 0.0:
+            weights = w0 / w0_sum
+        else:
+            weights = np.full(hh.n, 1.0 / float(hh.n), dtype=float)
+
+        p_now = float(sim.state.get("price_level", 1.0))
+        if p_now <= 0.0:
+            p_now = 1e-9
+
+        def _hh_share_frac(issuer: str, key: str) -> float:
+            so = float(sim.nodes[issuer].get("shares_outstanding", 0.0))
+            if so <= 0.0:
+                return 0.0
+            frac_hh = float(sim.nodes["HH"].get(key, 0.0)) / so
+            return max(0.0, min(1.0, frac_hh))
+
+        fa_eq = max(
+            0.0,
+            float(sim.nodes["FA"].get("deposits", 0.0))
+            + float(sim.nodes["FA"].get("K", 0.0)) * p_now
+            - float(sim.nodes["FA"].get("loans", 0.0)),
+        )
+        fh_eq = max(
+            0.0,
+            float(sim.nodes["FH"].get("deposits", 0.0))
+            + float(sim.nodes["FH"].get("K", 0.0)) * p_now
+            - float(sim.nodes["FH"].get("loans", 0.0)),
+        )
+        bk_eq = max(0.0, float(sim.nodes["BANK"].get("equity", 0.0)))
+
+        hh_equity_total = (
+            _hh_share_frac("FA", "shares_FA") * fa_eq
+            + _hh_share_frac("FH", "shares_FH") * fh_eq
+            + _hh_share_frac("BANK", "shares_BANK") * bk_eq
+        )
+        equity_i = weights * hh_equity_total
+        wealth_i = dep_i + equity_i - loan_i
+
+        if show_price_normalized:
+            scale = p0_display / p_now
+            income_i = income_i * scale
+            wealth_i = wealth_i * scale
+
+        return {
+            "income": income_i,
+            "wealth": wealth_i,
+        }
+
+    def _print_before_after_distributions(before: Dict[str, np.ndarray] | None, after: Dict[str, np.ndarray] | None) -> None:
+        if before is None or after is None:
+            print("Population distribution summary unavailable (no household population state).")
+            print()
+            return
+
+        metrics = ["min", "p10", "p25", "p50", "p75", "p90", "p99", "max", "mean", "gini"]
+        labels = {
+            "min": "min",
+            "p10": "p10",
+            "p25": "p25",
+            "p50": "p50",
+            "p75": "p75",
+            "p90": "p90",
+            "p99": "p99",
+            "max": "max",
+            "mean": "mean",
+            "gini": "gini",
+        }
+
+        inc0 = _dist_stats(before["income"])
+        incT = _dist_stats(after["income"])
+        w0 = _dist_stats(before["wealth"])
+        wT = _dist_stats(after["wealth"])
+
+        print("Population Distribution Summary (Before vs After)")
+        unit_label = "base-period dollars" if show_price_normalized else "nominal dollars"
+        print(f"Income metric: household disposable-income proxy (prev_income), in {unit_label}.")
+        print("Wealth metric: deposits + allocated HH equity claims - loans, in the same units.")
+
+        t = TableOfData("Metric|Ll", "Inc_Before|Rr", "Inc_After|Rr", "Wealth_Before|Rr", "Wealth_After|Rr")
+        for k in metrics:
+            row = t.AddRow()
+            row[0] = labels[k]
+            if k == "gini":
+                row[1] = f"{inc0[k]:.3f}"
+                row[2] = f"{incT[k]:.3f}"
+                row[3] = f"{w0[k]:.3f}"
+                row[4] = f"{wT[k]:.3f}"
+            else:
+                row[1] = _fmt_compact(inc0[k], 8).strip()
+                row[2] = _fmt_compact(incT[k], 8).strip()
+                row[3] = _fmt_compact(w0[k], 8).strip()
+                row[4] = _fmt_compact(wT[k], 8).strip()
+        print(t)
+
+        inc_before = np.asarray(before["income"], dtype=float)
+        inc_after = np.asarray(after["income"], dtype=float)
+        wealth_before = np.asarray(before["wealth"], dtype=float)
+        wealth_after = np.asarray(after["wealth"], dtype=float)
+        n_cmp = int(min(inc_before.size, inc_after.size, wealth_before.size, wealth_after.size))
+
+        if n_cmp > 0:
+            d_inc = inc_after[:n_cmp] - inc_before[:n_cmp]
+            d_w = wealth_after[:n_cmp] - wealth_before[:n_cmp]
+
+            share_wealth_up = float(np.mean(d_w > 0.0))
+            share_wealth_down = float(np.mean(d_w < 0.0))
+
+            d_w_p05 = float(np.percentile(d_w, 5.0))
+            d_w_p50 = float(np.percentile(d_w, 50.0))
+            d_w_p95 = float(np.percentile(d_w, 95.0))
+
+            d_inc_p05 = float(np.percentile(d_inc, 5.0))
+            d_inc_p50 = float(np.percentile(d_inc, 50.0))
+            d_inc_p95 = float(np.percentile(d_inc, 95.0))
+
+            print(
+                "Change diagnostics: "
+                f"Wealth up={share_wealth_up:.1%}, down={share_wealth_down:.1%}; "
+                f"Wealth Δ (p05/p50/p95)=({_fmt_compact(d_w_p05, 8).strip()}, {_fmt_compact(d_w_p50, 8).strip()}, {_fmt_compact(d_w_p95, 8).strip()}); "
+                f"Income Δ (p05/p50/p95)=({_fmt_compact(d_inc_p05, 8).strip()}, {_fmt_compact(d_inc_p50, 8).strip()}, {_fmt_compact(d_inc_p95, 8).strip()})."
+            )
+
+        print()
+
     # ---- run ----
     sim = EconomySim(config)
     value_mode = str(sim.params.get("dashboard_value_mode", "nominal")).strip().lower()
@@ -66,6 +241,8 @@ def run_cli(config: Dict[str, Any], n_quarters: int = 80) -> None:
     terminal_reset()
     # Clear BEFORE printing anything else
     terminal_clear_all()
+
+    dist_before = _household_vectors_snapshot()
 
     n_quarters = int(n_quarters)
 
@@ -303,5 +480,9 @@ def run_cli(config: Dict[str, Any], n_quarters: int = 80) -> None:
           "('nominal' or 'price_normalized' as base-period dollars).")
     for k, desc in legend:
         print(f"  {k:<6} {desc}")
+
+    print()
+    dist_after = _household_vectors_snapshot()
+    _print_before_after_distributions(dist_before, dist_after)
 
     print()
