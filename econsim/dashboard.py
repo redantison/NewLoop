@@ -48,6 +48,19 @@ def run_cli(config: Dict[str, Any], n_quarters: int = 80) -> None:
 
     # ---- run ----
     sim = EconomySim(config)
+    value_mode = str(sim.params.get("dashboard_value_mode", "nominal")).strip().lower()
+    price_normalized_modes = {"price_normalized", "price-normalized", "normalized", "real"}
+    show_price_normalized = value_mode in price_normalized_modes
+    p0_display = float(sim.params.get("price_level_initial", 1.0))
+    if p0_display <= 0.0:
+        p0_display = 1e-9
+
+    def _disp_money(v: float, p_now: float) -> float:
+        x = float(v)
+        if not show_price_normalized:
+            return x
+        p = float(p_now) if float(p_now) > 0.0 else 1e-9
+        return x * (p0_display / p)
 
     # Reset terminal state before printing anything
     terminal_reset()
@@ -93,6 +106,10 @@ def run_cli(config: Dict[str, Any], n_quarters: int = 80) -> None:
 
     print()
     print(f"Simulating {n_quarters} quarters of AI Transition and Structural Reform (SFC + diagnostics)...")
+    if show_price_normalized:
+        print(f"Value view: price_normalized (base-period dollars, P0={p0_display:.3f}).")
+    else:
+        print("Value view: nominal dollars.")
     zero_tol = 1e-6
     max_abs_trdebt = 0.0
     max_abs_dep_identity_gap = 0.0
@@ -118,17 +135,17 @@ def run_cli(config: Dict[str, Any], n_quarters: int = 80) -> None:
         row[5] = float(r.gini_market)
         row[6] = float(r.gini_disp)
         row[7] = float(r.gini_wealth)
-        row[8] = _fmt_compact(r.private_eq_per_h, 8).strip()
+        row[8] = _fmt_compact(_disp_money(r.private_eq_per_h, P_now), 8).strip()
         row[9] = float(r.private_roe_q)
         row[10] = float(r.private_inv_cov)
-        row[11] = _fmt_compact(sim.state.get("vat_receipts_total", 0.0) / denom, 5).strip()
-        row[12] = _fmt_compact(sim.state.get("income_tax_total", 0.0) / denom, 5).strip()
-        row[13] = _fmt_compact(sim.state.get("corp_tax_total", 0.0) / denom, 5).strip()
+        row[11] = _fmt_compact(_disp_money(sim.state.get("vat_receipts_total", 0.0) / denom, P_now), 5).strip()
+        row[12] = _fmt_compact(_disp_money(sim.state.get("income_tax_total", 0.0) / denom, P_now), 5).strip()
+        row[13] = _fmt_compact(_disp_money(sim.state.get("corp_tax_total", 0.0) / denom, P_now), 5).strip()
         corp_tax_rate_pct = int(round(100.0 * float(sim.state.get("corp_tax_rate_eff", sim.params.get("corporate_tax_rate", 0.0)))))
         row[14] = f"{corp_tax_rate_pct:02d}%"
-        row[15] = _fmt_compact(sim.state.get("vat_credit_total", 0.0) / denom, 5).strip()
-        row[16] = _fmt_compact(sim.nodes["GOV"].get("deposits", 0.0) / denom, 8).strip()
-        row[17] = _fmt_compact(sim.nodes["FUND"].get("deposits", 0.0) / denom, 8).strip()
+        row[15] = _fmt_compact(_disp_money(sim.state.get("vat_credit_total", 0.0) / denom, P_now), 5).strip()
+        row[16] = _fmt_compact(_disp_money(sim.nodes["GOV"].get("deposits", 0.0) / denom, P_now), 8).strip()
+        row[17] = _fmt_compact(_disp_money(sim.nodes["FUND"].get("deposits", 0.0) / denom, P_now), 8).strip()
 
         # Trust balance diagnostics:
         # trust_balance_total = FUND deposits + market value of FUND equity claims - FUND loans.
@@ -166,28 +183,28 @@ def run_cli(config: Dict[str, Any], n_quarters: int = 80) -> None:
         )
         trust_claim_per_h = trust_balance_total / denom
 
-        row[18] = _fmt_compact(trust_claim_per_h, 8).strip()
-        row[19] = _fmt_compact(trust_balance_total, 8).strip()
+        row[18] = _fmt_compact(_disp_money(trust_claim_per_h, P_now), 8).strip()
+        row[19] = _fmt_compact(_disp_money(trust_balance_total, P_now), 8).strip()
         row[20] = " ".join([
-            _fmt_compact(r.ubi_per_h, 5).strip(),
-            _fmt_compact(r.ubi_from_fund_dep_per_h, 5).strip(),
-            _fmt_compact(r.ubi_from_gov_dep_per_h, 5).strip(),
-            _fmt_compact(r.ubi_issued_per_h, 5).strip(),
+            _fmt_compact(_disp_money(r.ubi_per_h, P_now), 5).strip(),
+            _fmt_compact(_disp_money(r.ubi_from_fund_dep_per_h, P_now), 5).strip(),
+            _fmt_compact(_disp_money(r.ubi_from_gov_dep_per_h, P_now), 5).strip(),
+            _fmt_compact(_disp_money(r.ubi_issued_per_h, P_now), 5).strip(),
         ])
-        row[21] = _fmt_compact(r.wages_total, 8, 1).strip()
-        row[22] = _fmt_compact(sim.state.get("capex_total", 0.0) / denom, 8).strip()
-        row[23] = _fmt_compact(avg_inc_nom, 8).strip()
+        row[21] = _fmt_compact(_disp_money(r.wages_total, P_now), 8, 1).strip()
+        row[22] = _fmt_compact(_disp_money(sim.state.get("capex_total", 0.0) / denom, P_now), 8).strip()
+        row[23] = _fmt_compact(_disp_money(avg_inc_nom, P_now), 8).strip()
         row[24] = _fmt_compact(r.real_avg_income, 8).strip()
         # Consumption (per household)
         cons_per_h = float(r.total_consumption) / denom
         rcons_per_h = cons_per_h / P_now
 
-        row[25] = _fmt_compact(cons_per_h, 8, 1).strip()
+        row[25] = _fmt_compact(_disp_money(cons_per_h, P_now), 8, 1).strip()
         row[26] = _fmt_compact(rcons_per_h, 8, 1).strip()
 
         # Household loans (per household)
         hh_loan_per_h = float(sim.nodes["HH"].get("loans", 0.0)) / denom
-        row[27] = _fmt_compact(hh_loan_per_h, 8).strip()
+        row[27] = _fmt_compact(_disp_money(hh_loan_per_h, P_now), 8).strip()
 
         # Equity capture
         row[28] = float(r.trust_equity_pct)
@@ -212,9 +229,9 @@ def run_cli(config: Dict[str, Any], n_quarters: int = 80) -> None:
         max_abs_loan_identity_gap = max(max_abs_loan_identity_gap, abs(loan_identity_gap))
         max_abs_bank_balance_gap = max(max_abs_bank_balance_gap, abs(bank_balance_gap))
 
-        row[29] = _fmt_compact(bank_reserves_per_h, 8).strip()
-        row[30] = _fmt_compact(bank_dep_liab_per_h, 8).strip()
-        row[31] = _fmt_compact(bank_loan_assets_per_h, 8).strip()
+        row[29] = _fmt_compact(_disp_money(bank_reserves_per_h, P_now), 8).strip()
+        row[30] = _fmt_compact(_disp_money(bank_dep_liab_per_h, P_now), 8).strip()
+        row[31] = _fmt_compact(_disp_money(bank_loan_assets_per_h, P_now), 8).strip()
 
     print(dashboard)
     print()
@@ -255,33 +272,35 @@ def run_cli(config: Dict[str, Any], n_quarters: int = 80) -> None:
         ("Gm",   "Market-income Gini (wages + household dividends, pre-tax/pre-transfer)") ,
         ("Gi",   "Disposable-income Gini (after tax/transfers/interest)") ,
         ("Gw",   "Net-wealth Gini proxy (deposits + estimated equity claims - loans)") ,
-        ("pEq$",  "Private-equity proxy per household (HH-held claims on FA/FH/BANK)") ,
+        ("pEq$",  "Private-equity proxy per household (HH-held claims on FA/FH/BANK; display-currency)") ,
         ("pROE",  "Quarterly private payout yield proxy = private payouts / lagged private equity") ,
         ("pInv",  "Private retained earnings coverage of CAPEX = private_retained / CAPEX") ,
-        ("VAT",   "VAT receipts per household this quarter (nominal flow)") ,
-        ("IncTx", "Income tax receipts per household this quarter (nominal flow)") ,
-        ("CoTx",  "Corporate tax receipts per household this quarter (nominal flow; firms + bank)") ,
+        ("VAT",   "VAT receipts per household this quarter (display-currency flow)") ,
+        ("IncTx", "Income tax receipts per household this quarter (display-currency flow)") ,
+        ("CoTx",  "Corporate tax receipts per household this quarter (display-currency flow; firms + bank)") ,
         ("CoR%",  "Effective corporate tax rate this quarter (percent, two digits)") ,
-        ("VATCr", "VAT credit granted per household this quarter (nominal transfer; gross)") ,
-        ("GOVdep","Government deposits per household (stock, end of quarter)") ,
-        ("FUNDdep","Trust/Fund deposits per household (stock, end of quarter)") ,
-        ("TrClm", "Per-household beneficial claim on trust balance (stock)") ,
-        ("TrBal$", "Total trust balance (FUND deposits + FUND equity claims - FUND loans; compact)") ,
+        ("VATCr", "VAT credit granted per household this quarter (display-currency transfer; gross)") ,
+        ("GOVdep","Government deposits per household (display-currency stock, end of quarter)") ,
+        ("FUNDdep","Trust/Fund deposits per household (display-currency stock, end of quarter)") ,
+        ("TrClm", "Per-household beneficial claim on trust balance (display-currency stock)") ,
+        ("TrBal$", "Total trust balance (FUND deposits + FUND equity claims - FUND loans; display-currency)") ,
         ("UBI,F,G,I",  "UBI bundle (per-household): UBI UBI_F UBI_G UBI_I, one-space separated") ,
-        ("Wages", "Total wages paid economy-wide this quarter (nominal total)") ,
-        ("CAPEX", "Firm capital expenditures per household this quarter (nominal flow; lagged-from-retained)") ,
-        ("AvgInc","Average nominal income proxy per household = wages/HH + UBI (excludes dividends)") ,
+        ("Wages", "Total wages paid economy-wide this quarter (display-currency total)") ,
+        ("CAPEX", "Firm capital expenditures per household this quarter (display-currency flow; lagged-from-retained)") ,
+        ("AvgInc","Average income proxy per household = wages/HH + UBI (display-currency; excludes dividends)") ,
         ("RAvgInc","Real AvgInc proxy = AvgInc / P") ,
-        ("Cons",  "Nominal consumption per household at producer prices (tax-exclusive; excludes VAT wedge)") ,
+        ("Cons",  "Consumption per household at producer prices (display-currency; tax-exclusive)") ,
         ("RCons", "Real consumption per household = Cons / P") ,
-        ("HHLoan", "Household loans per household (mortgage + revolving; stock)") ,
+        ("HHLoan", "Household loans per household (mortgage + revolving; display-currency stock)") ,
         ("EqCap",  "Trust equity ownership fraction (avg across FA/FH/BANK)") ,
-        ("Resv",   "BANK reserves per household (asset created by issuance)") ,
-        ("DepLb",  "Bank deposit liabilities per household (stock)") ,
-        ("LoanA",  "Bank loan assets per household (stock)") ,
+        ("Resv",   "BANK reserves per household (display-currency asset created by issuance)") ,
+        ("DepLb",  "Bank deposit liabilities per household (display-currency stock)") ,
+        ("LoanA",  "Bank loan assets per household (display-currency stock)") ,
     ]
 
     print("Dashboard legend:")
+    print("  Note   Monetary columns follow parameters['dashboard_value_mode'] "
+          "('nominal' or 'price_normalized' as base-period dollars).")
     for k, desc in legend:
         print(f"  {k:<6} {desc}")
 

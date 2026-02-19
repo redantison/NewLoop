@@ -50,6 +50,8 @@ config = {
         "ubi_issuance_share": 0.15,         # fixed share of each quarter's UBI paid via issuance
         "gov_tax_rebate_rate": 1.00,        # share of remaining GOV deposits rebated each tick by household tax-paid weights
         "hard_assert_sfc": False,          # set True to hard-fail on any mismatch
+        # Dashboard display mode for money columns: "nominal" or "price_normalized" (base-period dollars).
+        "dashboard_value_mode": "price_normalized",
 
         # Population mode: when True, loads and generates a synthetic family population.
         "use_population": True,
