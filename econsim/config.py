@@ -48,14 +48,14 @@ config = {
         "corporate_tax_rate_max": 0.35,
         "loan_rate_per_quarter": 0.0125,   # 5% annual
         # Central-bank policy rate rule (quarterly). When enabled, loan interest uses policy_rate_q.
-        "policy_rate_rule_enabled": True,
+        "policy_rate_rule_enabled": False,
         "policy_rate_neutral_q": 0.0125,
         "policy_rate_inflation_target_q": 0.0050,  # ~2% annual
         "policy_rate_phi_pi": 0.40,
         "policy_rate_phi_deflation": 0.90,         # extra easing when inflation is negative
         "policy_rate_dti_target": 0.20,
         "policy_rate_phi_dti": 0.35,               # easing when borrower stress is high
-        "policy_rate_smoothing": 0.35,             # partial-adjustment speed each quarter
+        "policy_rate_smoothing": 0.15,             # partial-adjustment speed each quarter (lower = smoother policy path)
         "policy_rate_min_q": 0.0000,
         "policy_rate_max_q": 0.0300,
         "policy_rate_max_step_up_q": 0.0050,
