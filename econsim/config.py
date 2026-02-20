@@ -84,13 +84,14 @@ config = {
 
         # Two-hump parameters
         "automation_w_info": 0.65,
-        # Per-sector automation caps (represents non-automatable share by sector)
+        # Per-sector automation asymptotes (represents non-automatable share by sector)
         "automation_info_cap": 0.90,
         "automation_phys_cap": 0.70,
-        "automation_ki": 0.18,
+        # Information automation is intentionally steeper/faster than physical automation.
+        "automation_ki": 0.22,
         "automation_ti": 12.0,
         "automation_bi": 4.0,
-        "automation_kp": 0.14,
+        "automation_kp": 0.11,
         "automation_tp": 32.0,
     },
     "nodes": {

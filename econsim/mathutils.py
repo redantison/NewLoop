@@ -89,8 +89,13 @@ def automation_two_hump(
     info_cap = max(floor, min(cap, float(info_cap)))
     phys_cap = max(floor, min(cap, float(phys_cap)))
 
-    A_info = max(floor, min(info_cap, A_info_raw))
-    A_phys = max(floor, min(phys_cap, A_phys_raw))
+    # Asymptotic cap mapping:
+    # map raw S-curves in [0,1] into [floor, cap_i] by scaling, rather than hard clipping.
+    # This avoids abrupt "hitting the cap" behavior and preserves smooth convergence.
+    A_info_raw = max(0.0, min(1.0, A_info_raw))
+    A_phys_raw = max(0.0, min(1.0, A_phys_raw))
+    A_info = floor + (info_cap - floor) * A_info_raw
+    A_phys = floor + (phys_cap - floor) * A_phys_raw
 
     A = w_info * A_info + (1.0 - w_info) * A_phys
     A = max(floor, min(cap, A))
@@ -103,8 +108,10 @@ def automation_two_hump(
         A_info_prev_raw = _gompertz(float(t_qtr - 1), ki, ti, bi)
         A_phys_prev_raw = _logistic(float(t_qtr - 1), kp, tp)
 
-        A_info_prev = max(floor, min(info_cap, A_info_prev_raw))
-        A_phys_prev = max(floor, min(phys_cap, A_phys_prev_raw))
+        A_info_prev_raw = max(0.0, min(1.0, A_info_prev_raw))
+        A_phys_prev_raw = max(0.0, min(1.0, A_phys_prev_raw))
+        A_info_prev = floor + (info_cap - floor) * A_info_prev_raw
+        A_phys_prev = floor + (phys_cap - floor) * A_phys_prev_raw
 
         A_prev = w_info * A_info_prev + (1.0 - w_info) * A_phys_prev
         A_prev = max(floor, min(cap, A_prev))
