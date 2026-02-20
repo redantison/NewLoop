@@ -47,6 +47,8 @@ PARAMETER_CONTROLS: tuple[ParamControl, ...] = (
     ParamControl(("income_tax_rate",), "Income Tax Rate", "Taxes", "float", 0.0, 1.0, 0.01),
     ParamControl(("income_tax_cutoff_pct",), "Income Tax Cutoff Percentile", "Taxes", "float", 0.0, 100.0, 0.5),
     ParamControl(("corporate_tax_rate",), "Corporate Tax Rate", "Taxes", "float", 0.0, 1.0, 0.01),
+    ParamControl(("dividend_payout_rate_firms",), "Firm Dividend Payout Rate", "Taxes", "float", 0.0, 1.0, 0.01),
+    ParamControl(("dividend_payout_rate_bank",), "Bank Dividend Payout Rate", "Taxes", "float", 0.0, 1.0, 0.01),
     ParamControl(("corporate_tax_dynamic_with_wages",), "Dynamic Corporate Tax With Wages", "Taxes", "bool"),
     ParamControl(("corporate_tax_rate_base",), "Corporate Tax Base Rate", "Taxes", "float", 0.0, 1.0, 0.01),
     ParamControl(("corporate_tax_wage_sensitivity",), "Corporate Tax Wage Sensitivity", "Taxes", "float", 0.0, 1.0, 0.01),
