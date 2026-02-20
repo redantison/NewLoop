@@ -9,9 +9,22 @@ from typing import Any, Dict, List, Sequence
 
 import numpy as np
 
-from .config import config as default_config
-from .engine import EconomySim
-from .types import TickResult
+# Support both execution modes:
+# 1) module mode:   python -m econsim.results
+# 2) script mode:   python econsim/results.py
+if __package__ in (None, ""):
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+    from econsim.config import config as default_config
+    from econsim.engine import EconomySim
+    from econsim.types import TickResult
+else:
+    from .config import config as default_config
+    from .engine import EconomySim
+    from .types import TickResult
 
 
 @dataclass

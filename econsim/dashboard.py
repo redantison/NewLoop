@@ -8,10 +8,23 @@ from typing import Any, Dict
 
 import numpy as np
 
-from .mathutils import calculate_gini_np
-from .table_of_data import TableOfData
+# Support both execution modes:
+# 1) module mode:   python -m econsim.dashboard
+# 2) script mode:   python econsim/dashboard.py
+if __package__ in (None, ""):
+    from pathlib import Path
 
-from .engine import EconomySim
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+    from econsim.config import config as default_config
+    from econsim.mathutils import calculate_gini_np
+    from econsim.table_of_data import TableOfData
+    from econsim.engine import EconomySim
+else:
+    from .config import config as default_config
+    from .mathutils import calculate_gini_np
+    from .table_of_data import TableOfData
+    from .engine import EconomySim
 
 
 def run_cli(config: Dict[str, Any], n_quarters: int = 80) -> None:
@@ -486,3 +499,7 @@ def run_cli(config: Dict[str, Any], n_quarters: int = 80) -> None:
     _print_before_after_distributions(dist_before, dist_after)
 
     print()
+
+
+if __name__ == "__main__":
+    run_cli(config=default_config, n_quarters=80)
