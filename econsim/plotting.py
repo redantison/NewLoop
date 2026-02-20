@@ -85,6 +85,7 @@ def plot_metric_lines(
     *,
     title: str = "EconomySim Time Series",
     ax: Any = None,
+    primary_ylabel: str | None = None,
     secondary_metrics: Iterable[str] | None = None,
     secondary_ylabel: str = "Secondary Scale",
 ) -> Any:
@@ -114,6 +115,13 @@ def plot_metric_lines(
         primary_lines.append(line)
 
     _apply_compact_y_ticks(ax)
+    if primary_ylabel is None:
+        if len(primary_list) == 1:
+            primary_ylabel = metric_label(primary_list[0])
+        else:
+            primary_ylabel = "Primary Scale"
+    ax.set_ylabel(primary_ylabel)
+
     secondary_lines = []
     if secondary_list:
         ax2 = ax.twinx()

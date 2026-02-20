@@ -529,12 +529,19 @@ def main() -> None:
     secondary_metrics = line_metrics[1:2] if len(line_metrics) > 1 else []
 
     if line_metrics:
+        primary_ylabel = metric_map.get(line_metrics[0], line_metrics[0])
+        if len(line_metrics) > 1:
+            secondary_ylabel = metric_map.get(line_metrics[1], line_metrics[1])
+        else:
+            secondary_ylabel = "Secondary Scale"
+
         line_fig = plot_metric_lines(
             rows,
             line_metrics,
             title="Selected Metrics",
+            primary_ylabel=primary_ylabel,
             secondary_metrics=secondary_metrics,
-            secondary_ylabel="Trust Equity Fraction",
+            secondary_ylabel=secondary_ylabel,
         )
         st.pyplot(line_fig, clear_figure=False)
         plt.close(line_fig)
