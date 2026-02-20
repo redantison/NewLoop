@@ -46,6 +46,8 @@ class EconomySim:
             "tax_rebate_total": 0.0,
             # Lagged private equity stock used for private payout-yield proxy.
             "private_equity_prev_total": 0.0,
+            # One-time guard for startup lag bootstrap.
+            "startup_bootstrap_done": False,
         }
 
         self.nodes: Dict[str, Node] = {
@@ -181,6 +183,45 @@ class EconomySim:
         self.ubi_debug_history: List[Dict[str, float]] = []
 
         self._assert_sfc_ok(context="init")
+
+    def _bootstrap_startup_lagged_retained(self) -> None:
+        """Seed lagged retained earnings at startup to avoid a one-quarter CAPEX jump."""
+        if bool(self.state.get("startup_bootstrap_done", False)):
+            return
+        self.state["startup_bootstrap_done"] = True
+
+        if int(self.state.get("t", 0)) != 0:
+            return
+        if not bool(self.params.get("startup_bootstrap_lagged_retained", True)):
+            return
+        if not bool(self.params.get("use_population", False)):
+            return
+        if not bool(self.params.get("population_dynamics", False)):
+            return
+        if self.hh is None or self.hh.n <= 0:
+            return
+
+        reinvest_rate = float(self.params.get("reinvest_rate_of_retained", 0.0))
+        if reinvest_rate <= 0.0:
+            return
+
+        # Respect explicit initial lagged retained settings if provided by scenario config.
+        if any(
+            abs(float(self.nodes[node_id].memo.get("retained_prev", 0.0))) > 1e-12
+            for node_id in ("FA", "FH", "BANK")
+        ):
+            return
+
+        seed_sol = self.solve_within_tick_population()
+        if seed_sol is None:
+            return
+
+        scale = float(self.params.get("startup_bootstrap_retained_scale", 1.0))
+        scale = max(0.0, scale)
+
+        self.nodes["FA"].memo["retained_prev"] = scale * max(0.0, float(seed_sol.get("retained_fa", 0.0)))
+        self.nodes["FH"].memo["retained_prev"] = scale * max(0.0, float(seed_sol.get("retained_fh", 0.0)))
+        self.nodes["BANK"].memo["retained_prev"] = scale * max(0.0, float(seed_sol.get("retained_bk", 0.0)))
 
     # ------------------------
     # Core double-entry primitives
@@ -1337,6 +1378,9 @@ class EconomySim:
         self.state["automation_markup"] = float(mu)
         self.state["price_target"] = float(P_target)
         self.state["capital_productivity_mult"] = float(self.state.get("capital_productivity_mult", 1.0))
+
+        # Startup warm initialization for lagged CAPEX state before first recorded quarter.
+        self._bootstrap_startup_lagged_retained()
 
         # Trigger + dilution at start of tick
         self.apply_policy_logic()

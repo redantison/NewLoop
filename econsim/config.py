@@ -22,6 +22,9 @@ config = {
         "dividend_payout_rate_firms": 0.75,
         "dividend_payout_rate_bank": 1.0,
         "reinvest_rate_of_retained": 1.0,
+        # Startup bootstrap: seed lagged retained earnings at t=0 to avoid a one-quarter CAPEX jump.
+        "startup_bootstrap_lagged_retained": True,
+        "startup_bootstrap_retained_scale": 0.20,
         "capital_depr_rate_per_quarter": 0.02,
         # Capital -> productivity feedback (A_eff = clamp(A + kappa*(K_per_h/K_scale)))
         "capital_productivity_k": 0.25,
