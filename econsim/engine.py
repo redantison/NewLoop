@@ -42,6 +42,7 @@ class EconomySim:
     def __init__(self, config: Dict[str, Any]) -> None:
         self.params = config["parameters"]
         p0 = float(config["parameters"].get("price_level_initial", 1.0))
+        base_rate_q = max(0.0, float(config["parameters"].get("loan_rate_per_quarter", 0.0)))
         self.state = {
             "t": 0,
             "automation": 0.0,
@@ -60,6 +61,13 @@ class EconomySim:
             "private_equity_prev_total": 0.0,
             # One-time guard for startup lag bootstrap.
             "startup_bootstrap_done": False,
+            # Central-bank policy-rate diagnostics (quarterly rate).
+            "policy_rate_q": base_rate_q,
+            "policy_rate_target_q": base_rate_q,
+            "policy_rate_prev_q": base_rate_q,
+            "policy_real_rate_lag_q": base_rate_q,
+            "policy_inflation_input_q": 0.0,
+            "policy_dti_input": 0.0,
         }
 
         self.nodes: Dict[str, Node] = {
@@ -234,6 +242,64 @@ class EconomySim:
         self.nodes["FA"].memo["retained_prev"] = scale * max(0.0, float(seed_sol.get("retained_fa", 0.0)))
         self.nodes["FH"].memo["retained_prev"] = scale * max(0.0, float(seed_sol.get("retained_fh", 0.0)))
         self.nodes["BANK"].memo["retained_prev"] = scale * max(0.0, float(seed_sol.get("retained_bk", 0.0)))
+
+    def _update_policy_rate(self) -> None:
+        """Update the quarterly policy rate using lagged observables (no same-tick circularity)."""
+        fallback_rate = max(0.0, float(self.params.get("loan_rate_per_quarter", 0.0)))
+        prev_rate = max(0.0, float(self.state.get("policy_rate_q", fallback_rate)))
+
+        if self.history:
+            prev = self.history[-1]
+            pi_input = float(prev.inflation)
+            dti_input = max(float(prev.pop_dti_p90), float(prev.pop_dti_w_p90))
+        else:
+            pi_input = float(self.state.get("inflation", 0.0))
+            dti_input = 0.0
+
+        enabled = bool(self.params.get("policy_rate_rule_enabled", False))
+        if not enabled:
+            rate_q = fallback_rate
+            target_q = fallback_rate
+        else:
+            neutral_q = float(self.params.get("policy_rate_neutral_q", fallback_rate))
+            pi_target_q = float(self.params.get("policy_rate_inflation_target_q", 0.0))
+            phi_pi = float(self.params.get("policy_rate_phi_pi", 0.0))
+            phi_defl = float(self.params.get("policy_rate_phi_deflation", 0.0))
+            dti_target = float(self.params.get("policy_rate_dti_target", 0.0))
+            phi_dti = float(self.params.get("policy_rate_phi_dti", 0.0))
+
+            r_min = float(self.params.get("policy_rate_min_q", 0.0))
+            r_max = float(self.params.get("policy_rate_max_q", 1.0))
+            if r_max < r_min:
+                r_max = r_min
+
+            smooth = float(self.params.get("policy_rate_smoothing", 1.0))
+            smooth = max(0.0, min(1.0, smooth))
+
+            max_up = max(0.0, float(self.params.get("policy_rate_max_step_up_q", 1.0)))
+            max_dn = max(0.0, float(self.params.get("policy_rate_max_step_down_q", 1.0)))
+
+            deflation_gap = max(0.0, -pi_input)
+            dti_gap = max(0.0, dti_input - dti_target)
+            raw_target = (
+                neutral_q
+                + phi_pi * (pi_input - pi_target_q)
+                - phi_defl * deflation_gap
+                - phi_dti * dti_gap
+            )
+            target_q = max(r_min, min(r_max, raw_target))
+
+            stepped = (1.0 - smooth) * prev_rate + smooth * target_q
+            stepped = min(stepped, prev_rate + max_up)
+            stepped = max(stepped, prev_rate - max_dn)
+            rate_q = max(r_min, min(r_max, stepped))
+
+        self.state["policy_rate_prev_q"] = float(prev_rate)
+        self.state["policy_rate_q"] = float(rate_q)
+        self.state["policy_rate_target_q"] = float(target_q)
+        self.state["policy_inflation_input_q"] = float(pi_input)
+        self.state["policy_dti_input"] = float(dti_input)
+        self.state["policy_real_rate_lag_q"] = float(rate_q - pi_input)
 
     # ------------------------
     # Core double-entry primitives
@@ -570,7 +636,7 @@ class EconomySim:
 
         auto = float(self.state["automation"])
         auto_eff = float(self.state.get("automation_eff", auto))
-        rL = float(self.params["loan_rate_per_quarter"])
+        rL = float(self.state.get("policy_rate_q", self.params["loan_rate_per_quarter"]))
 
         ws_fh = float(self.params["wage_share_of_revenue"]["FH"])
         ws_fa_base = float(self.params["wage_share_of_revenue"]["FA"])
@@ -1299,6 +1365,9 @@ class EconomySim:
     # ---------------------------------------------------------
 
     def step(self) -> None:
+        # Set this quarter's policy rate from lagged inflation/DTI observables.
+        self._update_policy_rate()
+
         # Automation path (levels + per-quarter flow for visualization)
         t = int(self.state["t"])
         path = str(self.params.get("automation_path", "two_hump")).lower()

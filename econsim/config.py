@@ -47,6 +47,19 @@ config = {
         "corporate_tax_rate_min": 0.25,
         "corporate_tax_rate_max": 0.35,
         "loan_rate_per_quarter": 0.0125,   # 5% annual
+        # Central-bank policy rate rule (quarterly). When enabled, loan interest uses policy_rate_q.
+        "policy_rate_rule_enabled": True,
+        "policy_rate_neutral_q": 0.0125,
+        "policy_rate_inflation_target_q": 0.0050,  # ~2% annual
+        "policy_rate_phi_pi": 0.40,
+        "policy_rate_phi_deflation": 0.90,         # extra easing when inflation is negative
+        "policy_rate_dti_target": 0.20,
+        "policy_rate_phi_dti": 0.35,               # easing when borrower stress is high
+        "policy_rate_smoothing": 0.35,             # partial-adjustment speed each quarter
+        "policy_rate_min_q": 0.0000,
+        "policy_rate_max_q": 0.0300,
+        "policy_rate_max_step_up_q": 0.0050,
+        "policy_rate_max_step_down_q": 0.0050,
         "revolving_principal_pay_rate_q": 0.05,  # 5%/q max paydown if cash available
         "mortgage_principal_pay_rate_q": 0.01,   # 1%/q max paydown if cash available
         "send_fund_residual_to_gov": False, # Trust belongs to citizens; do not sweep FUND deposits to GOV by default

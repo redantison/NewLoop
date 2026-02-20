@@ -292,6 +292,11 @@ def run_cli(config: Dict[str, Any], n_quarters: int = 80) -> None:
         "Resv|Rr",
         "DepLb|Rr",
         "LoanA|Rr",
+        "Inf|Rr|.2%",
+        "iPol|Rr|.2%",
+        "iTgt|Rr|.2%",
+        "rPol|Rr|.2%",
+        "dtiL|Rr|.1%",
     )
 
     print()
@@ -300,6 +305,10 @@ def run_cli(config: Dict[str, Any], n_quarters: int = 80) -> None:
         print(f"Value view: price_normalized (base-period dollars, P0={p0_display:.3f}).")
     else:
         print("Value view: nominal dollars.")
+    if bool(sim.params.get("policy_rate_rule_enabled", False)):
+        print("Policy rate rule: ON (deflation + DTI relief active).")
+    else:
+        print("Policy rate rule: OFF (fixed loan_rate_per_quarter).")
     zero_tol = 1e-6
     max_abs_trdebt = 0.0
     max_abs_dep_identity_gap = 0.0
@@ -422,6 +431,11 @@ def run_cli(config: Dict[str, Any], n_quarters: int = 80) -> None:
         row[29] = _fmt_compact(_disp_money(bank_reserves_per_h, P_now), 8).strip()
         row[30] = _fmt_compact(_disp_money(bank_dep_liab_per_h, P_now), 8).strip()
         row[31] = _fmt_compact(_disp_money(bank_loan_assets_per_h, P_now), 8).strip()
+        row[32] = float(r.inflation)
+        row[33] = float(sim.state.get("policy_rate_q", sim.params.get("loan_rate_per_quarter", 0.0)))
+        row[34] = float(sim.state.get("policy_rate_target_q", row[33]))
+        row[35] = float(sim.state.get("policy_real_rate_lag_q", row[33]))
+        row[36] = float(sim.state.get("policy_dti_input", max(float(r.pop_dti_p90), float(r.pop_dti_w_p90))))
 
     print(dashboard)
     print()
@@ -486,6 +500,11 @@ def run_cli(config: Dict[str, Any], n_quarters: int = 80) -> None:
         ("Resv",   "BANK reserves per household (display-currency asset created by issuance)") ,
         ("DepLb",  "Bank deposit liabilities per household (display-currency stock)") ,
         ("LoanA",  "Bank loan assets per household (display-currency stock)") ,
+        ("Inf",    "Quarterly inflation rate = P(t)/P(t-1)-1") ,
+        ("iPol",   "Policy loan rate applied this quarter (quarterly rate)") ,
+        ("iTgt",   "Policy-rule target rate before smoothing/step limits (quarterly rate)") ,
+        ("rPol",   "Lag-input real policy rate proxy = iPol - lagged inflation input") ,
+        ("dtiL",   "Lagged borrower stress input to policy rule = max(DTI p90 inclusive, wage-only)") ,
     ]
 
     print("Dashboard legend:")
