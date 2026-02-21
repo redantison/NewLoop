@@ -68,6 +68,19 @@ class EconomySim:
             "policy_real_rate_lag_q": base_rate_q,
             "policy_inflation_input_q": 0.0,
             "policy_dti_input": 0.0,
+            # Mortgage-index module diagnostics
+            "mort_pay_req_total": 0.0,
+            "mort_pay_ctr_total": 0.0,
+            "mort_gap_total": 0.0,
+            "mort_gap_paid_by_gov": 0.0,
+            "mort_gap_paid_by_fund": 0.0,
+            "mort_gap_paid_by_issuance": 0.0,
+            "bank_mort_neutralize_inflow": 0.0,
+            "mort_index_mean": 1.0,
+            "mort_index_min": 1.0,
+            "mort_index_max": 1.0,
+            "mort_overdraft_due_to_payment_total": 0.0,
+            "mort_overdraft_due_to_payment_count": 0.0,
         }
 
         self.nodes: Dict[str, Node] = {
@@ -163,6 +176,11 @@ class EconomySim:
             if self.hh is not None:
                 self.nodes["HH"].set("deposits", self.hh.sum_deposits())
                 self.nodes["HH"].set("loans", self.hh.sum_loans())
+                p_series0 = self._mort_price_series_value(float(self.state.get("price_level", p0)))
+                y_series0 = self._mort_income_series_value(float(np.sum(self.hh.wages0_q)), 0.0, float(self.hh.prev_ubi))
+                self.state["mort_price_series_prev"] = float(p_series0)
+                self.state["mort_income_series_prev"] = float(y_series0)
+                self._ensure_mortgage_index_anchors(p_series0, y_series0, base_rate_q)
             else:
                 self.nodes["HH"].set("deposits", 0.0)
                 self.nodes["HH"].set("loans", 0.0)
@@ -300,6 +318,304 @@ class EconomySim:
         self.state["policy_inflation_input_q"] = float(pi_input)
         self.state["policy_dti_input"] = float(dti_input)
         self.state["policy_real_rate_lag_q"] = float(rate_q - pi_input)
+
+    def _mort_price_series_value(self, producer_price_level: float) -> float:
+        p = float(producer_price_level) if float(producer_price_level) > 0.0 else 1e-9
+        price_series = str(self.params.get("mort_index_price_series", "P_producer")).strip()
+        if price_series == "C_consumer":
+            vat = max(0.0, float(self.params.get("vat_rate", 0.0)))
+            return max(1e-9, p * (1.0 + vat))
+        return max(1e-9, p)
+
+    def _mort_income_series_value(self, wages_total: float, div_house_total: float, ubi_per_h: float) -> float:
+        n_hh = float(self.hh.n) if (self.hh is not None and self.hh.n > 0) else 1.0
+        wages = max(0.0, float(wages_total))
+        div_hh = max(0.0, float(div_house_total))
+        ubi_total = max(0.0, float(ubi_per_h)) * n_hh
+
+        income_series = str(self.params.get("mort_index_income_series", "NominalHHIncome")).strip()
+        if income_series == "NominalWages":
+            y = wages
+        elif income_series == "NominalMarketIncome":
+            y = wages + div_hh
+        else:
+            # NominalHHIncome (default): wages + household dividends + UBI.
+            y = wages + div_hh + ubi_total
+        return max(1e-9, float(y))
+
+    def _ensure_mortgage_index_anchors(self, p_series_now: float, y_series_now: float, rL: float) -> None:
+        if self.hh is None or self.hh.n <= 0:
+            return
+        hh = self.hh
+        hh.ensure_memos()
+
+        mort = _as_np(hh.mortgage_loans, dtype=float)
+        active = mort > 1e-12
+        inactive = ~active
+        new_mask = active & (hh.mort_t0 < 0)
+
+        if np.any(new_mask):
+            mort_pay_rate = max(0.0, min(1.0, float(self.params.get("mortgage_principal_pay_rate_q", 0.0))))
+            ctr_at_anchor = mort[new_mask] * (max(0.0, float(rL)) + mort_pay_rate)
+            hh.mort_P0[new_mask] = float(max(1e-9, p_series_now))
+            hh.mort_Y0[new_mask] = float(max(1e-9, y_series_now))
+            hh.mort_t0[new_mask] = int(self.state.get("t", 0))
+            hh.mort_pay_base[new_mask] = ctr_at_anchor
+            hh.mort_index_prev[new_mask] = 1.0
+            hh.mort_dlnI_sm_prev[new_mask] = 0.0
+
+        if np.any(inactive):
+            hh.mort_P0[inactive] = 0.0
+            hh.mort_Y0[inactive] = 0.0
+            hh.mort_t0[inactive] = -1
+            hh.mort_pay_base[inactive] = 0.0
+            hh.mort_index_prev[inactive] = 1.0
+            hh.mort_dlnI_sm_prev[inactive] = 0.0
+
+    def _compute_mortgage_index_terms(
+        self,
+        *,
+        mort: np.ndarray,
+        rL: float,
+        wages_total: float,
+        div_house_total: float,
+        ubi_per_h: float,
+        commit_state: bool,
+    ) -> Dict[str, Any]:
+        if self.hh is None or self.hh.n <= 0:
+            n = int(mort.shape[0])
+            zeros = np.zeros(n, dtype=float)
+            return {
+                "mort_pay_req_i": zeros,
+                "mort_pay_ctr_i": zeros,
+                "mort_interest_due_i": zeros,
+                "mort_interest_paid_i": zeros,
+                "mort_principal_paid_i": zeros,
+                "mort_gap_i": zeros,
+                "mort_gap_total": 0.0,
+                "mort_pay_req_total": 0.0,
+                "mort_pay_ctr_total": 0.0,
+                "mort_index_mean": 1.0,
+                "mort_index_min": 1.0,
+                "mort_index_max": 1.0,
+                "mort_index_i": zeros,
+                "mort_dln_i": zeros,
+                "mort_dln_sm_i": zeros,
+                "p_series_now": float(max(1e-9, self.state.get("price_level", 1.0))),
+                "y_series_now": 1.0,
+            }
+
+        hh = self.hh
+        hh.ensure_memos()
+        n = int(hh.n)
+        mort_vec = _as_np(mort, dtype=float)
+
+        mort_pay_rate = max(0.0, min(1.0, float(self.params.get("mortgage_principal_pay_rate_q", 0.0))))
+        mort_interest_due_i = np.maximum(0.0, mort_vec) * max(0.0, float(rL))
+        mort_principal_ctr_i = np.maximum(0.0, mort_vec) * mort_pay_rate
+        mort_pay_ctr_i = mort_interest_due_i + mort_principal_ctr_i
+
+        p_series_now = self._mort_price_series_value(float(self.state.get("price_level", 1.0)))
+        y_series_now = self._mort_income_series_value(wages_total, div_house_total, ubi_per_h)
+        p_series_prev = float(self.state.get("mort_price_series_prev", p_series_now))
+        y_series_prev = float(self.state.get("mort_income_series_prev", y_series_now))
+        p_series_prev = max(1e-9, p_series_prev)
+        y_series_prev = max(1e-9, y_series_prev)
+
+        enabled = bool(self.params.get("mort_index_enable", False))
+        active = (mort_vec > 1e-12) & (hh.mort_t0 >= 0)
+        max_pay_i = mort_interest_due_i + np.maximum(0.0, mort_vec)
+
+        if enabled:
+            if not bool(self.params.get("mort_corridor_apply_in_logspace", True)):
+                raise ValueError("mort_corridor_apply_in_logspace must be True for mortgage index module.")
+            w = max(0.0, min(1.0, float(self.params.get("mort_index_weight_w", 0.40))))
+            dln_raw = (w * math.log(p_series_now / p_series_prev)) + ((1.0 - w) * math.log(y_series_now / y_series_prev))
+
+            lam = float(self.params.get("mort_index_ewma_lambda", 1.0))
+            lam = max(0.0, min(1.0, lam))
+            dln_prev = _as_np(hh.mort_dlnI_sm_prev, dtype=float)
+            dln_sm_i = (lam * dln_raw) + ((1.0 - lam) * dln_prev)
+
+            if bool(self.params.get("mort_corridor_enable", True)):
+                up = float(self.params.get("mort_corridor_qtr_up", 0.02))
+                dn = float(self.params.get("mort_corridor_qtr_dn", -0.02))
+                up = max(-0.999999, up)
+                dn = max(-0.999999, dn)
+                if up < dn:
+                    up, dn = dn, up
+                c_up = math.log1p(up)
+                c_dn = math.log1p(dn)
+                dln_i = np.clip(dln_sm_i, c_dn, c_up)
+            else:
+                dln_i = dln_sm_i
+
+            i_prev = _as_np(hh.mort_index_prev, dtype=float)
+            i_curr = i_prev.copy()
+            i_curr[active] = i_prev[active] * np.exp(dln_i[active])
+            i_curr = np.maximum(0.0, i_curr)
+
+            mort_pay_req_i = np.zeros(n, dtype=float)
+            mort_pay_req_i[active] = np.maximum(0.0, _as_np(hh.mort_pay_base, dtype=float)[active] * i_curr[active])
+        else:
+            dln_sm_i = _as_np(hh.mort_dlnI_sm_prev, dtype=float).copy()
+            i_curr = _as_np(hh.mort_index_prev, dtype=float).copy()
+            mort_pay_req_i = mort_pay_ctr_i.copy()
+            dln_i = np.zeros(n, dtype=float)
+
+        req_mode = str(self.params.get("mort_index_required_payment_mode", "CurrentContractual")).strip()
+        if enabled and req_mode == "AnchoredBase":
+            base_vec = np.maximum(0.0, _as_np(hh.mort_pay_base, dtype=float))
+            mort_pay_req_i = base_vec * i_curr
+        elif enabled:
+            # Caveat: this model uses stylized proportional paydown mortgages (no amortization object).
+            # Indexing the current contractual flow preserves "deflation relief" semantics.
+            mort_pay_req_i = mort_pay_ctr_i * i_curr
+
+        mort_pay_req_i = np.minimum(np.maximum(0.0, mort_pay_req_i), max_pay_i)
+        mort_interest_paid_i = np.minimum(mort_interest_due_i, mort_pay_req_i)
+        mort_interest_paid_i = np.maximum(0.0, mort_interest_paid_i)
+        mort_principal_paid_i = np.maximum(0.0, mort_pay_req_i - mort_interest_paid_i)
+        mort_principal_paid_i = np.minimum(mort_principal_paid_i, np.maximum(0.0, mort_vec))
+
+        mort_gap_i = np.maximum(0.0, mort_pay_ctr_i - mort_pay_req_i) if enabled else np.zeros(n, dtype=float)
+
+        if np.any(active):
+            mort_index_mean = float(np.mean(i_curr[active]))
+            mort_index_min = float(np.min(i_curr[active]))
+            mort_index_max = float(np.max(i_curr[active]))
+        else:
+            mort_index_mean = 1.0
+            mort_index_min = 1.0
+            mort_index_max = 1.0
+
+        if commit_state:
+            hh.mort_index_prev = i_curr.astype(float, copy=True)
+            hh.mort_dlnI_sm_prev = dln_sm_i.astype(float, copy=True)
+            self.state["mort_price_series_prev"] = float(p_series_now)
+            self.state["mort_income_series_prev"] = float(y_series_now)
+
+        return {
+            "mort_pay_req_i": mort_pay_req_i,
+            "mort_pay_ctr_i": mort_pay_ctr_i,
+            "mort_interest_due_i": mort_interest_due_i,
+            "mort_interest_paid_i": mort_interest_paid_i,
+            "mort_principal_paid_i": mort_principal_paid_i,
+            "mort_gap_i": mort_gap_i,
+            "mort_gap_total": float(np.sum(mort_gap_i)),
+            "mort_pay_req_total": float(np.sum(mort_pay_req_i)),
+            "mort_pay_ctr_total": float(np.sum(mort_pay_ctr_i)),
+            "mort_index_mean": mort_index_mean,
+            "mort_index_min": mort_index_min,
+            "mort_index_max": mort_index_max,
+            "mort_index_i": i_curr.astype(float, copy=True),
+            "mort_dln_i": dln_i.astype(float, copy=True),
+            "mort_dln_sm_i": dln_sm_i.astype(float, copy=True),
+            "p_series_now": float(p_series_now),
+            "y_series_now": float(y_series_now),
+        }
+
+    def _neutralize_stress_active(self) -> bool:
+        mode = str(self.params.get("mort_neutralize_trigger_mode", "StressOnly")).strip()
+        if mode == "Always":
+            return True
+        threshold = float(self.params.get("mort_neutralize_trigger_threshold", self.params.get("trust_trigger_dti", 0.10)))
+        dti_ratio = 0.0
+        if self.history:
+            try:
+                dti_ratio = max(float(self.history[-1].pop_dti_w_p90), float(self.history[-1].pop_dti_p90))
+            except Exception:
+                dti_ratio = 0.0
+        return dti_ratio >= threshold
+
+    def _pay_bank_income_from_payer(self, payer: str, amount: float) -> float:
+        amt = max(0.0, float(amount))
+        if amt <= 0.0:
+            return 0.0
+        avail = max(0.0, float(self.nodes[payer].get("deposits", 0.0)))
+        pay = min(amt, avail)
+        if pay <= 0.0:
+            return 0.0
+        self.nodes[payer].add("deposits", -pay)
+        bank = self.nodes["BANK"]
+        bank.add("deposit_liab", -pay)
+        bank.add("equity", +pay)
+        return float(pay)
+
+    def _apply_mortgage_gap_neutralization(
+        self,
+        *,
+        gap_i: np.ndarray,
+        mort_interest_due_total: float,
+        mort_pay_ctr_total: float,
+    ) -> Dict[str, float]:
+        gap_total_raw = float(np.sum(np.maximum(0.0, gap_i)))
+        if gap_total_raw <= 0.0:
+            return {"gap_total": 0.0, "paid_gov": 0.0, "paid_fund": 0.0, "paid_issuance": 0.0, "paid_total": 0.0}
+
+        if not bool(self.params.get("mort_bank_neutralize_enable", True)):
+            return {"gap_total": gap_total_raw, "paid_gov": 0.0, "paid_fund": 0.0, "paid_issuance": 0.0, "paid_total": 0.0}
+        if not self._neutralize_stress_active():
+            return {"gap_total": gap_total_raw, "paid_gov": 0.0, "paid_fund": 0.0, "paid_issuance": 0.0, "paid_total": 0.0}
+
+        cap_mode = str(self.params.get("mort_neutralize_cap_mode", "None")).strip()
+        cap_val = float(self.params.get("mort_neutralize_cap_value", 0.0))
+        cap_total = gap_total_raw
+        if cap_mode == "BankEquityFloor":
+            bank_eq = float(self.nodes["BANK"].get("equity", 0.0))
+            cap_total = max(0.0, float(cap_val) - bank_eq)
+        elif cap_mode == "PctOfMortgageInterest":
+            cap_total = max(0.0, float(cap_val)) * max(0.0, float(mort_interest_due_total))
+        elif cap_mode == "PctOfMortgagePayment":
+            cap_total = max(0.0, float(cap_val)) * max(0.0, float(mort_pay_ctr_total))
+        gap_total = min(gap_total_raw, cap_total)
+        if gap_total <= 0.0:
+            return {"gap_total": gap_total, "paid_gov": 0.0, "paid_fund": 0.0, "paid_issuance": 0.0, "paid_total": 0.0}
+
+        stack_raw = self.params.get("mort_neutralize_funding_stack", ["GOV", "FUND", "ISSUANCE"])
+        if isinstance(stack_raw, (list, tuple)):
+            stack = [str(x).strip().upper() for x in stack_raw]
+        else:
+            stack = ["GOV", "FUND", "ISSUANCE"]
+
+        remaining = float(gap_total)
+        paid_gov = 0.0
+        paid_fund = 0.0
+        paid_iss = 0.0
+
+        for src in stack:
+            if remaining <= 0.0:
+                break
+            if src == "GOV":
+                paid = self._pay_bank_income_from_payer("GOV", remaining)
+                paid_gov += paid
+                remaining -= paid
+            elif src == "FUND":
+                allow_if_debt = bool(self.params.get("mort_neutralize_fund_allowed_if_debt_outstanding", False))
+                fund_debt = float(self.nodes["FUND"].get("loans", 0.0))
+                if (fund_debt <= 1e-12) or allow_if_debt:
+                    paid = self._pay_bank_income_from_payer("FUND", remaining)
+                    paid_fund += paid
+                    remaining -= paid
+            elif src == "ISSUANCE":
+                pay = max(0.0, remaining)
+                if pay > 0.0:
+                    self.nodes["BANK"].add("deposit_liab", +pay)
+                    self.nodes["BANK"].add("reserves", +pay)
+                    self.nodes["GOV"].add("deposits", +pay)
+                    self.nodes["GOV"].add("money_issued", +pay)
+                    paid = self._pay_bank_income_from_payer("GOV", pay)
+                    paid_iss += paid
+                    remaining -= paid
+
+        paid_total = float(paid_gov + paid_fund + paid_iss)
+        return {
+            "gap_total": float(gap_total),
+            "paid_gov": float(paid_gov),
+            "paid_fund": float(paid_fund),
+            "paid_issuance": float(paid_iss),
+            "paid_total": float(paid_total),
+        }
 
     # ------------------------
     # Core double-entry primitives
@@ -703,6 +1019,7 @@ class EconomySim:
         capex_fa_nom = reinvest_rate * max(0.0, retained_fa_prev)
         capex_fh_nom = reinvest_rate * max(0.0, retained_fh_prev)
         capex_total_nom = capex_fa_nom + capex_fh_nom
+        div_house_total_est = 0.0
 
         for _ in range(max_iter):
             # 1) Household consumption (nominal), vectorized
@@ -742,9 +1059,11 @@ class EconomySim:
             p_fa_pre_tax = max(0.0, rev_fa - w_fa - fa_interest)
             p_fh_pre_tax = max(0.0, rev_fh - w_fh - fh_interest)
 
-            interest_hh = (mort + rev) * rL
+            mort_interest_due = mort * rL
+            rev_interest = rev * rL
+            interest_hh = mort_interest_due + rev_interest
             trust_interest = fund_loan * rL
-            bank_profit_pre_tax = float(interest_hh.sum() + trust_interest + fa_interest + fh_interest)
+            bank_interest_ex_mort = float(rev_interest.sum() + trust_interest + fa_interest + fh_interest)
 
             # Corporate income tax policy:
             # - Distributed dividends are NOT taxed at the corporate level.
@@ -780,7 +1099,41 @@ class EconomySim:
 
             div_fa_total = payout_firms * p_fa_pre_tax
             div_fh_total = payout_firms * p_fh_pre_tax
+            div_house_firms = (div_fa_total * (1.0 - f_fa)) + (div_fh_total * (1.0 - f_fh))
+            div_fund_firms = (div_fa_total * f_fa) + (div_fh_total * f_fh)
+
+            # 4) UBI policy (population total pool)
+            # Index baseline REAL pool back to nominal using the current tax-exclusive price level P.
+            if target_pool_real_pop is None:
+                ubi = 0.0
+            else:
+                target_pool_nom = float(target_pool_real_pop) * float(P)
+                ubi = max(0.0, (target_pool_nom - w_total) / float(hh.n))
+            # Optional monotonic policy floor: do not allow policy UBI to decline.
+            if bool(self.params.get("ubi_monotonic_floor", True)):
+                ubi = max(float(hh.prev_ubi), float(ubi))
+
+            # Mortgage index module: compute indexed required payment per household mortgage.
+            mort_index_enable = bool(self.params.get("mort_index_enable", False))
+            p_series_now = self._mort_price_series_value(P)
+            y_series_now = self._mort_income_series_value(w_total, float(div_house_total_est), float(ubi))
+            self._ensure_mortgage_index_anchors(p_series_now, y_series_now, rL)
+            mort_terms = self._compute_mortgage_index_terms(
+                mort=mort,
+                rL=rL,
+                wages_total=w_total,
+                div_house_total=float(div_house_total_est),
+                ubi_per_h=float(ubi),
+                commit_state=False,
+            )
+            mort_pay_req_i = _as_np(mort_terms.get("mort_pay_req_i", np.zeros(hh.n, dtype=float)), dtype=float)
+            mort_interest_paid_i = _as_np(mort_terms.get("mort_interest_paid_i", np.zeros(hh.n, dtype=float)), dtype=float)
+            bank_profit_pre_tax = float(bank_interest_ex_mort + np.sum(np.maximum(0.0, mort_interest_paid_i)))
+
             div_bk_total = payout_bank * max(0.0, bank_profit_pre_tax)
+            div_fund = div_fund_firms + (div_bk_total * f_bk)
+            div_house_total = div_house_firms + (div_bk_total * (1.0 - f_bk))
+            div_house_total_est = float(div_house_total)
 
             retained_fa_pre_tax = max(0.0, p_fa_pre_tax - div_fa_total)
             retained_fh_pre_tax = max(0.0, p_fh_pre_tax - div_fh_total)
@@ -799,20 +1152,6 @@ class EconomySim:
             p_fa = div_fa_total + retained_fa
             p_fh = div_fh_total + retained_fh
             bank_profit = div_bk_total + retained_bk
-
-            div_fund = (div_fa_total * f_fa) + (div_fh_total * f_fh) + (div_bk_total * f_bk)
-            div_house_total = (div_fa_total * (1.0 - f_fa)) + (div_fh_total * (1.0 - f_fh)) + (div_bk_total * (1.0 - f_bk))
-
-            # 4) UBI policy (population total pool)
-            # Index baseline REAL pool back to nominal using the current tax-exclusive price level P.
-            if target_pool_real_pop is None:
-                ubi = 0.0
-            else:
-                target_pool_nom = float(target_pool_real_pop) * float(P)
-                ubi = max(0.0, (target_pool_nom - w_total) / float(hh.n))
-            # Optional monotonic policy floor: do not allow policy UBI to decline.
-            if bool(self.params.get("ubi_monotonic_floor", True)):
-                ubi = max(float(hh.prev_ubi), float(ubi))
 
             # 5) Allocate wages and (temporary) household dividends by baseline wage weights
             wage_scale = w_total / w0_sum
@@ -869,8 +1208,13 @@ class EconomySim:
             vat_credit_per_h = vat_rate * pov_nom
             vat_credit_i = vat_credit_per_h * eligible.astype(float)
 
-            # Disposable income used by the consumption rule
-            y_new = wages_i + float(ubi) + div_i + vat_credit_i - interest_hh - income_tax_i
+            # Disposable income used by the consumption rule.
+            # When mortgage indexing is enabled, households service mortgage-required payment
+            # plus revolving interest (contractual); otherwise retain legacy interest-only burden.
+            if mort_index_enable:
+                y_new = wages_i + float(ubi) + div_i + vat_credit_i - rev_interest - mort_pay_req_i - income_tax_i
+            else:
+                y_new = wages_i + float(ubi) + div_i + vat_credit_i - interest_hh - income_tax_i
             max_delta = float(np.max(np.abs(y_new - y_guess)))
 
             if max_delta < tol:
@@ -912,6 +1256,25 @@ class EconomySim:
                     "wages_i": wages_i,
                     "div_i": div_i,
                     "y": y_new,
+                    "mort_index_enable": bool(mort_index_enable),
+                    "mort_pay_req_i": mort_pay_req_i,
+                    "mort_pay_ctr_i": _as_np(mort_terms.get("mort_pay_ctr_i", np.zeros(hh.n, dtype=float)), dtype=float),
+                    "mort_interest_due_i": _as_np(mort_terms.get("mort_interest_due_i", np.zeros(hh.n, dtype=float)), dtype=float),
+                    "mort_interest_paid_i": _as_np(mort_terms.get("mort_interest_paid_i", np.zeros(hh.n, dtype=float)), dtype=float),
+                    "mort_principal_paid_i": _as_np(mort_terms.get("mort_principal_paid_i", np.zeros(hh.n, dtype=float)), dtype=float),
+                    "mort_gap_i": _as_np(mort_terms.get("mort_gap_i", np.zeros(hh.n, dtype=float)), dtype=float),
+                    "mort_gap_total": float(mort_terms.get("mort_gap_total", 0.0)),
+                    "mort_pay_req_total": float(mort_terms.get("mort_pay_req_total", 0.0)),
+                    "mort_pay_ctr_total": float(mort_terms.get("mort_pay_ctr_total", 0.0)),
+                    "mort_index_mean": float(mort_terms.get("mort_index_mean", 1.0)),
+                    "mort_index_min": float(mort_terms.get("mort_index_min", 1.0)),
+                    "mort_index_max": float(mort_terms.get("mort_index_max", 1.0)),
+                    "mort_index_i": _as_np(mort_terms.get("mort_index_i", np.ones(hh.n, dtype=float)), dtype=float),
+                    "mort_dln_i": _as_np(mort_terms.get("mort_dln_i", np.zeros(hh.n, dtype=float)), dtype=float),
+                    "mort_dln_sm_i": _as_np(mort_terms.get("mort_dln_sm_i", np.zeros(hh.n, dtype=float)), dtype=float),
+                    "p_series_now": float(mort_terms.get("p_series_now", P)),
+                    "y_series_now": float(mort_terms.get("y_series_now", max(1e-9, w_total + div_house_total + float(ubi) * float(hh.n)))),
+                    "rev_interest_i": rev_interest,
                     "taxable_income": taxable_income,
                     "income_tax_i": income_tax_i,
                     "vat_credit_i": vat_credit_i,
@@ -946,6 +1309,17 @@ class EconomySim:
         wages_i = _as_np(sol.get("wages_i", []), dtype=float)
         div_i = _as_np(sol.get("div_i", []), dtype=float)
         interest_hh = _as_np(sol.get("interest_hh", []), dtype=float)
+        rev_interest_i = _as_np(sol.get("rev_interest_i", []), dtype=float)
+        mort_pay_req_i = _as_np(sol.get("mort_pay_req_i", []), dtype=float)
+        mort_pay_ctr_i = _as_np(sol.get("mort_pay_ctr_i", []), dtype=float)
+        mort_interest_due_i = _as_np(sol.get("mort_interest_due_i", []), dtype=float)
+        mort_interest_paid_i = _as_np(sol.get("mort_interest_paid_i", []), dtype=float)
+        mort_principal_paid_i = _as_np(sol.get("mort_principal_paid_i", []), dtype=float)
+        mort_gap_i = _as_np(sol.get("mort_gap_i", []), dtype=float)
+        mort_index_i = _as_np(sol.get("mort_index_i", []), dtype=float)
+        mort_dln_i = _as_np(sol.get("mort_dln_i", []), dtype=float)
+        mort_dln_sm_i = _as_np(sol.get("mort_dln_sm_i", []), dtype=float)
+        mort_index_enable = bool(sol.get("mort_index_enable", False))
         y_vec = _as_np(sol.get("y", []), dtype=float)
 
         if c_firm_nom.shape[0] != n:
@@ -958,6 +1332,26 @@ class EconomySim:
             raise ValueError("population solver returned div_i of wrong length")
         if interest_hh.shape[0] != n:
             raise ValueError("population solver returned interest_hh of wrong length")
+        if rev_interest_i.shape[0] != n:
+            rev_interest_i = np.maximum(0.0, interest_hh - np.maximum(0.0, mort_interest_due_i if mort_interest_due_i.shape[0] == n else np.zeros(n, dtype=float)))
+        if mort_pay_req_i.shape[0] != n:
+            mort_pay_req_i = np.zeros(n, dtype=float)
+        if mort_pay_ctr_i.shape[0] != n:
+            mort_pay_ctr_i = np.zeros(n, dtype=float)
+        if mort_interest_due_i.shape[0] != n:
+            mort_interest_due_i = np.zeros(n, dtype=float)
+        if mort_interest_paid_i.shape[0] != n:
+            mort_interest_paid_i = np.zeros(n, dtype=float)
+        if mort_principal_paid_i.shape[0] != n:
+            mort_principal_paid_i = np.zeros(n, dtype=float)
+        if mort_gap_i.shape[0] != n:
+            mort_gap_i = np.zeros(n, dtype=float)
+        if mort_index_i.shape[0] != n:
+            mort_index_i = np.ones(n, dtype=float)
+        if mort_dln_i.shape[0] != n:
+            mort_dln_i = np.zeros(n, dtype=float)
+        if mort_dln_sm_i.shape[0] != n:
+            mort_dln_sm_i = np.zeros(n, dtype=float)
 
         c_total = float(sol.get("c_total", 0.0))
 
@@ -1108,11 +1502,83 @@ class EconomySim:
         # -------------------------------------------------
         # 4) Interest: households and FUND -> BANK
         # -------------------------------------------------
-        deposits[:] = deposits - interest_hh
-        tot_int_hh = float(interest_hh.sum())
         bank = self.nodes["BANK"]
-        bank.add("deposit_liab", -tot_int_hh)
-        bank.add("equity", +tot_int_hh)
+        self.state["mort_pay_req_total"] = 0.0
+        self.state["mort_pay_ctr_total"] = 0.0
+        self.state["mort_gap_total"] = 0.0
+        self.state["mort_gap_paid_by_gov"] = 0.0
+        self.state["mort_gap_paid_by_fund"] = 0.0
+        self.state["mort_gap_paid_by_issuance"] = 0.0
+        self.state["bank_mort_neutralize_inflow"] = 0.0
+        self.state["mort_index_mean"] = 1.0
+        self.state["mort_index_min"] = 1.0
+        self.state["mort_index_max"] = 1.0
+        self.state["mort_overdraft_due_to_payment_total"] = 0.0
+        self.state["mort_overdraft_due_to_payment_count"] = 0.0
+
+        if mort_index_enable:
+            # Commit mortgage index recursion state for this tick using converged solver outputs.
+            active_mort = (mort > 1e-12) & (hh.mort_t0 >= 0)
+            curr_i = np.maximum(0.0, mort_index_i)
+            dln_sm_curr = mort_dln_sm_i.copy()
+            if np.any(~active_mort):
+                curr_i[~active_mort] = 1.0
+                dln_sm_curr[~active_mort] = 0.0
+            hh.mort_index_prev = curr_i.astype(float, copy=True)
+            hh.mort_dlnI_sm_prev = dln_sm_curr.astype(float, copy=True)
+            self.state["mort_price_series_prev"] = float(sol.get("p_series_now", self.state.get("mort_price_series_prev", self.state.get("price_level", 1.0))))
+            self.state["mort_income_series_prev"] = float(sol.get("y_series_now", self.state.get("mort_income_series_prev", 1.0)))
+
+            self.state["mort_pay_req_total"] = float(np.sum(np.maximum(0.0, mort_pay_req_i)))
+            self.state["mort_pay_ctr_total"] = float(np.sum(np.maximum(0.0, mort_pay_ctr_i)))
+            self.state["mort_gap_total"] = float(np.sum(np.maximum(0.0, mort_gap_i)))
+            if np.any(active_mort):
+                self.state["mort_index_mean"] = float(np.mean(curr_i[active_mort]))
+                self.state["mort_index_min"] = float(np.min(curr_i[active_mort]))
+                self.state["mort_index_max"] = float(np.max(curr_i[active_mort]))
+
+            # Revolving interest remains contractual and is always paid (fallback via overdraft later).
+            deposits[:] = deposits - rev_interest_i
+            rev_int_total = float(np.sum(np.maximum(0.0, rev_interest_i)))
+            if rev_int_total > 0.0:
+                bank.add("deposit_liab", -rev_int_total)
+                bank.add("equity", +rev_int_total)
+
+            # Mortgage required payment (indexed).
+            dep_before_mort = deposits.copy()
+            deposits[:] = deposits - mort_pay_req_i
+            mort_overdraft_need = np.maximum(0.0, mort_pay_req_i - np.maximum(0.0, dep_before_mort))
+            self.state["mort_overdraft_due_to_payment_total"] = float(np.sum(mort_overdraft_need))
+            self.state["mort_overdraft_due_to_payment_count"] = float(np.sum(mort_overdraft_need > 1e-12))
+
+            mort_int_paid_total = float(np.sum(np.maximum(0.0, mort_interest_paid_i)))
+            mort_prin_paid_total = float(np.sum(np.maximum(0.0, mort_principal_paid_i)))
+
+            if mort_int_paid_total > 0.0:
+                bank.add("deposit_liab", -mort_int_paid_total)
+                bank.add("equity", +mort_int_paid_total)
+            if mort_prin_paid_total > 0.0:
+                mort[:] = np.maximum(0.0, mort - mort_principal_paid_i)
+                bank.add("loan_assets", -mort_prin_paid_total)
+                bank.add("deposit_liab", -mort_prin_paid_total)
+
+            # Optional bank neutralization transfer for reduced mortgage cashflow.
+            neutral = self._apply_mortgage_gap_neutralization(
+                gap_i=np.maximum(0.0, mort_gap_i),
+                mort_interest_due_total=float(np.sum(np.maximum(0.0, mort_interest_due_i))),
+                mort_pay_ctr_total=float(np.sum(np.maximum(0.0, mort_pay_ctr_i))),
+            )
+            self.state["mort_gap_total"] = float(neutral["gap_total"])
+            self.state["mort_gap_paid_by_gov"] = float(neutral["paid_gov"])
+            self.state["mort_gap_paid_by_fund"] = float(neutral["paid_fund"])
+            self.state["mort_gap_paid_by_issuance"] = float(neutral["paid_issuance"])
+            self.state["bank_mort_neutralize_inflow"] = float(neutral["paid_total"])
+        else:
+            deposits[:] = deposits - interest_hh
+            tot_int_hh = float(interest_hh.sum())
+            if tot_int_hh > 0.0:
+                bank.add("deposit_liab", -tot_int_hh)
+                bank.add("equity", +tot_int_hh)
 
         trust_interest = float(sol.get("trust_interest", 0.0))
         if trust_interest > 0:
@@ -1296,7 +1762,7 @@ class EconomySim:
                 rev[:] = rev - rev_pay
                 principal_paid_total += pay_sum
 
-        if mort_pay_rate > 0.0:
+        if (not mort_index_enable) and mort_pay_rate > 0.0:
             desired_mort_pay = mort * mort_pay_rate
             mort_pay = np.minimum(desired_mort_pay, deposits)
             mort_pay = np.maximum(0.0, mort_pay)

@@ -297,6 +297,15 @@ def run_cli(config: Dict[str, Any], n_quarters: int = 80) -> None:
         "iTgt|Rr|.2%",
         "rPol|Rr|.2%",
         "dtiL|Rr|.1%",
+        "MReq|Rr",
+        "MCtr|Rr",
+        "MGap|Rr",
+        "MGov|Rr",
+        "MFnd|Rr",
+        "MIss|Rr",
+        "MIdx|Rr|.2f",
+        "MIOv%|Rr|.1%",
+        "MIOv$|Rr",
     )
 
     print()
@@ -436,6 +445,16 @@ def run_cli(config: Dict[str, Any], n_quarters: int = 80) -> None:
         row[34] = float(sim.state.get("policy_rate_target_q", row[33]))
         row[35] = float(sim.state.get("policy_real_rate_lag_q", row[33]))
         row[36] = float(sim.state.get("policy_dti_input", max(float(r.pop_dti_p90), float(r.pop_dti_w_p90))))
+        row[37] = _fmt_compact(_disp_money(sim.state.get("mort_pay_req_total", 0.0) / denom, P_now), 8).strip()
+        row[38] = _fmt_compact(_disp_money(sim.state.get("mort_pay_ctr_total", 0.0) / denom, P_now), 8).strip()
+        row[39] = _fmt_compact(_disp_money(sim.state.get("mort_gap_total", 0.0) / denom, P_now), 8).strip()
+        row[40] = _fmt_compact(_disp_money(sim.state.get("mort_gap_paid_by_gov", 0.0) / denom, P_now), 8).strip()
+        row[41] = _fmt_compact(_disp_money(sim.state.get("mort_gap_paid_by_fund", 0.0) / denom, P_now), 8).strip()
+        row[42] = _fmt_compact(_disp_money(sim.state.get("mort_gap_paid_by_issuance", 0.0) / denom, P_now), 8).strip()
+        row[43] = float(sim.state.get("mort_index_mean", 1.0))
+        mort_ov_cnt = float(sim.state.get("mort_overdraft_due_to_payment_count", 0.0))
+        row[44] = (mort_ov_cnt / denom) if denom > 0 else 0.0
+        row[45] = _fmt_compact(_disp_money(sim.state.get("mort_overdraft_due_to_payment_total", 0.0) / denom, P_now), 8).strip()
 
     print(dashboard)
     print()
@@ -505,6 +524,15 @@ def run_cli(config: Dict[str, Any], n_quarters: int = 80) -> None:
         ("iTgt",   "Policy-rule target rate before smoothing/step limits (quarterly rate)") ,
         ("rPol",   "Lag-input real policy rate proxy = iPol - lagged inflation input") ,
         ("dtiL",   "Lagged borrower stress input to policy rule = max(DTI p90 inclusive, wage-only)") ,
+        ("MReq",   "Indexed required mortgage payment per household this tick") ,
+        ("MCtr",   "Legacy contractual mortgage payment counterfactual per household this tick") ,
+        ("MGap",   "Mortgage payment gap per household = max(0, MCtr-MReq)") ,
+        ("MGov",   "Bank neutralization paid from GOV deposits per household") ,
+        ("MFnd",   "Bank neutralization paid from FUND deposits per household") ,
+        ("MIss",   "Bank neutralization paid via issuance per household") ,
+        ("MIdx",   "Mean mortgage index level across active household mortgages") ,
+        ("MIOv%",  "Share of households with mortgage-payment-attributable overdraft need this tick") ,
+        ("MIOv$",  "Mortgage-payment-attributable overdraft amount per household this tick") ,
     ]
 
     print("Dashboard legend:")

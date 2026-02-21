@@ -43,9 +43,29 @@ class HouseholdState:
     prev_ubi: float = 0.0
     prev_wages_total: float = 0.0
 
+    # Mortgage-index module state (one synthetic "mortgage record" per household).
+    mort_P0: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=float))
+    mort_Y0: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=float))
+    mort_t0: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=int))
+    mort_pay_base: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=float))
+    mort_index_prev: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=float))
+    mort_dlnI_sm_prev: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=float))
+
     def ensure_memos(self) -> None:
         if (self.prev_income.size == 0) or (self.prev_income.shape[0] != self.n):
             self.prev_income = np.asarray(self.wages0_q, dtype=float).copy()
+        if (self.mort_P0.size == 0) or (self.mort_P0.shape[0] != self.n):
+            self.mort_P0 = np.zeros(self.n, dtype=float)
+        if (self.mort_Y0.size == 0) or (self.mort_Y0.shape[0] != self.n):
+            self.mort_Y0 = np.zeros(self.n, dtype=float)
+        if (self.mort_t0.size == 0) or (self.mort_t0.shape[0] != self.n):
+            self.mort_t0 = np.full(self.n, -1, dtype=int)
+        if (self.mort_pay_base.size == 0) or (self.mort_pay_base.shape[0] != self.n):
+            self.mort_pay_base = np.zeros(self.n, dtype=float)
+        if (self.mort_index_prev.size == 0) or (self.mort_index_prev.shape[0] != self.n):
+            self.mort_index_prev = np.ones(self.n, dtype=float)
+        if (self.mort_dlnI_sm_prev.size == 0) or (self.mort_dlnI_sm_prev.shape[0] != self.n):
+            self.mort_dlnI_sm_prev = np.zeros(self.n, dtype=float)
 
     def sum_deposits(self) -> float:
         return float(np.sum(self.deposits))

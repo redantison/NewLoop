@@ -60,6 +60,26 @@ config = {
         "policy_rate_max_q": 0.0300,
         "policy_rate_max_step_up_q": 0.0050,
         "policy_rate_max_step_down_q": 0.0050,
+        # Mortgage macro-index module (hybrid price/income index anchored per household mortgage).
+        "mort_index_enable": False,
+        "mort_index_weight_w": 0.40,
+        "mort_index_price_series": "P_producer",   # "P_producer" or "C_consumer"
+        "mort_index_income_series": "NominalHHIncome",  # "NominalHHIncome"|"NominalWages"|"NominalMarketIncome"
+        "mort_index_required_payment_mode": "CurrentContractual",  # "CurrentContractual"|"AnchoredBase"
+        # Corridor/smoothing (corridor is always applied in log space).
+        "mort_corridor_enable": True,
+        "mort_corridor_qtr_up": 0.02,
+        "mort_corridor_qtr_dn": -0.02,
+        "mort_corridor_apply_in_logspace": True,
+        "mort_index_ewma_lambda": 1.0,
+        # Bank neutralization transfer for indexed-mortgage cashflow gaps.
+        "mort_bank_neutralize_enable": True,
+        "mort_neutralize_trigger_mode": "StressOnly",  # "Always"|"StressOnly"
+        "mort_neutralize_trigger_threshold": 0.10,
+        "mort_neutralize_funding_stack": ["GOV", "FUND", "ISSUANCE"],
+        "mort_neutralize_fund_allowed_if_debt_outstanding": False,
+        "mort_neutralize_cap_mode": "None",  # "None"|"BankEquityFloor"|"PctOfMortgageInterest"|"PctOfMortgagePayment"
+        "mort_neutralize_cap_value": 0.0,
         "revolving_principal_pay_rate_q": 0.05,  # 5%/q max paydown if cash available
         "mortgage_principal_pay_rate_q": 0.01,   # 1%/q max paydown if cash available
         "send_fund_residual_to_gov": False, # Trust belongs to citizens; do not sweep FUND deposits to GOV by default
