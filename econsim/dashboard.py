@@ -265,9 +265,6 @@ def run_cli(config: Dict[str, Any], n_quarters: int = 80) -> None:
         "Info|Rr|.2f",
         "Phys|Rr|.2f",
         "P|Rr|.3f",
-        "Gm|Rr|.2f",
-        "Gi|Rr|.2f",
-        "Gw|Rr|.2f",
         "pEq$|Rr",
         "pROE|Rr|.1%",
         "pInv|Rr|.2f",
@@ -292,11 +289,6 @@ def run_cli(config: Dict[str, Any], n_quarters: int = 80) -> None:
         "Resv|Rr",
         "DepLb|Rr",
         "LoanA|Rr",
-        "Inf|Rr|.2%",
-        "iPol|Rr|.2%",
-        "iTgt|Rr|.2%",
-        "rPol|Rr|.2%",
-        "dtiL|Rr|.1%",
         "MReq|Rr",
         "MCtr|Rr",
         "MGap|Rr",
@@ -335,26 +327,33 @@ def run_cli(config: Dict[str, Any], n_quarters: int = 80) -> None:
         P_now = float(r.price_level) if float(r.price_level) > 0 else 1e-9
 
         row = dashboard.AddRow()
+        corp_tax_rate_pct = int(round(100.0 * float(sim.state.get("corp_tax_rate_eff", sim.params.get("corporate_tax_rate", 0.0)))))
+        ubi_bundle = " ".join([
+            _fmt_compact(_disp_money(r.ubi_per_h, P_now), 5).strip(),
+            _fmt_compact(_disp_money(r.ubi_from_fund_dep_per_h, P_now), 5).strip(),
+            _fmt_compact(_disp_money(r.ubi_from_gov_dep_per_h, P_now), 5).strip(),
+            _fmt_compact(_disp_money(r.ubi_issued_per_h, P_now), 5).strip(),
+        ])
         row[0] = f"{int(r.t):02d}"
         row[1] = float(r.automation)
         row[2] = float(r.automation_info)
         row[3] = float(r.automation_phys)
         row[4] = float(r.price_level)
-        row[5] = float(r.gini_market)
-        row[6] = float(r.gini_disp)
-        row[7] = float(r.gini_wealth)
-        row[8] = _fmt_compact(_disp_money(r.private_eq_per_h, P_now), 8).strip()
-        row[9] = float(r.private_roe_q)
-        row[10] = float(r.private_inv_cov)
-        row[11] = _fmt_compact(_disp_money(sim.state.get("vat_receipts_total", 0.0) / denom, P_now), 5).strip()
-        row[12] = _fmt_compact(_disp_money(sim.state.get("income_tax_total", 0.0) / denom, P_now), 5).strip()
-        row[13] = _fmt_compact(_disp_money(sim.state.get("corp_tax_total", 0.0) / denom, P_now), 5).strip()
-        corp_tax_rate_pct = int(round(100.0 * float(sim.state.get("corp_tax_rate_eff", sim.params.get("corporate_tax_rate", 0.0)))))
-        row[14] = f"{corp_tax_rate_pct:02d}%"
-        row[15] = _fmt_compact(_disp_money(sim.state.get("vat_credit_total", 0.0) / denom, P_now), 5).strip()
-        row[16] = _fmt_compact(_disp_money(sim.nodes["GOV"].get("deposits", 0.0) / denom, P_now), 8).strip()
-        row[17] = _fmt_compact(_disp_money(sim.nodes["FUND"].get("deposits", 0.0) / denom, P_now), 8).strip()
-
+        row[5] = _fmt_compact(_disp_money(r.private_eq_per_h, P_now), 8).strip()
+        row[6] = float(r.private_roe_q)
+        row[7] = float(r.private_inv_cov)
+        row[8] = _fmt_compact(_disp_money(sim.state.get("vat_receipts_total", 0.0) / denom, P_now), 5).strip()
+        row[9] = _fmt_compact(_disp_money(sim.state.get("income_tax_total", 0.0) / denom, P_now), 5).strip()
+        row[10] = _fmt_compact(_disp_money(sim.state.get("corp_tax_total", 0.0) / denom, P_now), 5).strip()
+        row[11] = f"{corp_tax_rate_pct:02d}%"
+        row[12] = _fmt_compact(_disp_money(sim.state.get("vat_credit_total", 0.0) / denom, P_now), 5).strip()
+        row[13] = _fmt_compact(_disp_money(sim.nodes["GOV"].get("deposits", 0.0) / denom, P_now), 8).strip()
+        row[14] = _fmt_compact(_disp_money(sim.nodes["FUND"].get("deposits", 0.0) / denom, P_now), 8).strip()
+        row[17] = ubi_bundle
+        row[18] = _fmt_compact(_disp_money(r.wages_total, P_now), 8, 1).strip()
+        row[19] = _fmt_compact(_disp_money(sim.state.get("capex_total", 0.0) / denom, P_now), 8).strip()
+        row[20] = _fmt_compact(_disp_money(avg_inc_nom, P_now), 8).strip()
+        row[21] = _fmt_compact(r.real_avg_income, 8).strip()
         # Trust balance diagnostics:
         # trust_balance_total = FUND deposits + market value of FUND equity claims - FUND loans.
         def _fund_share_frac(issuer: str, key: str) -> float:
@@ -391,31 +390,21 @@ def run_cli(config: Dict[str, Any], n_quarters: int = 80) -> None:
         )
         trust_claim_per_h = trust_balance_total / denom
 
-        row[18] = _fmt_compact(_disp_money(trust_claim_per_h, P_now), 8).strip()
-        row[19] = _fmt_compact(_disp_money(trust_balance_total, P_now), 8).strip()
-        row[20] = " ".join([
-            _fmt_compact(_disp_money(r.ubi_per_h, P_now), 5).strip(),
-            _fmt_compact(_disp_money(r.ubi_from_fund_dep_per_h, P_now), 5).strip(),
-            _fmt_compact(_disp_money(r.ubi_from_gov_dep_per_h, P_now), 5).strip(),
-            _fmt_compact(_disp_money(r.ubi_issued_per_h, P_now), 5).strip(),
-        ])
-        row[21] = _fmt_compact(_disp_money(r.wages_total, P_now), 8, 1).strip()
-        row[22] = _fmt_compact(_disp_money(sim.state.get("capex_total", 0.0) / denom, P_now), 8).strip()
-        row[23] = _fmt_compact(_disp_money(avg_inc_nom, P_now), 8).strip()
-        row[24] = _fmt_compact(r.real_avg_income, 8).strip()
+        row[15] = _fmt_compact(_disp_money(trust_claim_per_h, P_now), 8).strip()
+        row[16] = _fmt_compact(_disp_money(trust_balance_total, P_now), 8).strip()
         # Consumption (per household)
         cons_per_h = float(r.total_consumption) / denom
         rcons_per_h = cons_per_h / P_now
 
-        row[25] = _fmt_compact(_disp_money(cons_per_h, P_now), 8, 1).strip()
-        row[26] = _fmt_compact(rcons_per_h, 8, 1).strip()
+        row[22] = _fmt_compact(_disp_money(cons_per_h, P_now), 8, 1).strip()
+        row[23] = _fmt_compact(rcons_per_h, 8, 1).strip()
 
         # Household loans (per household)
         hh_loan_per_h = float(sim.nodes["HH"].get("loans", 0.0)) / denom
-        row[27] = _fmt_compact(_disp_money(hh_loan_per_h, P_now), 8).strip()
+        row[24] = _fmt_compact(_disp_money(hh_loan_per_h, P_now), 8).strip()
 
         # Equity capture
-        row[28] = float(r.trust_equity_pct)
+        row[25] = float(r.trust_equity_pct)
 
         # --- BANK state (per household) ---
         bank_dep_liab_per_h = float(sim.nodes["BANK"].get("deposit_liab", 0.0)) / denom
@@ -437,24 +426,19 @@ def run_cli(config: Dict[str, Any], n_quarters: int = 80) -> None:
         max_abs_loan_identity_gap = max(max_abs_loan_identity_gap, abs(loan_identity_gap))
         max_abs_bank_balance_gap = max(max_abs_bank_balance_gap, abs(bank_balance_gap))
 
-        row[29] = _fmt_compact(_disp_money(bank_reserves_per_h, P_now), 8).strip()
-        row[30] = _fmt_compact(_disp_money(bank_dep_liab_per_h, P_now), 8).strip()
-        row[31] = _fmt_compact(_disp_money(bank_loan_assets_per_h, P_now), 8).strip()
-        row[32] = float(r.inflation)
-        row[33] = float(sim.state.get("policy_rate_q", sim.params.get("loan_rate_per_quarter", 0.0)))
-        row[34] = float(sim.state.get("policy_rate_target_q", row[33]))
-        row[35] = float(sim.state.get("policy_real_rate_lag_q", row[33]))
-        row[36] = float(sim.state.get("policy_dti_input", max(float(r.pop_dti_p90), float(r.pop_dti_w_p90))))
-        row[37] = _fmt_compact(_disp_money(sim.state.get("mort_pay_req_total", 0.0) / denom, P_now), 8).strip()
-        row[38] = _fmt_compact(_disp_money(sim.state.get("mort_pay_ctr_total", 0.0) / denom, P_now), 8).strip()
-        row[39] = _fmt_compact(_disp_money(sim.state.get("mort_gap_total", 0.0) / denom, P_now), 8).strip()
-        row[40] = _fmt_compact(_disp_money(sim.state.get("mort_gap_paid_by_gov", 0.0) / denom, P_now), 8).strip()
-        row[41] = _fmt_compact(_disp_money(sim.state.get("mort_gap_paid_by_fund", 0.0) / denom, P_now), 8).strip()
-        row[42] = _fmt_compact(_disp_money(sim.state.get("mort_gap_paid_by_issuance", 0.0) / denom, P_now), 8).strip()
-        row[43] = float(sim.state.get("mort_index_mean", 1.0))
+        row[26] = _fmt_compact(_disp_money(bank_reserves_per_h, P_now), 8).strip()
+        row[27] = _fmt_compact(_disp_money(bank_dep_liab_per_h, P_now), 8).strip()
+        row[28] = _fmt_compact(_disp_money(bank_loan_assets_per_h, P_now), 8).strip()
+        row[29] = _fmt_compact(_disp_money(sim.state.get("mort_pay_req_total", 0.0) / denom, P_now), 8).strip()
+        row[30] = _fmt_compact(_disp_money(sim.state.get("mort_pay_ctr_total", 0.0) / denom, P_now), 8).strip()
+        row[31] = _fmt_compact(_disp_money(sim.state.get("mort_gap_total", 0.0) / denom, P_now), 8).strip()
+        row[32] = _fmt_compact(_disp_money(sim.state.get("mort_gap_paid_by_gov", 0.0) / denom, P_now), 8).strip()
+        row[33] = _fmt_compact(_disp_money(sim.state.get("mort_gap_paid_by_fund", 0.0) / denom, P_now), 8).strip()
+        row[34] = _fmt_compact(_disp_money(sim.state.get("mort_gap_paid_by_issuance", 0.0) / denom, P_now), 8).strip()
+        row[35] = float(sim.state.get("mort_index_mean", 1.0))
         mort_ov_cnt = float(sim.state.get("mort_overdraft_due_to_payment_count", 0.0))
-        row[44] = (mort_ov_cnt / denom) if denom > 0 else 0.0
-        row[45] = _fmt_compact(_disp_money(sim.state.get("mort_overdraft_due_to_payment_total", 0.0) / denom, P_now), 8).strip()
+        row[36] = (mort_ov_cnt / denom) if denom > 0 else 0.0
+        row[37] = _fmt_compact(_disp_money(sim.state.get("mort_overdraft_due_to_payment_total", 0.0) / denom, P_now), 8).strip()
 
     print(dashboard)
     print()
@@ -492,9 +476,6 @@ def run_cli(config: Dict[str, Any], n_quarters: int = 80) -> None:
         ("Info",  "Information automation component A_info (capped)") ,
         ("Phys",  "Physical automation component A_phys (capped)") ,
         ("P",     "Price level index P(t)") ,
-        ("Gm",   "Market-income Gini (wages + household dividends, pre-tax/pre-transfer)") ,
-        ("Gi",   "Disposable-income Gini (after tax/transfers/interest)") ,
-        ("Gw",   "Net-wealth Gini proxy (deposits + estimated equity claims - loans)") ,
         ("pEq$",  "Private-equity proxy per household (HH-held claims on FA/FH/BANK; display-currency)") ,
         ("pROE",  "Quarterly private payout yield proxy = private payouts / lagged private equity") ,
         ("pInv",  "Private retained earnings coverage of CAPEX = private_retained / CAPEX") ,
@@ -519,11 +500,6 @@ def run_cli(config: Dict[str, Any], n_quarters: int = 80) -> None:
         ("Resv",   "BANK reserves per household (display-currency asset created by issuance)") ,
         ("DepLb",  "Bank deposit liabilities per household (display-currency stock)") ,
         ("LoanA",  "Bank loan assets per household (display-currency stock)") ,
-        ("Inf",    "Quarterly inflation rate = P(t)/P(t-1)-1") ,
-        ("iPol",   "Policy loan rate applied this quarter (quarterly rate)") ,
-        ("iTgt",   "Policy-rule target rate before smoothing/step limits (quarterly rate)") ,
-        ("rPol",   "Lag-input real policy rate proxy = iPol - lagged inflation input") ,
-        ("dtiL",   "Lagged borrower stress input to policy rule = max(DTI p90 inclusive, wage-only)") ,
         ("MReq",   "Indexed required mortgage payment per household this tick") ,
         ("MCtr",   "Legacy contractual mortgage payment counterfactual per household this tick") ,
         ("MGap",   "Mortgage payment gap per household = max(0, MCtr-MReq)") ,

@@ -61,7 +61,7 @@ config = {
         "policy_rate_max_step_up_q": 0.0050,
         "policy_rate_max_step_down_q": 0.0050,
         # Mortgage macro-index module (hybrid price/income index anchored per household mortgage).
-        "mort_index_enable": False,
+        "mort_index_enable": True,
         "mort_index_weight_w": 0.40,
         "mort_index_price_series": "P_producer",   # "P_producer" or "C_consumer"
         "mort_index_income_series": "NominalHHIncome",  # "NominalHHIncome"|"NominalWages"|"NominalMarketIncome"
