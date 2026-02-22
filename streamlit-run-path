@@ -1,0 +1,3 @@
+
+streamlit run EconomySim/econsim/sl-econsim.py
+
