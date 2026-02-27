@@ -100,21 +100,18 @@ def automation_two_hump(
     A = w_info * A_info + (1.0 - w_info) * A_phys
     A = max(floor, min(cap, A))
 
-    if t_qtr <= 0:
-        A_prev = floor
-        A_info_prev = floor
-        A_phys_prev = floor
-    else:
-        A_info_prev_raw = _gompertz(float(t_qtr - 1), ki, ti, bi)
-        A_phys_prev_raw = _logistic(float(t_qtr - 1), kp, tp)
+    # Use t-1 for all quarters (including t=0) so flow is a true one-step difference,
+    # avoiding an artificial startup jump from floor -> level at quarter 0.
+    A_info_prev_raw = _gompertz(float(t_qtr - 1), ki, ti, bi)
+    A_phys_prev_raw = _logistic(float(t_qtr - 1), kp, tp)
 
-        A_info_prev_raw = max(0.0, min(1.0, A_info_prev_raw))
-        A_phys_prev_raw = max(0.0, min(1.0, A_phys_prev_raw))
-        A_info_prev = floor + (info_cap - floor) * A_info_prev_raw
-        A_phys_prev = floor + (phys_cap - floor) * A_phys_prev_raw
+    A_info_prev_raw = max(0.0, min(1.0, A_info_prev_raw))
+    A_phys_prev_raw = max(0.0, min(1.0, A_phys_prev_raw))
+    A_info_prev = floor + (info_cap - floor) * A_info_prev_raw
+    A_phys_prev = floor + (phys_cap - floor) * A_phys_prev_raw
 
-        A_prev = w_info * A_info_prev + (1.0 - w_info) * A_phys_prev
-        A_prev = max(floor, min(cap, A_prev))
+    A_prev = w_info * A_info_prev + (1.0 - w_info) * A_phys_prev
+    A_prev = max(floor, min(cap, A_prev))
 
     return {
         "level": A,

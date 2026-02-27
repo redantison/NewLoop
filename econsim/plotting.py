@@ -91,6 +91,7 @@ def plot_metric_lines(
     primary_ylabel: str | None = None,
     secondary_metrics: Iterable[str] | None = None,
     secondary_ylabel: str = "Secondary Scale",
+    legend_loc: str = "best",
 ) -> Any:
     """Plot one or more line metrics over simulation quarter."""
     import matplotlib.pyplot as plt
@@ -141,7 +142,7 @@ def plot_metric_lines(
 
     all_lines = primary_lines + secondary_lines
     if all_lines:
-        ax.legend(all_lines, [ln.get_label() for ln in all_lines], loc="best")
+        ax.legend(all_lines, [ln.get_label() for ln in all_lines], loc=legend_loc)
 
     return fig
 
@@ -222,6 +223,7 @@ def plot_default_dashboard(rows: Sequence[Mapping[str, Any]]) -> Any:
         primary_ylabel="Automation Level",
         secondary_metrics=["automation_info_flow", "automation_phys_flow"],
         secondary_ylabel="Automation Flow (Δ per quarter)",
+        legend_loc="upper right",
     )
     plot_gini_series(rows, ax=axs[0][1])
     plot_ubi_funding_mix(rows, ax=axs[1][0])
