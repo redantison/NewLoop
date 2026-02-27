@@ -9,8 +9,11 @@ import numpy as np
 
 METRIC_LABELS: Dict[str, str] = {
     "automation": "Automation",
+    "automation_flow": "Automation Flow (Total, Δ/q)",
     "automation_info": "Automation (Info)",
+    "automation_info_flow": "Automation Flow (Info, Δ/q)",
     "automation_phys": "Automation (Physical)",
+    "automation_phys_flow": "Automation Flow (Physical, Δ/q)",
     "price_level": "Price Level",
     "inflation": "Inflation",
     "real_avg_income": "Real Avg Income",
@@ -211,7 +214,15 @@ def plot_default_dashboard(rows: Sequence[Mapping[str, Any]]) -> Any:
     rows = _require_rows(rows)
     fig, axs = plt.subplots(2, 2, figsize=(13, 8), constrained_layout=True)
 
-    plot_metric_lines(rows, ["automation_info", "automation_phys"], title="Automation By Sector", ax=axs[0][0])
+    plot_metric_lines(
+        rows,
+        ["automation_info", "automation_phys", "automation_info_flow", "automation_phys_flow"],
+        title="Automation By Sector",
+        ax=axs[0][0],
+        primary_ylabel="Automation Level",
+        secondary_metrics=["automation_info_flow", "automation_phys_flow"],
+        secondary_ylabel="Automation Flow (Δ per quarter)",
+    )
     plot_gini_series(rows, ax=axs[0][1])
     plot_ubi_funding_mix(rows, ax=axs[1][0])
     plot_metric_lines(
