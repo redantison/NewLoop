@@ -1,5 +1,5 @@
 # Author: Roger Ison   roger@miximum.info
-"""Economy simulation engine and stock-flow logic."""
+"""Economy model engine and stock-flow logic."""
 
 from __future__ import annotations
 
@@ -26,7 +26,8 @@ else:
 
 class EconomySim:
     """
-    Single-bank SFC toy model with:
+    Single-bank SFC model for experimenting with policies that could
+    facilitate the AI/automation transition, with:
     - Households: synthetic population aggregated as HH; optional vectorized HouseholdState for distributional dynamics.
     - Firms: FA, FH
     - Bank: BANK (monetary issuer of deposits + equity issuer)
