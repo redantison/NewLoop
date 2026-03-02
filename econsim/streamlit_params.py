@@ -37,12 +37,13 @@ SECTION_ORDER: tuple[str, ...] = (
 
 
 PARAMETER_CONTROLS: tuple[ParamControl, ...] = (
-    ParamControl(("trust_trigger_dti",), "Trust Trigger DTI", "Trust", "float", 0.0, 1.0, 0.01),
+    ParamControl(("trust_trigger_dti",), "Trust Trigger Debt-Service-to-Income (DTI)", "Trust", "float", 0.0, 1.0, 0.01),
     ParamControl(("trust_launch_loan",), "Trust Launch Loan", "Trust", "float", 0.0, 50000.0, 500.0),
     ParamControl(("trust_equity_cap",), "Trust Equity Cap", "Trust", "float", 0.0, 1.0, 0.01),
     ParamControl(("send_fund_residual_to_gov",), "Sweep Fund Residual To GOV", "Trust", "bool"),
     ParamControl(("vat_rate",), "VAT Rate", "Taxes", "float", 0.0, 1.0, 0.01),
-    ParamControl(("vat_credit_cutoff_pct",), "VAT Credit Cutoff Percentile", "Taxes", "float", 0.0, 100.0, 0.5),
+    ParamControl(("vat_credit_phaseout_start_pct",), "VAT Credit Phaseout Start Percentile", "Taxes", "float", 0.0, 100.0, 0.5),
+    ParamControl(("vat_credit_phaseout_end_pct",), "VAT Credit Phaseout End Percentile", "Taxes", "float", 0.0, 100.0, 0.5),
     ParamControl(("vat_poverty_cons_frac",), "VAT Poverty Consumption Fraction", "Taxes", "float", 0.0, 1.0, 0.01),
     ParamControl(("income_tax_rate",), "Income Tax Rate", "Taxes", "float", 0.0, 1.0, 0.01),
     ParamControl(("income_tax_cutoff_pct",), "Income Tax Cutoff Percentile", "Taxes", "float", 0.0, 100.0, 0.5),
@@ -76,8 +77,8 @@ PARAMETER_CONTROLS: tuple[ParamControl, ...] = (
     ParamControl(("policy_rate_inflation_target_q",), "Policy Inflation Target (q)", "Price & Capital", "float", -0.02, 0.03, 0.0005),
     ParamControl(("policy_rate_phi_pi",), "Policy Phi Inflation", "Price & Capital", "float", 0.0, 3.0, 0.05),
     ParamControl(("policy_rate_phi_deflation",), "Policy Phi Deflation", "Price & Capital", "float", 0.0, 3.0, 0.05),
-    ParamControl(("policy_rate_dti_target",), "Policy DTI Target", "Price & Capital", "float", 0.0, 1.0, 0.01),
-    ParamControl(("policy_rate_phi_dti",), "Policy Phi DTI", "Price & Capital", "float", 0.0, 3.0, 0.05),
+    ParamControl(("policy_rate_dti_target",), "Policy Debt-Service-to-Income (DTI) Target", "Price & Capital", "float", 0.0, 1.0, 0.01),
+    ParamControl(("policy_rate_phi_dti",), "Policy Phi Debt-Service-to-Income (DTI)", "Price & Capital", "float", 0.0, 3.0, 0.05),
     ParamControl(("policy_rate_smoothing",), "Policy Rate Smoothing", "Price & Capital", "float", 0.0, 1.0, 0.01),
     ParamControl(("policy_rate_min_q",), "Policy Rate Min (q)", "Price & Capital", "float", 0.0, 0.05, 0.0005),
     ParamControl(("policy_rate_max_q",), "Policy Rate Max (q)", "Price & Capital", "float", 0.0, 0.10, 0.0005),

@@ -12,11 +12,11 @@ config = {
         "trust_trigger_dti": 0.10,        # Trust triggers if last-quarter DTI metric exceeds this (population p90 when enabled; otherwise legacy proxy).
         "trust_equity_cap": 0.30,         # dilution target for FUND ownership share (avg per issuer)
         "debug_trust_trigger": True,
-        "wealth_tax_rate": 0.0,            # wealth tax disabled (policy now uses VAT + income tax)
 
         # Consumption tax (VAT / sales tax) + low-income VAT credit ("prebate")
         "vat_rate": 0.18,                 # 18% tax-exclusive VAT on consumption
-        "vat_credit_cutoff_pct": 31.0,    # eligibility cutoff percentile (approx "$50k" analogue)
+        "vat_credit_phaseout_start_pct": 25.0,  # full credit through this eligibility-income percentile
+        "vat_credit_phaseout_end_pct": 45.0,    # zero credit at and above this eligibility-income percentile
         "vat_poverty_cons_frac": 0.15,    # poverty-line consumption as fraction of baseline real consumption
         # Dividend payout + reinvestment (simple capital stock K; no vintage queue)
         "dividend_payout_rate_firms": 0.75,

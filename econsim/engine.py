@@ -1179,20 +1179,36 @@ class EconomySim:
                 it_thr = 0.0
             income_tax_i = it_rate * np.maximum(0.0, taxable_income - it_thr)
 
-            # VAT credit ("prebate"): vat_rate * poverty-line consumption, eligible by (taxable_income + UBI)
-            vc_pct = float(self.params.get("vat_credit_cutoff_pct", 0.0))
-            if vc_pct < 0:
-                vc_pct = 0.0
-            if vc_pct > 100:
-                vc_pct = 100.0
+            # VAT credit ("prebate"): vat_rate * poverty-line consumption, with a linear
+            # phaseout over the configured eligibility-income percentile band.
+            vc_start_pct = float(self.params.get("vat_credit_phaseout_start_pct", 25.0))
+            vc_end_pct = float(self.params.get("vat_credit_phaseout_end_pct", 45.0))
+            vc_start_pct = max(0.0, min(100.0, vc_start_pct))
+            vc_end_pct = max(vc_start_pct, min(100.0, vc_end_pct))
+
             elig_income = taxable_income + float(ubi)  # user policy: eligibility uses taxable income + UBI
             if elig_income.size > 0:
-                k_vc = int(math.ceil((vc_pct / 100.0) * elig_income.size)) - 1
-                k_vc = max(0, min(elig_income.size - 1, k_vc))
-                vc_thr = float(np.partition(elig_income, k_vc)[k_vc])
+                k_vc_start = int(math.ceil((vc_start_pct / 100.0) * elig_income.size)) - 1
+                k_vc_start = max(0, min(elig_income.size - 1, k_vc_start))
+                k_vc_end = int(math.ceil((vc_end_pct / 100.0) * elig_income.size)) - 1
+                k_vc_end = max(0, min(elig_income.size - 1, k_vc_end))
+
+                vc_thr_start = float(np.partition(elig_income, k_vc_start)[k_vc_start])
+                vc_thr_end = float(np.partition(elig_income, k_vc_end)[k_vc_end])
             else:
-                vc_thr = 0.0
-            eligible = elig_income <= vc_thr
+                vc_thr_start = 0.0
+                vc_thr_end = 0.0
+
+            if vc_thr_end <= (vc_thr_start + 1e-12):
+                vat_credit_weight_i = (elig_income <= vc_thr_start).astype(float)
+            else:
+                vat_credit_weight_i = np.ones_like(elig_income, dtype=float)
+                hi_mask = elig_income >= vc_thr_end
+                mid_mask = (elig_income > vc_thr_start) & (~hi_mask)
+                vat_credit_weight_i[hi_mask] = 0.0
+                vat_credit_weight_i[mid_mask] = (
+                    (vc_thr_end - elig_income[mid_mask]) / (vc_thr_end - vc_thr_start)
+                )
 
             # Poverty-line consumption in real units is anchored to baseline average real consumption per household.
             # If baseline is not yet stored, initialize it from the current iteration (baseline quarter t==0).
@@ -1207,7 +1223,7 @@ class EconomySim:
             pov_real = float(pov_frac) * float(base_real_avg)
             pov_nom = P * pov_real
             vat_credit_per_h = vat_rate * pov_nom
-            vat_credit_i = vat_credit_per_h * eligible.astype(float)
+            vat_credit_i = vat_credit_per_h * vat_credit_weight_i
 
             # Disposable income used by the consumption rule.
             # When mortgage indexing is enabled, households service mortgage-required payment
@@ -1280,7 +1296,8 @@ class EconomySim:
                     "income_tax_i": income_tax_i,
                     "vat_credit_i": vat_credit_i,
                     "it_threshold": float(it_thr),
-                    "vc_threshold": float(vc_thr),
+                    "vc_phaseout_start_threshold": float(vc_thr_start),
+                    "vc_phaseout_end_threshold": float(vc_thr_end),
                 }
 
             y_guess = y_new

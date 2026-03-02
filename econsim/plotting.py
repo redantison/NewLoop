@@ -18,11 +18,11 @@ METRIC_LABELS: Dict[str, str] = {
     "inflation": "Inflation",
     "real_avg_income": "Real Avg Income",
     "real_consumption": "Real Consumption",
-    "gini_market": "Gini (Market)",
+    "gini_market": "Gini (Pre-Tax/Pre-Transfer)",
     "gini_disp": "Gini (Disposable)",
     "gini_wealth": "Gini (Wealth)",
-    "pop_dti_p90": "DTI P90",
-    "pop_dti_w_p90": "DTI P90 (Wages)",
+    "pop_dti_p90": "Debt-Service-to-Income (DTI) P90",
+    "pop_dti_w_p90": "Debt-Service-to-Income (DTI) P90 (Wages)",
     "trust_equity_pct": "Trust Equity %",
     "ubi_per_h": "UBI / Household",
     "ubi_from_fund_dep_per_h": "UBI from FUND",
@@ -181,7 +181,7 @@ def plot_ubi_funding_mix(rows: Sequence[Mapping[str, Any]], ax: Any = None) -> A
 
 
 def plot_gini_series(rows: Sequence[Mapping[str, Any]], ax: Any = None) -> Any:
-    """Plot market, disposable, and wealth Gini series on a dedicated 0-1 scale."""
+    """Plot pre-tax/pre-transfer, disposable, and wealth Gini series on a dedicated 0-1 scale."""
     import matplotlib.pyplot as plt
 
     rows = _require_rows(rows)

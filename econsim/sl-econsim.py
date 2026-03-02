@@ -546,6 +546,16 @@ def main() -> None:
         st.pyplot(line_fig, clear_figure=False)
         plt.close(line_fig)
 
+    st.caption(
+        "Gini labels: Pre-Tax/Pre-Transfer is household wages plus household-distributed dividends, "
+        "before income tax, VAT credit, UBI, and debt-service deductions. Disposable is the model's "
+        "post-policy household income measure. Wealth is deposits plus allocated household equity claims minus loans."
+    )
+    st.caption(
+        "DTI means debt-service-to-income in this model: a household debt-burden ratio based on interest payments "
+        "relative to income, not debt stock divided by income."
+    )
+
     gini_fig = plot_gini_series(rows)
     st.pyplot(gini_fig, clear_figure=False)
     plt.close(gini_fig)
