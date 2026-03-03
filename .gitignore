@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 .venv/
 .env
+~$*.docx
 
 # Generated simulation outputs
 run_history.csv
