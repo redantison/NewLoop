@@ -1,5 +1,5 @@
 # Author: Roger Ison   roger@miximum.info
-"""Reusable plotting layer for EconomySim outputs."""
+"""Reusable plotting layer for NewLoop outputs."""
 
 from __future__ import annotations
 
@@ -86,7 +86,7 @@ def plot_metric_lines(
     rows: Sequence[Mapping[str, Any]],
     metrics: Iterable[str],
     *,
-    title: str = "EconomySim Time Series",
+    title: str = "NewLoop Time Series",
     ax: Any = None,
     primary_ylabel: str | None = None,
     secondary_metrics: Iterable[str] | None = None,

@@ -1,5 +1,5 @@
 # Author: Roger Ison   roger@miximum.info
-"""Numeric helpers used by EconomySim engine."""
+"""Numeric helpers used by NewLoop engine."""
 
 from __future__ import annotations
 

@@ -1,5 +1,5 @@
 # Author: Roger Ison   roger@miximum.info
-"""Policy sweep runner for EconomySim (silent runs + compact summary table).
+"""Policy sweep runner for NewLoop (silent runs + compact summary table).
 
 Default grid is 2D:
   - trust_equity_cap
@@ -19,7 +19,7 @@ from typing import Dict, Iterable, List, Optional
 import numpy as np
 
 # Support both execution modes:
-# 1) package mode: python -m econsim.sweep_experiments
+# 1) package mode: python -m newloop.sweep_experiments
 # 2) script mode:  run this file directly in IDEs (no package context)
 if __package__ in (None, ""):
     import sys
@@ -27,11 +27,11 @@ if __package__ in (None, ""):
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-    from econsim.table_of_data import TableOfData
-    from econsim.economy_sim import EconomySim, TickResult, config
+    from newloop.table_of_data import TableOfData
+    from newloop.newloop import NewLoop, TickResult, config
 else:
     from .table_of_data import TableOfData
-    from .economy_sim import EconomySim, TickResult, config
+    from .newloop import NewLoop, TickResult, config
 
 
 def _parse_float_list(text: str) -> List[float]:
@@ -88,7 +88,7 @@ def _run_scenario(
     if payout is not None:
         p["dividend_payout_rate_firms"] = float(max(0.0, min(1.0, payout)))
 
-    sim = EconomySim(cfg)
+    sim = NewLoop(cfg)
     for _ in range(int(n_quarters)):
         sim.step()
 
@@ -220,7 +220,7 @@ def _build_table(rows: List[Dict[str, float]]) -> TableOfData:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run silent EconomySim policy sweeps and print a compact summary table.")
+    parser = argparse.ArgumentParser(description="Run silent NewLoop policy sweeps and print a compact summary table.")
     parser.add_argument("--quarters", type=int, default=80, help="Simulation length per scenario.")
     parser.add_argument("--window", type=int, default=20, help="Trailing window used for slope metrics.")
     parser.add_argument("--trust-cap", default="0.25,0.33,0.40,0.49", help="Comma-separated trust equity caps.")

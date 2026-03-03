@@ -10,20 +10,20 @@ from typing import Any, Dict, List, Sequence
 import numpy as np
 
 # Support both execution modes:
-# 1) module mode:   python -m econsim.results
-# 2) script mode:   python econsim/results.py
+# 1) module mode:   python -m newloop.results
+# 2) script mode:   python newloop/results.py
 if __package__ in (None, ""):
     import sys
     from pathlib import Path
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-    from econsim.config import config as default_config
-    from econsim.engine import EconomySim
-    from econsim.types import TickResult
+    from newloop.config import config as default_config
+    from newloop.engine import NewLoop
+    from newloop.types import TickResult
 else:
     from .config import config as default_config
-    from .engine import EconomySim
+    from .engine import NewLoop
     from .types import TickResult
 
 
@@ -31,7 +31,7 @@ else:
 class SimulationRun:
     """Container for one simulation run and its row-oriented outputs."""
 
-    sim: EconomySim
+    sim: NewLoop
     rows: List[Dict[str, Any]]
     population_distributions: Dict[str, Dict[str, Any]] | None = None
 
@@ -45,7 +45,7 @@ def history_to_rows(history: Sequence[TickResult]) -> List[Dict[str, Any]]:
     return [asdict(tick) for tick in history]
 
 
-def _population_distribution_snapshot(sim: EconomySim) -> Dict[str, Any] | None:
+def _population_distribution_snapshot(sim: NewLoop) -> Dict[str, Any] | None:
     """Capture household income/wealth vectors for before/after distribution plotting."""
     if sim.hh is None or sim.hh.n <= 0:
         return None
@@ -107,9 +107,9 @@ def _population_distribution_snapshot(sim: EconomySim) -> Dict[str, Any] | None:
 
 
 def run_simulation(n_quarters: int = 80, cfg: Dict[str, Any] | None = None) -> SimulationRun:
-    """Run EconomySim for n_quarters and return structured outputs."""
+    """Run NewLoop for n_quarters and return structured outputs."""
     effective_cfg = copy.deepcopy(default_config if cfg is None else cfg)
-    sim = EconomySim(effective_cfg)
+    sim = NewLoop(effective_cfg)
     before = _population_distribution_snapshot(sim)
     for _ in range(int(n_quarters)):
         sim.step()

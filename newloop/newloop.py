@@ -1,10 +1,10 @@
 # Author: Roger Ison   roger@miximum.info
-"""Package-native EconomySim entrypoint and public exports."""
+"""Package-native NewLoop entrypoint and public exports."""
 
 from __future__ import annotations
 
 # Support both execution modes:
-# 1) module mode:   python -m econsim.economy_sim
+# 1) module mode:   python -m newloop.newloop
 # 2) script mode:   run this file directly in IDEs (no package context)
 if __package__ in (None, ""):
     import sys
@@ -12,18 +12,18 @@ if __package__ in (None, ""):
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-    from econsim.config import config, get_default_config
-    from econsim.dashboard import run_cli
-    from econsim.engine import EconomySim
-    from econsim.types import HouseholdState, Node, TickResult
+    from newloop.config import config, get_default_config
+    from newloop.dashboard import run_cli
+    from newloop.engine import NewLoop
+    from newloop.types import HouseholdState, Node, TickResult
 else:
     from .config import config, get_default_config
     from .dashboard import run_cli
-    from .engine import EconomySim
+    from .engine import NewLoop
     from .types import HouseholdState, Node, TickResult
 
 __all__ = [
-    "EconomySim",
+    "NewLoop",
     "Node",
     "HouseholdState",
     "TickResult",

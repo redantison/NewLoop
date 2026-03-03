@@ -1,8 +1,8 @@
 # Author: Roger Ison   roger@miximum.info
-"""Streamlit app entrypoint for EconomySim.
+"""Streamlit app entrypoint for NewLoop.
 
 Run with:
-  streamlit run econsim/sl-econsim.py
+  streamlit run newloop/sl-newloop.py
 """
 
 from __future__ import annotations
@@ -14,14 +14,14 @@ import json
 from typing import Any, Dict, List, Sequence
 
 # Script mode:
-#  streamlit run econsim/sl-econsim.py
+#  streamlit run newloop/sl-newloop.py
 if __package__ in (None, ""):
     import sys
     from pathlib import Path
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-    from econsim.plotting import (
+    from newloop.plotting import (
         DEFAULT_LINE_METRICS,
         metric_options,
         plot_default_dashboard,
@@ -30,9 +30,9 @@ if __package__ in (None, ""):
         plot_metric_lines,
         plot_wealth_distributions_full_zoom,
     )
-    from econsim.config import get_default_config
-    from econsim.results import run_simulation, summarize_rows
-    from econsim.streamlit_params import (
+    from newloop.config import get_default_config
+    from newloop.results import run_simulation, summarize_rows
+    from newloop.streamlit_params import (
         NON_GINI_METRIC_GROUPS,
         PARAMETER_CONTROLS,
         RUN_DEFAULT_QUARTERS,
@@ -458,8 +458,8 @@ def main() -> None:
     import matplotlib.pyplot as plt
     import streamlit as st
 
-    st.set_page_config(page_title="EconomySim", layout="wide")
-    st.title("EconomySim")
+    st.set_page_config(page_title="NewLoop", layout="wide")
+    st.title("NewLoop")
     st.caption("Interactive simulation with parameterized runs and reusable plotting.")
 
     base_cfg = copy.deepcopy(get_default_config())
@@ -615,7 +615,7 @@ def main() -> None:
     st.download_button(
         "Download run CSV",
         data=csv_data,
-        file_name=f"econsim_run_q{int(st.session_state.get('last_run_quarters', len(rows)))}.csv",
+        file_name=f"newloop_run_q{int(st.session_state.get('last_run_quarters', len(rows)))}.csv",
         mime="text/csv",
     )
 

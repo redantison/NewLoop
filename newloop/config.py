@@ -1,5 +1,5 @@
 # Author: Roger Ison   roger@miximum.info
-"""Default configuration for EconomySim."""
+"""Default configuration for NewLoop."""
 
 from __future__ import annotations
 

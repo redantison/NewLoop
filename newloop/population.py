@@ -1,5 +1,5 @@
 # Author: Roger Ison   roger@miximum.info
-"""EconomySim - Population Prototype (Phase 1)
+"""NewLoop - Population Prototype (Phase 1)
 
 Phase 1 goals:
 - Build a synthetic population of "families" (consumer-workers) with heterogeneity in:
@@ -10,7 +10,7 @@ Phase 1 goals:
 - Print baseline moments (percentiles, Gini, aggregates) to sanity-check calibration.
 
 This file is intentionally self-contained and does NOT implement the macro-sector simulation yet.
-It produces a synthetic population that Phase 2 will plug into the EconomySim policy dynamics.
+It produces a synthetic population that Phase 2 will plug into the NewLoop policy dynamics.
 
 Notes / design choices:
 - Wealth: modeled as a mixture of (1) lognormal body and (2) Pareto tail.

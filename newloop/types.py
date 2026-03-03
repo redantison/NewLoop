@@ -1,5 +1,5 @@
 # Author: Roger Ison   roger@miximum.info
-"""Core datatypes for EconomySim."""
+"""Core datatypes for NewLoop."""
 
 from __future__ import annotations
 

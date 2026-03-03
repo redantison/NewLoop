@@ -1,16 +1,16 @@
 # Author: Roger Ison   roger@miximum.info
-"""EconomySim package exports."""
+"""NewLoop package exports."""
 
 from __future__ import annotations
 
 from .config import config, get_default_config
-from .engine import EconomySim
+from .engine import NewLoop
 from .results import SimulationRun, history_to_rows, run_simulation, summarize_rows
 from .table_of_data import TableOfData
 from .types import HouseholdState, Node, TickResult
 
 __all__ = [
-    "EconomySim",
+    "NewLoop",
     "Node",
     "HouseholdState",
     "TickResult",
@@ -39,4 +39,4 @@ def __getattr__(name: str):
             "baseline_report": baseline_report,
         }
         return exports[name]
-    raise AttributeError(f"module 'econsim' has no attribute {name!r}")
+    raise AttributeError(f"module 'newloop' has no attribute {name!r}")

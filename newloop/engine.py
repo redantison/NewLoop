@@ -10,21 +10,21 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 
 # Support both execution modes:
-# 1) module mode:   python -m econsim.engine
-# 2) script mode:   python econsim/engine.py
+# 1) module mode:   python -m newloop.engine
+# 2) script mode:   python newloop/engine.py
 if __package__ in (None, ""):
     import sys
     from pathlib import Path
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-    from econsim.mathutils import _as_np, _pct, _pct_np, automation_two_hump, calculate_gini_np
-    from econsim.types import HouseholdState, Node, TickResult
+    from newloop.mathutils import _as_np, _pct, _pct_np, automation_two_hump, calculate_gini_np
+    from newloop.types import HouseholdState, Node, TickResult
 else:
     from .mathutils import _as_np, _pct, _pct_np, automation_two_hump, calculate_gini_np
     from .types import HouseholdState, Node, TickResult
 
-class EconomySim:
+class NewLoop:
     """
     Single-bank SFC model for experimenting with policies that could
     facilitate the AI/automation transition, with:
