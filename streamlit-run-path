@@ -1,4 +1,4 @@
-Use /Users/rogerison/Bridge/Code/EconomySim
+Use /Users/rogerison/Bridge/Code/NewLoop
 
 
-streamlit run EconomySim/newloop/sl-newloop.py
+streamlit run NewLoop/newloop/sl-newloop.py
