@@ -388,6 +388,34 @@ def _population_dist_for_value_mode(
 
 
 def _render_parameter_controls(st: Any, grouped_controls: Dict[str, List[Any]]) -> tuple[bool, bool, int]:
+    def _render_control(control: Any) -> None:
+        key = control_widget_key(control)
+        if control.kind == "bool":
+            st.checkbox(control.label, key=key, help=control.help_text or None)
+        elif control.kind == "int":
+            kwargs: Dict[str, Any] = {"key": key, "help": control.help_text or None}
+            if control.min_value is not None:
+                kwargs["min_value"] = int(control.min_value)
+            if control.max_value is not None:
+                kwargs["max_value"] = int(control.max_value)
+            kwargs["step"] = int(control.step) if control.step is not None else 1
+            st.number_input(control.label, **kwargs)
+        elif control.kind == "select":
+            options = list(control.options or [])
+            st.selectbox(control.label, options=options, key=key, help=control.help_text or None)
+        else:
+            kwargs = {
+                "key": key,
+                "help": control.help_text or None,
+                "format": _float_format_from_step(control.step),
+            }
+            if control.min_value is not None:
+                kwargs["min_value"] = float(control.min_value)
+            if control.max_value is not None:
+                kwargs["max_value"] = float(control.max_value)
+            kwargs["step"] = float(control.step) if control.step is not None else 0.01
+            st.number_input(control.label, **kwargs)
+
     with st.sidebar:
         st.header("Run Controls")
         col_run, col_reset = st.columns(2)
@@ -415,33 +443,27 @@ def _render_parameter_controls(st: Any, grouped_controls: Dict[str, List[Any]]) 
             if not controls:
                 continue
             with st.expander(section, expanded=False):
-                for control in controls:
-                    key = control_widget_key(control)
-                    if control.kind == "bool":
-                        st.checkbox(control.label, key=key, help=control.help_text or None)
-                    elif control.kind == "int":
-                        kwargs: Dict[str, Any] = {"key": key, "help": control.help_text or None}
-                        if control.min_value is not None:
-                            kwargs["min_value"] = int(control.min_value)
-                        if control.max_value is not None:
-                            kwargs["max_value"] = int(control.max_value)
-                        kwargs["step"] = int(control.step) if control.step is not None else 1
-                        st.number_input(control.label, **kwargs)
-                    elif control.kind == "select":
-                        options = list(control.options or [])
-                        st.selectbox(control.label, options=options, key=key, help=control.help_text or None)
-                    else:
-                        kwargs = {
-                            "key": key,
-                            "help": control.help_text or None,
-                            "format": _float_format_from_step(control.step),
-                        }
-                        if control.min_value is not None:
-                            kwargs["min_value"] = float(control.min_value)
-                        if control.max_value is not None:
-                            kwargs["max_value"] = float(control.max_value)
-                        kwargs["step"] = float(control.step) if control.step is not None else 0.01
-                        st.number_input(control.label, **kwargs)
+                if section == "Population":
+                    core_controls = [c for c in controls if not bool(getattr(c, "advanced", False))]
+                    advanced_controls = [c for c in controls if bool(getattr(c, "advanced", False))]
+
+                    for control in core_controls:
+                        _render_control(control)
+
+                    if advanced_controls:
+                        show_advanced = st.checkbox(
+                            "Show advanced population controls",
+                            key="population__show_advanced_controls",
+                            value=False,
+                            help="Expose distribution-shape and debt-tail controls for population calibration.",
+                        )
+                        if show_advanced:
+                            st.caption("Advanced controls can significantly change inequality and debt-stress tails.")
+                            for control in advanced_controls:
+                                _render_control(control)
+                else:
+                    for control in controls:
+                        _render_control(control)
     return run_clicked, reset_clicked, int(quarters)
 
 

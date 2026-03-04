@@ -97,8 +97,23 @@ config = {
         "population_config": {
             "n_families": 20000,
             "seed": 7919,
-            # Optional: tune correlation or other population knobs here
-            # "wage_deposit_corr": 0.40,
+            # Income
+            "median_wage_q": 450.0,
+            "sigma_wage_ln": 0.60,
+            "employment_rate": 0.94,
+            # Deposits / wealth proxy
+            "median_deposits_q": 1200.0,
+            "sigma_deposits_ln": 1.05,
+            "wage_deposit_corr": 0.40,
+            "tail_share": 0.08,
+            "pareto_alpha": 1.35,
+            # Debt distribution
+            "mortgage_income_mult_median": 3.25,
+            "mortgage_income_mult_sigma": 0.55,
+            "revolving_income_mult_median": 0.06,
+            "revolving_income_mult_sigma": 0.80,
+            "revolving_cap_income_mult": 0.50,
+            "revolving_cap_deposits_mult": 2.0,
         },
 
         # Price level
