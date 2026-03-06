@@ -2,7 +2,7 @@
 """Streamlit app entrypoint for NewLoop.
 
 Run with:
-  streamlit run newloop/sl-newloop.py
+  streamlit run newloop/slnewloop.py
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import json
 from typing import Any, Dict, List, Sequence
 
 # Script mode:
-#  streamlit run newloop/sl-newloop.py
+#  streamlit run newloop/slnewloop.py
 if __package__ in (None, ""):
     import sys
     from pathlib import Path
