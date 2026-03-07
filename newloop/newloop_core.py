@@ -3,24 +3,17 @@
 
 from __future__ import annotations
 
-# Support both execution modes:
-# 1) module mode:   python -m newloop.newloop_core
-# 2) script mode:   run this file directly in IDEs (no package context)
-if __package__ in (None, ""):
-    import sys
-    from pathlib import Path
+import sys
+from pathlib import Path
 
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+_THIS_DIR = Path(__file__).resolve().parent
+if str(_THIS_DIR) not in sys.path:
+    sys.path.insert(0, str(_THIS_DIR))
 
-    from newloop.config import config, get_default_config
-    from newloop.dashboard import run_cli
-    from newloop.engine import NewLoop
-    from newloop.newloop_types import HouseholdState, Node, TickResult
-else:
-    from .config import config, get_default_config
-    from .dashboard import run_cli
-    from .engine import NewLoop
-    from .newloop_types import HouseholdState, Node, TickResult
+from config import config, get_default_config
+from dashboard import run_cli
+from engine import NewLoop
+from newloop_types import HouseholdState, Node, TickResult
 
 __all__ = [
     "NewLoop",

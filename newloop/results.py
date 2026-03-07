@@ -4,27 +4,20 @@
 from __future__ import annotations
 
 import copy
+import sys
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any, Dict, List, Sequence
 
 import numpy as np
 
-# Support both execution modes:
-# 1) module mode:   python -m newloop.results
-# 2) script mode:   python newloop/results.py
-if __package__ in (None, ""):
-    import sys
-    from pathlib import Path
+_THIS_DIR = Path(__file__).resolve().parent
+if str(_THIS_DIR) not in sys.path:
+    sys.path.insert(0, str(_THIS_DIR))
 
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-    from newloop.config import config as default_config
-    from newloop.engine import NewLoop
-    from newloop.newloop_types import TickResult
-else:
-    from .config import config as default_config
-    from .engine import NewLoop
-    from .newloop_types import TickResult
+from config import config as default_config
+from engine import NewLoop
+from newloop_types import TickResult
 
 
 @dataclass

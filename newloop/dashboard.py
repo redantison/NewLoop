@@ -4,27 +4,19 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 from typing import Any, Dict
 
 import numpy as np
 
-# Support both execution modes:
-# 1) module mode:   python -m newloop.dashboard
-# 2) script mode:   python newloop/dashboard.py
-if __package__ in (None, ""):
-    from pathlib import Path
+_THIS_DIR = Path(__file__).resolve().parent
+if str(_THIS_DIR) not in sys.path:
+    sys.path.insert(0, str(_THIS_DIR))
 
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-    from newloop.config import config as default_config
-    from newloop.mathutils import calculate_gini_np
-    from newloop.table_of_data import TableOfData
-    from newloop.engine import NewLoop
-else:
-    from .config import config as default_config
-    from .mathutils import calculate_gini_np
-    from .table_of_data import TableOfData
-    from .engine import NewLoop
+from config import config as default_config
+from mathutils import calculate_gini_np
+from table_of_data import TableOfData
+from engine import NewLoop
 
 
 def run_cli(config: Dict[str, Any], n_quarters: int = 80) -> None:

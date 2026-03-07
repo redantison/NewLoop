@@ -14,24 +14,18 @@ import argparse
 import copy
 import csv
 import itertools
+import sys
+from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
 import numpy as np
 
-# Support both execution modes:
-# 1) package mode: python -m newloop.sweep_experiments
-# 2) script mode:  run this file directly in IDEs (no package context)
-if __package__ in (None, ""):
-    import sys
-    from pathlib import Path
+_THIS_DIR = Path(__file__).resolve().parent
+if str(_THIS_DIR) not in sys.path:
+    sys.path.insert(0, str(_THIS_DIR))
 
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-    from newloop.table_of_data import TableOfData
-    from newloop.newloop_core import NewLoop, TickResult, config
-else:
-    from .table_of_data import TableOfData
-    from .newloop_core import NewLoop, TickResult, config
+from table_of_data import TableOfData
+from newloop_core import NewLoop, TickResult, config
 
 
 def _parse_float_list(text: str) -> List[float]:
