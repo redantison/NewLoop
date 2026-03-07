@@ -1,0 +1,1 @@
+/Users/rogerison/Bridge/Code/NewLoop/newloop/newloop_core.py

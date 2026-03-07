@@ -11,65 +11,38 @@ import copy
 import csv
 import io
 import json
+import sys
+from pathlib import Path
 from typing import Any, Dict, List, Sequence
 
-# Script mode:
-#  streamlit run newloop/slnewloop.py
-if __package__ in (None, ""):
-    import sys
-    from pathlib import Path
+_THIS_DIR = Path(__file__).resolve().parent
+if str(_THIS_DIR) not in sys.path:
+    sys.path.insert(0, str(_THIS_DIR))
 
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-    from newloop.plotting import (
-        DEFAULT_LINE_METRICS,
-        metric_options,
-        plot_default_dashboard,
-        plot_gini_series,
-        plot_income_distribution_dual,
-        plot_metric_lines,
-        plot_wealth_distributions_full_zoom,
-    )
-    from newloop.config import get_default_config
-    from newloop.results import run_simulation, summarize_rows
-    from newloop.streamlit_params import (
-        NON_GINI_METRIC_GROUPS,
-        PARAMETER_CONTROLS,
-        RUN_DEFAULT_QUARTERS,
-        RUN_MAX_QUARTERS,
-        RUN_MIN_QUARTERS,
-        RUN_STEP_QUARTERS,
-        SECTION_ORDER,
-        control_widget_key,
-        controls_by_section,
-        get_by_path,
-        set_by_path,
-    )
-else:
-    from .plotting import (
-        DEFAULT_LINE_METRICS,
-        metric_options,
-        plot_default_dashboard,
-        plot_gini_series,
-        plot_income_distribution_dual,
-        plot_metric_lines,
-        plot_wealth_distributions_full_zoom,
-    )
-    from .config import get_default_config
-    from .results import run_simulation, summarize_rows
-    from .streamlit_params import (
-        NON_GINI_METRIC_GROUPS,
-        PARAMETER_CONTROLS,
-        RUN_DEFAULT_QUARTERS,
-        RUN_MAX_QUARTERS,
-        RUN_MIN_QUARTERS,
-        RUN_STEP_QUARTERS,
-        SECTION_ORDER,
-        control_widget_key,
-        controls_by_section,
-        get_by_path,
-        set_by_path,
-    )
+from plotting import (
+    DEFAULT_LINE_METRICS,
+    metric_options,
+    plot_default_dashboard,
+    plot_gini_series,
+    plot_income_distribution_dual,
+    plot_metric_lines,
+    plot_wealth_distributions_full_zoom,
+)
+from config import get_default_config
+from results import run_simulation, summarize_rows
+from streamlit_params import (
+    NON_GINI_METRIC_GROUPS,
+    PARAMETER_CONTROLS,
+    RUN_DEFAULT_QUARTERS,
+    RUN_MAX_QUARTERS,
+    RUN_MIN_QUARTERS,
+    RUN_STEP_QUARTERS,
+    SECTION_ORDER,
+    control_widget_key,
+    controls_by_section,
+    get_by_path,
+    set_by_path,
+)
 
 
 PERCENT_COLUMNS = {
@@ -419,7 +392,7 @@ def _render_parameter_controls(st: Any, grouped_controls: Dict[str, List[Any]]) 
     with st.sidebar:
         st.header("Run Controls")
         col_run, col_reset = st.columns(2)
-        run_clicked = col_run.button("Run Simulation", type="primary")
+        run_clicked = col_run.button("Run Model", type="primary")
         reset_clicked = col_reset.button("Reset Defaults")
 
         quarters = st.slider(
@@ -526,7 +499,7 @@ def main() -> None:
             or int(st.session_state.get("last_run_quarters", 0)) != int(quarters)
         )
         if config_stale:
-            st.warning("Parameters changed since last run. Click `Run Simulation` to generate new data.")
+            st.warning("Parameters changed since last run. Click `Run Model` to generate new data.")
 
     display_value_mode = str(st.session_state.get("view__value_mode", "nominal")).strip().lower()
     rows = _rows_for_value_mode(rows_raw, display_value_mode)

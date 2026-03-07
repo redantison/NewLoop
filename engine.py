@@ -5,24 +5,18 @@ from __future__ import annotations
 
 import csv
 import math
+import sys
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-# Support both execution modes:
-# 1) module mode:   python -m newloop.engine
-# 2) script mode:   python newloop/engine.py
-if __package__ in (None, ""):
-    import sys
-    from pathlib import Path
+_THIS_DIR = Path(__file__).resolve().parent
+if str(_THIS_DIR) not in sys.path:
+    sys.path.insert(0, str(_THIS_DIR))
 
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-    from newloop.mathutils import _as_np, _pct, _pct_np, automation_two_hump, calculate_gini_np
-    from newloop.newloop_types import HouseholdState, Node, TickResult
-else:
-    from .mathutils import _as_np, _pct, _pct_np, automation_two_hump, calculate_gini_np
-    from .newloop_types import HouseholdState, Node, TickResult
+from mathutils import _as_np, _pct, _pct_np, automation_two_hump, calculate_gini_np
+from newloop_types import HouseholdState, Node, TickResult
 
 class NewLoop:
     """
@@ -108,7 +102,7 @@ class NewLoop:
         self.hh: Optional[HouseholdState] = None
 
         if bool(self.params.get("use_population", False)):
-            from . import population as pop_mod
+            import population as pop_mod
             # Allow config overrides via parameters["population_config"]
             overrides = self.params.get("population_config", {})
             if overrides is None:

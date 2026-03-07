@@ -9,6 +9,7 @@ entities:
     query_warehouse: COMPUTE_WH
     main_file: slnewloop.py
     artifacts:
+      - environment.yml
       - slnewloop.py
       - __init__.py
       - config.py
