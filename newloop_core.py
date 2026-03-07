@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 # Support both execution modes:
-# 1) module mode:   python -m newloop.newloop
+# 1) module mode:   python -m newloop.newloop_core
 # 2) script mode:   run this file directly in IDEs (no package context)
 if __package__ in (None, ""):
     import sys
@@ -15,12 +15,12 @@ if __package__ in (None, ""):
     from newloop.config import config, get_default_config
     from newloop.dashboard import run_cli
     from newloop.engine import NewLoop
-    from newloop.types import HouseholdState, Node, TickResult
+    from newloop.newloop_types import HouseholdState, Node, TickResult
 else:
     from .config import config, get_default_config
     from .dashboard import run_cli
     from .engine import NewLoop
-    from .types import HouseholdState, Node, TickResult
+    from .newloop_types import HouseholdState, Node, TickResult
 
 __all__ = [
     "NewLoop",

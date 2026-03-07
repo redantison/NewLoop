@@ -20,11 +20,11 @@ if __package__ in (None, ""):
 
     from newloop.config import config as default_config
     from newloop.engine import NewLoop
-    from newloop.types import TickResult
+    from newloop.newloop_types import TickResult
 else:
     from .config import config as default_config
     from .engine import NewLoop
-    from .types import TickResult
+    from .newloop_types import TickResult
 
 
 @dataclass

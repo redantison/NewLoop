@@ -28,10 +28,10 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
     from newloop.table_of_data import TableOfData
-    from newloop.newloop import NewLoop, TickResult, config
+    from newloop.newloop_core import NewLoop, TickResult, config
 else:
     from .table_of_data import TableOfData
-    from .newloop import NewLoop, TickResult, config
+    from .newloop_core import NewLoop, TickResult, config
 
 
 def _parse_float_list(text: str) -> List[float]:
@@ -298,4 +298,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

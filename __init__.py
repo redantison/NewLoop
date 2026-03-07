@@ -7,7 +7,7 @@ from .config import config, get_default_config
 from .engine import NewLoop
 from .results import SimulationRun, history_to_rows, run_simulation, summarize_rows
 from .table_of_data import TableOfData
-from .types import HouseholdState, Node, TickResult
+from .newloop_types import HouseholdState, Node, TickResult
 
 __all__ = [
     "NewLoop",
