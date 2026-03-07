@@ -4,8 +4,14 @@ __pycache__/
 .venv/
 .env
 ~$*.docx
+.pytest_cache/
+.mypy_cache/
 
 # Generated simulation outputs
 run_history.csv
 balance_sheets.csv
 sfc_invariants.csv
+
+# Generated/deploy artifacts
+newloop/output/
+newloop/**/__pycache__/
