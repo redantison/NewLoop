@@ -1,9 +1,0 @@
-name: newloop
-channels:
-  - snowflake
-dependencies:
-  - streamlit=1.51.0
-  - snowflake-snowpark-python
-  - numpy
-  - pandas
-  - matplotlib
