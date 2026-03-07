@@ -1,1 +1,0 @@
-/Users/rogerison/Bridge/Code/NewLoop/newloop/table_of_data.py
