@@ -19,10 +19,10 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
     from newloop.mathutils import _as_np, _pct, _pct_np, automation_two_hump, calculate_gini_np
-    from newloop.types import HouseholdState, Node, TickResult
+    from newloop.newloop_types import HouseholdState, Node, TickResult
 else:
     from .mathutils import _as_np, _pct, _pct_np, automation_two_hump, calculate_gini_np
-    from .types import HouseholdState, Node, TickResult
+    from .newloop_types import HouseholdState, Node, TickResult
 
 class NewLoop:
     """
