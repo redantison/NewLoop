@@ -94,7 +94,6 @@ DECIMAL_COLUMNS = {"price_level", "private_inv_cov"}
 
 DISPLAY_VALUE_MODES: tuple[str, str] = ("nominal", "real")
 CONTROL_DEFAULTS_VERSION = 3
-UBI_MODE_DEFAULTS_VERSION = 1
 
 # Columns to deflate when display mode is "real".
 MONETARY_COLUMNS = {
@@ -301,6 +300,18 @@ def _build_cfg_from_state(st: Any, base_cfg: Dict[str, Any]) -> Dict[str, Any]:
         key = control_widget_key(control)
         raw = st.session_state.get(key, get_by_path(params, control.path, default=control.fallback_default))
         set_by_path(params, control.path, _coerce_value(raw, control.kind))
+
+    # Guardrail: a zero UBI percentile anchors to zero in this population (some households have zero market income).
+    # Keep run config sane even if a stale UI state slips through.
+    mode = str(params.get("income_support_mode", "UIS")).strip().upper()
+    if mode == "UBI":
+        try:
+            pct_val = float(params.get("ubi_target_percentile", 30.0))
+        except Exception:
+            pct_val = 30.0
+        if pct_val <= 0.0:
+            params["ubi_target_percentile"] = 30.0
+
     cfg["parameters"] = params
     return cfg
 
@@ -438,16 +449,34 @@ def _render_parameter_controls(st: Any, grouped_controls: Dict[str, List[Any]]) 
                     if active_mode not in {"UIS", "UBI"}:
                         active_mode = "UIS"
 
-                    # One-time reseed for UBI controls in case older persisted widget state
-                    # carried incompatible defaults (for example 0.0 percentile).
-                    ubi_defaults_key = "app__ubi_mode_defaults_version"
-                    if active_mode == "UBI" and int(st.session_state.get(ubi_defaults_key, 0)) < UBI_MODE_DEFAULTS_VERSION:
+                    # Defensive reseed when switching into UBI mode.
+                    # Hidden-widget state can occasionally revive stale values; in practice a 0.0
+                    # percentile makes UBI anchor at zero for this population due zero-income households.
+                    last_mode_key = "app__last_income_support_mode_ui"
+                    prev_mode = str(st.session_state.get(last_mode_key, "")).strip().upper()
+                    if active_mode == "UBI":
                         for control in remaining_controls:
                             default_value = control.fallback_default
                             if default_value is None:
                                 continue
-                            st.session_state[control_widget_key(control)] = default_value
-                        st.session_state[ubi_defaults_key] = UBI_MODE_DEFAULTS_VERSION
+                            key = control_widget_key(control)
+                            if key not in st.session_state or st.session_state.get(key) is None:
+                                st.session_state[key] = default_value
+
+                        ubi_pct_control = next(
+                            (c for c in remaining_controls if tuple(c.path) == ("ubi_target_percentile",)),
+                            None,
+                        )
+                        if ubi_pct_control is not None:
+                            ubi_pct_key = control_widget_key(ubi_pct_control)
+                            try:
+                                pct_val = float(st.session_state.get(ubi_pct_key, 0.0))
+                            except Exception:
+                                pct_val = 0.0
+                            if pct_val <= 0.0:
+                                st.session_state[ubi_pct_key] = 30.0
+
+                    st.session_state[last_mode_key] = active_mode
 
                     st.caption(f"Active Mode: {active_mode}")
 
@@ -483,9 +512,23 @@ def _render_parameter_controls(st: Any, grouped_controls: Dict[str, List[Any]]) 
 def _cached_run_payload(n_quarters: int, cfg_json: str) -> Dict[str, Any]:
     cfg = json.loads(cfg_json)
     run = run_simulation(n_quarters=int(n_quarters), cfg=cfg)
+    support_debug = {
+        "mode": str(run.sim.params.get("income_support_mode", "UIS")).strip().upper(),
+        "ubi_anchor_real_per_h": run.sim.state.get("ubi_anchor_real_per_h", None),
+        "ubi_anchor_nominal_per_h_base": run.sim.state.get("ubi_anchor_nominal_per_h_base", None),
+        "ubi_anchor_percentile": run.sim.state.get("ubi_anchor_percentile", None),
+        "ubi_anchor_basis": run.sim.state.get("ubi_anchor_basis", None),
+        "ubi_index_series": run.sim.params.get("ubi_index_series", None),
+        "income_support_issuance_share": run.sim.params.get(
+            "income_support_issuance_share",
+            run.sim.params.get("uis_issuance_share", 0.0),
+        ),
+        "income_target_pool_real_pop": run.sim.state.get("income_target_pool_real_pop", None),
+    }
     return {
         "rows": run.rows,
         "population_distributions": run.population_distributions or {},
+        "support_debug": support_debug,
     }
 
 
@@ -514,6 +557,8 @@ def main() -> None:
         st.session_state["rows"] = []
     if "population_distributions" not in st.session_state:
         st.session_state["population_distributions"] = {}
+    if "support_debug" not in st.session_state:
+        st.session_state["support_debug"] = {}
     if "last_run_cfg_json" not in st.session_state:
         st.session_state["last_run_cfg_json"] = ""
     if "last_run_quarters" not in st.session_state:
@@ -521,25 +566,23 @@ def main() -> None:
 
     current_cfg = _build_cfg_from_state(st, base_cfg)
     current_cfg_json = _cfg_json(current_cfg)
-    cache_run = st.cache_data(show_spinner=False)(_cached_run_payload)
-
     should_run = run_clicked or (not st.session_state["rows"])
     if should_run:
         with st.spinner("Running simulation..."):
-            payload = cache_run(quarters, current_cfg_json)
+            payload = _cached_run_payload(quarters, current_cfg_json)
         st.session_state["rows"] = list(payload.get("rows", []))
         st.session_state["population_distributions"] = dict(payload.get("population_distributions", {}))
+        st.session_state["support_debug"] = dict(payload.get("support_debug", {}))
         st.session_state["last_run_cfg_json"] = current_cfg_json
         st.session_state["last_run_quarters"] = int(quarters)
 
     rows_raw: List[Dict[str, Any]] = list(st.session_state["rows"])
-    if rows_raw:
-        config_stale = (
-            st.session_state.get("last_run_cfg_json", "") != current_cfg_json
-            or int(st.session_state.get("last_run_quarters", 0)) != int(quarters)
-        )
-        if config_stale:
-            st.warning("Parameters changed since last run. Click `Run Model` to generate new data.")
+    config_stale = (
+        st.session_state.get("last_run_cfg_json", "") != current_cfg_json
+        or int(st.session_state.get("last_run_quarters", 0)) != int(quarters)
+    )
+    if rows_raw and config_stale:
+        st.warning("Parameters changed since last run. Click `Run Model` to generate new data.")
 
     display_value_mode = str(st.session_state.get("view__value_mode", "nominal")).strip().lower()
     rows = _rows_for_value_mode(rows_raw, display_value_mode)
@@ -551,11 +594,52 @@ def main() -> None:
 
     summary = summarize_rows(rows)
     _render_summary(summary, st)
-    support_mode = str(current_cfg.get("parameters", {}).get("income_support_mode", "UIS")).strip().upper()
+    support_debug = dict(st.session_state.get("support_debug", {}))
+    support_mode_cfg = str(current_cfg.get("parameters", {}).get("income_support_mode", "UIS")).strip().upper()
+    if support_mode_cfg not in {"UIS", "UBI"}:
+        support_mode_cfg = "UIS"
+    support_mode = str(support_debug.get("mode", support_mode_cfg)).strip().upper()
     if support_mode not in {"UIS", "UBI"}:
-        support_mode = "UIS"
+        support_mode = support_mode_cfg
     support_label = "Universal Income Stabilizer (UIS)" if support_mode == "UIS" else "Universal Basic Income (UBI)"
-    st.caption(f"Income support mode: {support_label}.")
+    st.caption(f"Income support mode (last run): {support_label}.")
+    if config_stale and support_mode_cfg != support_mode:
+        pending_label = "Universal Income Stabilizer (UIS)" if support_mode_cfg == "UIS" else "Universal Basic Income (UBI)"
+        st.caption(f"Pending mode in controls: {pending_label}.")
+
+    issuance_share = float(support_debug.get("income_support_issuance_share", 0.0))
+    st.caption(
+        "Income-support funding order (all modes): "
+        f"{issuance_share:.0%} issuance share first, then FUND deposits, then GOV deposits, then residual issuance."
+    )
+
+    if support_mode == "UBI":
+        anchor_real = support_debug.get("ubi_anchor_real_per_h", None)
+        anchor_nom = support_debug.get("ubi_anchor_nominal_per_h_base", None)
+        anchor_pct = support_debug.get("ubi_anchor_percentile", None)
+        anchor_basis = support_debug.get("ubi_anchor_basis", None)
+        index_series = support_debug.get("ubi_index_series", None)
+        if anchor_real is not None:
+            pct_txt = f"{float(anchor_pct):.1f}" if anchor_pct is not None else "?"
+            basis_txt = str(anchor_basis) if anchor_basis is not None else "?"
+            idx_txt = str(index_series) if index_series is not None else "?"
+            nom_txt = f"{float(anchor_nom):.3g}" if anchor_nom is not None else "?"
+            st.caption(
+                "UBI anchor: "
+                f"P{pct_txt} of {basis_txt} at baseline; "
+                f"base nominal/HH={nom_txt}; "
+                f"real anchor/HH={float(anchor_real):.3g}; "
+                f"index={idx_txt}."
+            )
+            if float(anchor_real) <= 0.0:
+                st.warning(
+                    "UBI anchor resolved to zero at baseline. This usually means "
+                    "`UBI Target Percentile` is at or near 0 in a population with zero market-income households."
+                )
+    else:
+        target_pool = support_debug.get("income_target_pool_real_pop", None)
+        if target_pool is not None:
+            st.caption(f"UIS real target pool (population): {float(target_pool):.6g}.")
     st.caption(
         "Displayed monetary values are "
         + ("price-normalized (real, base-period dollars)." if display_value_mode == "real" else "nominal.")
@@ -567,6 +651,28 @@ def main() -> None:
     line_metrics = selected_metrics or [m for m in DEFAULT_LINE_METRICS if m not in {"gini_market", "gini_disp", "gini_wealth"}]
     line_metrics = line_metrics[:2]
     secondary_metrics = line_metrics[1:2] if len(line_metrics) > 1 else []
+
+    if rows:
+        mismatch_quarters: List[int] = []
+        for row in rows:
+            support_per_h = float(row.get("uis_per_h", 0.0))
+            support_components = (
+                float(row.get("uis_from_fund_dep_per_h", 0.0))
+                + float(row.get("uis_from_gov_dep_per_h", 0.0))
+                + float(row.get("uis_issued_per_h", 0.0))
+            )
+            if abs(support_per_h - support_components) > 1e-6 * max(1.0, abs(support_per_h)):
+                mismatch_quarters.append(int(row.get("t", 0)))
+
+        if mismatch_quarters:
+            sample = ", ".join(str(q) for q in mismatch_quarters[:6])
+            if len(mismatch_quarters) > 6:
+                sample += ", ..."
+            st.warning(
+                "Income-support accounting mismatch detected: "
+                f"{len(mismatch_quarters)} quarter(s) with support != funding components "
+                f"(quarters: {sample})."
+            )
 
     if line_metrics:
         primary_ylabel = metric_map.get(line_metrics[0], line_metrics[0])
@@ -582,6 +688,7 @@ def main() -> None:
             primary_ylabel=primary_ylabel,
             secondary_metrics=secondary_metrics,
             secondary_ylabel=secondary_ylabel,
+            support_mode=support_mode,
         )
         st.pyplot(line_fig, clear_figure=False)
         plt.close(line_fig)
@@ -596,11 +703,11 @@ def main() -> None:
         "relative to income, not debt stock divided by income."
     )
 
-    gini_fig = plot_gini_series(rows)
+    gini_fig = plot_gini_series(rows, support_mode=support_mode)
     st.pyplot(gini_fig, clear_figure=False)
     plt.close(gini_fig)
 
-    dashboard_fig = plot_default_dashboard(rows)
+    dashboard_fig = plot_default_dashboard(rows, support_mode=support_mode)
     st.pyplot(dashboard_fig, clear_figure=False)
     plt.close(dashboard_fig)
 
@@ -619,6 +726,7 @@ def main() -> None:
                 income_before,
                 income_after,
                 value_label=value_label,
+                support_mode=support_mode,
             )
             st.pyplot(income_fig, clear_figure=False)
             plt.close(income_fig)
@@ -637,6 +745,7 @@ def main() -> None:
                 value_label=value_label,
                 zoom_lo_pct=float(zoom_window[0]),
                 zoom_hi_pct=float(zoom_window[1]),
+                support_mode=support_mode,
             )
             st.pyplot(wealth_fig, clear_figure=False)
             plt.close(wealth_fig)

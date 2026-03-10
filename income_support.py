@@ -55,6 +55,15 @@ class IncomeSupportPolicy(Protocol):
     ) -> None:
         ...
 
+    def warm_start_anchor_if_needed(
+        self,
+        *,
+        state: MutableMapping[str, Any],
+        baseline_wages_i: Any,
+        price_level: float,
+    ) -> None:
+        ...
+
 
 @dataclass(frozen=True)
 class IncomeSupportFundingBreakdown:
@@ -142,6 +151,15 @@ class UISPolicy:
         state["income_target_pool_real_pop"] = float(target_pool_nom_base) / float(p_base)
         state["baseline_price_level_pop"] = float(p_base)
         state["baseline_wages_total_pop"] = float(wages_total)
+
+    def warm_start_anchor_if_needed(
+        self,
+        *,
+        state: MutableMapping[str, Any],
+        baseline_wages_i: Any,
+        price_level: float,
+    ) -> None:
+        del state, baseline_wages_i, price_level  # UIS baseline comes from first solved tick
 
 
 class UBIPolicy:
@@ -254,6 +272,36 @@ class UBIPolicy:
         state["ubi_anchor_nominal_per_h_base"] = float(anchor_nom_per_h)
         state["ubi_anchor_percentile"] = float(max(0.0, min(100.0, pct)))
         state["ubi_anchor_basis"] = basis
+
+    def warm_start_anchor_if_needed(
+        self,
+        *,
+        state: MutableMapping[str, Any],
+        baseline_wages_i: Any,
+        price_level: float,
+    ) -> None:
+        if state.get("ubi_anchor_real_per_h", None) is not None:
+            return
+        if baseline_wages_i is None:
+            return
+
+        try:
+            wages_seq = [float(v) for v in baseline_wages_i]
+        except Exception:
+            return
+        if not wages_seq:
+            return
+
+        n = len(wages_seq)
+        self.initialize_anchor_if_needed(
+            state=state,
+            wages_total=float(sum(wages_seq)),
+            support_per_h=0.0,
+            n_households=int(n),
+            price_level=float(price_level),
+            wages_i=wages_seq,
+            div_i=[0.0] * n,
+        )
 
 
 def make_income_support_policy(params: Mapping[str, Any]) -> IncomeSupportPolicy:
