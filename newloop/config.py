@@ -33,7 +33,7 @@ config = {
         # Default 0.0 means CAPEX goods/services are produced by the physical sector (FH).
         "capex_supply_share_fa": 0.0,
 
-        # Income tax (marginal above threshold) on wages + dividends (excludes UIS)
+        # Income tax (marginal above threshold) on wages + dividends (excludes income support)
         "income_tax_rate": 0.15,          # 15% marginal rate
         "income_tax_cutoff_pct": 31.0,    # threshold percentile (same analogue as above; can be tuned)
         # Corporate tax applies to retained earnings only (distributed dividends are not taxed at the corporate level).
@@ -83,8 +83,12 @@ config = {
         "revolving_principal_pay_rate_q": 0.05,  # 5%/q max paydown if cash available
         "mortgage_principal_pay_rate_q": 0.01,   # 1%/q max paydown if cash available
         "send_fund_residual_to_gov": False, # Trust belongs to citizens; do not sweep FUND deposits to GOV by default
-        "uis_issuance_share": 0.15,         # fixed share of each quarter's UIS paid via issuance
-        "uis_monotonic_floor": True,        # if True, policy UIS cannot decline quarter-to-quarter
+        "income_support_mode": "UIS",       # "UIS" | "UBI"
+        "income_support_issuance_share": 0.15,  # fixed share of each quarter's income support paid via issuance
+        "income_support_monotonic_floor": True, # if True, policy support cannot decline quarter-to-quarter
+        "ubi_target_percentile": 30.0,      # nearest-rank percentile target used to anchor UBI per-household amount
+        "ubi_anchor_income_basis": "market_income",  # "market_income" | "wages_only"
+        "ubi_index_series": "P_producer",   # "P_producer" | "C_consumer"
         "gov_tax_rebate_rate": 1.00,        # share of remaining GOV deposits rebated each tick by household tax-paid weights
         "hard_assert_sfc": False,          # set True to hard-fail on any mismatch
         # Dashboard display mode for money columns: "nominal" or "price_normalized" (base-period dollars).

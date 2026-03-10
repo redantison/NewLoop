@@ -31,6 +31,9 @@ from plotting import (
 from config import get_default_config
 from results import run_simulation, summarize_rows
 from streamlit_params import (
+    INCOME_SUPPORT_MODE_PATH,
+    INCOME_SUPPORT_MODE_WIDGET_KEY,
+    INCOME_SUPPORT_SECTION,
     NON_GINI_METRIC_GROUPS,
     PARAMETER_CONTROLS,
     RUN_DEFAULT_QUARTERS,
@@ -90,6 +93,8 @@ COMPACT_NUMBER_COLUMNS = {
 DECIMAL_COLUMNS = {"price_level", "private_inv_cov"}
 
 DISPLAY_VALUE_MODES: tuple[str, str] = ("nominal", "real")
+CONTROL_DEFAULTS_VERSION = 3
+UBI_MODE_DEFAULTS_VERSION = 1
 
 # Columns to deflate when display mode is "real".
 MONETARY_COLUMNS = {
@@ -259,10 +264,17 @@ def _apply_control_defaults(st: Any, base_params: Dict[str, Any]) -> None:
 
 
 def _ensure_control_defaults(st: Any, base_params: Dict[str, Any]) -> None:
+    version_key = "app__control_defaults_version"
+    if int(st.session_state.get(version_key, 0)) < CONTROL_DEFAULTS_VERSION:
+        _apply_control_defaults(st, base_params)
+        st.session_state[version_key] = CONTROL_DEFAULTS_VERSION
+        return
+
     for control in PARAMETER_CONTROLS:
         key = control_widget_key(control)
-        if key not in st.session_state:
-            st.session_state[key] = get_by_path(base_params, control.path, default=control.fallback_default)
+        default_value = get_by_path(base_params, control.path, default=control.fallback_default)
+        if key not in st.session_state or st.session_state.get(key) is None:
+            st.session_state[key] = default_value
     if "run__quarters" not in st.session_state:
         st.session_state["run__quarters"] = RUN_DEFAULT_QUARTERS
     if "view__value_mode" not in st.session_state:
@@ -416,7 +428,35 @@ def _render_parameter_controls(st: Any, grouped_controls: Dict[str, List[Any]]) 
             if not controls:
                 continue
             with st.expander(section, expanded=False):
-                if section == "Population":
+                if section == INCOME_SUPPORT_SECTION:
+                    mode_control = next((c for c in controls if tuple(c.path) == INCOME_SUPPORT_MODE_PATH), None)
+                    remaining_controls = [c for c in controls if mode_control is None or c is not mode_control]
+
+                    if mode_control is not None:
+                        _render_control(mode_control)
+                    active_mode = str(st.session_state.get(INCOME_SUPPORT_MODE_WIDGET_KEY, "UIS")).strip().upper()
+                    if active_mode not in {"UIS", "UBI"}:
+                        active_mode = "UIS"
+
+                    # One-time reseed for UBI controls in case older persisted widget state
+                    # carried incompatible defaults (for example 0.0 percentile).
+                    ubi_defaults_key = "app__ubi_mode_defaults_version"
+                    if active_mode == "UBI" and int(st.session_state.get(ubi_defaults_key, 0)) < UBI_MODE_DEFAULTS_VERSION:
+                        for control in remaining_controls:
+                            default_value = control.fallback_default
+                            if default_value is None:
+                                continue
+                            st.session_state[control_widget_key(control)] = default_value
+                        st.session_state[ubi_defaults_key] = UBI_MODE_DEFAULTS_VERSION
+
+                    st.caption(f"Active Mode: {active_mode}")
+
+                    for control in remaining_controls:
+                        modes = getattr(control, "support_modes", None)
+                        if modes is not None and active_mode not in {str(m).upper() for m in modes}:
+                            continue
+                        _render_control(control)
+                elif section == "Population":
                     core_controls = [c for c in controls if not bool(getattr(c, "advanced", False))]
                     advanced_controls = [c for c in controls if bool(getattr(c, "advanced", False))]
 
@@ -511,6 +551,11 @@ def main() -> None:
 
     summary = summarize_rows(rows)
     _render_summary(summary, st)
+    support_mode = str(current_cfg.get("parameters", {}).get("income_support_mode", "UIS")).strip().upper()
+    if support_mode not in {"UIS", "UBI"}:
+        support_mode = "UIS"
+    support_label = "Universal Income Stabilizer (UIS)" if support_mode == "UIS" else "Universal Basic Income (UBI)"
+    st.caption(f"Income support mode: {support_label}.")
     st.caption(
         "Displayed monetary values are "
         + ("price-normalized (real, base-period dollars)." if display_value_mode == "real" else "nominal.")
@@ -543,7 +588,7 @@ def main() -> None:
 
     st.caption(
         "Gini labels: Pre-Tax/Pre-Transfer is household wages plus household-distributed dividends, "
-        "before income tax, VAT credit, UIS, and debt-service deductions. Disposable is the model's "
+        "before income tax, VAT credit, income-support transfers, and debt-service deductions. Disposable is the model's "
         "post-policy household income measure. Wealth is deposits plus allocated household equity claims minus loans."
     )
     st.caption(
