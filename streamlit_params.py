@@ -25,12 +25,18 @@ class ParamControl:
     help_text: str = ""
     fallback_default: Any = None
     advanced: bool = False
+    support_modes: tuple[str, ...] | None = None
+
+
+INCOME_SUPPORT_SECTION = "Income Support"
+INCOME_SUPPORT_MODE_PATH: tuple[str, ...] = ("income_support_mode",)
+INCOME_SUPPORT_MODE_WIDGET_KEY = "param__income_support_mode"
 
 
 SECTION_ORDER: tuple[str, ...] = (
     "Trust",
     "Taxes",
-    "Universal Income Stabilizer (UIS)",
+    INCOME_SUPPORT_SECTION,
     "Automation",
     "Price & Capital",
     "Population",
@@ -57,8 +63,12 @@ PARAMETER_CONTROLS: tuple[ParamControl, ...] = (
     ParamControl(("corporate_tax_rate_min",), "Corporate Tax Min Rate", "Taxes", "float", 0.0, 1.0, 0.01),
     ParamControl(("corporate_tax_rate_max",), "Corporate Tax Max Rate", "Taxes", "float", 0.0, 1.0, 0.01),
     ParamControl(("gov_tax_rebate_rate",), "Government Tax Rebate Rate", "Taxes", "float", 0.0, 1.0, 0.01),
-    ParamControl(("uis_issuance_share",), "UIS Issuance Share", "Universal Income Stabilizer (UIS)", "float", 0.0, 1.0, 0.01),
-    ParamControl(("uis_monotonic_floor",), "UIS Monotonic Floor", "Universal Income Stabilizer (UIS)", "bool"),
+    ParamControl(INCOME_SUPPORT_MODE_PATH, "Income Support Mode", INCOME_SUPPORT_SECTION, "select", options=("UIS", "UBI"), fallback_default="UIS"),
+    ParamControl(("income_support_issuance_share",), "Income Support Issuance Share", INCOME_SUPPORT_SECTION, "float", 0.0, 1.0, 0.01, fallback_default=0.15),
+    ParamControl(("income_support_monotonic_floor",), "Income Support Monotonic Floor", INCOME_SUPPORT_SECTION, "bool", fallback_default=True),
+    ParamControl(("ubi_target_percentile",), "UBI Target Percentile", INCOME_SUPPORT_SECTION, "float", 0.0, 100.0, 0.5, fallback_default=30.0, support_modes=("UBI",)),
+    ParamControl(("ubi_anchor_income_basis",), "UBI Anchor Income Basis", INCOME_SUPPORT_SECTION, "select", options=("market_income", "wages_only"), fallback_default="market_income", support_modes=("UBI",)),
+    ParamControl(("ubi_index_series",), "UBI Index Series", INCOME_SUPPORT_SECTION, "select", options=("P_producer", "C_consumer"), fallback_default="P_producer", support_modes=("UBI",)),
     ParamControl(("automation_path",), "Automation Path", "Automation", "select", options=("two_hump", "linear")),
     ParamControl(("automation_horizon_quarters",), "Automation Horizon Quarters", "Automation", "float", 4.0, 240.0, 1.0),
     ParamControl(("automation_w_info",), "Automation Weight: Info", "Automation", "float", 0.0, 1.0, 0.01),

@@ -24,10 +24,10 @@ METRIC_LABELS: Dict[str, str] = {
     "pop_dti_p90": "Debt-Service-to-Income (DTI) P90",
     "pop_dti_w_p90": "Debt-Service-to-Income (DTI) P90 (Wages)",
     "trust_equity_pct": "Trust Equity %",
-    "uis_per_h": "UIS / Household",
-    "uis_from_fund_dep_per_h": "UIS from FUND",
-    "uis_from_gov_dep_per_h": "UIS from GOV",
-    "uis_issued_per_h": "UIS Issued",
+    "uis_per_h": "Income Support / Household",
+    "uis_from_fund_dep_per_h": "Income Support from FUND",
+    "uis_from_gov_dep_per_h": "Income Support from GOV",
+    "uis_issued_per_h": "Income Support Issued",
 }
 
 DEFAULT_LINE_METRICS: List[str] = [
@@ -147,8 +147,8 @@ def plot_metric_lines(
     return fig
 
 
-def plot_uis_funding_mix(rows: Sequence[Mapping[str, Any]], ax: Any = None) -> Any:
-    """Stacked-area chart for UIS funding channels."""
+def plot_income_support_funding_mix(rows: Sequence[Mapping[str, Any]], ax: Any = None) -> Any:
+    """Stacked-area chart for income-support funding channels."""
     import matplotlib.pyplot as plt
 
     rows = _require_rows(rows)
@@ -171,7 +171,7 @@ def plot_uis_funding_mix(rows: Sequence[Mapping[str, Any]], ax: Any = None) -> A
         labels=[metric_label("uis_from_fund_dep_per_h"), metric_label("uis_from_gov_dep_per_h"), metric_label("uis_issued_per_h")],
         alpha=0.8,
     )
-    ax.set_title("UIS Funding Mix")
+    ax.set_title("Income Support Funding Mix")
     ax.set_xlabel("Quarter")
     ax.set_ylabel("Per-Household")
     _apply_compact_y_ticks(ax)
@@ -226,7 +226,7 @@ def plot_default_dashboard(rows: Sequence[Mapping[str, Any]]) -> Any:
         legend_loc="upper right",
     )
     plot_gini_series(rows, ax=axs[0][1])
-    plot_uis_funding_mix(rows, ax=axs[1][0])
+    plot_income_support_funding_mix(rows, ax=axs[1][0])
     plot_metric_lines(
         rows,
         ["real_consumption", "real_avg_income"],
@@ -237,6 +237,11 @@ def plot_default_dashboard(rows: Sequence[Mapping[str, Any]]) -> Any:
     )
 
     return fig
+
+
+def plot_uis_funding_mix(rows: Sequence[Mapping[str, Any]], ax: Any = None) -> Any:
+    """Backward-compatible alias."""
+    return plot_income_support_funding_mix(rows, ax=ax)
 
 
 def plot_distribution_compare(

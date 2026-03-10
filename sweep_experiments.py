@@ -182,7 +182,7 @@ def _build_table(rows: List[Dict[str, float]]) -> TableOfData:
         "reb|Rr|.2f",
         "RConsEnd|Rr|.2f",
         "dRCons20|Rr|.3f",
-        "UIS_Imax|Rr|.2f",
+        "IS_Imax|Rr|.2f",
         "Fsh|Rr|.1%",
         "Gsh|Rr|.1%",
         "Ish|Rr|.1%",

@@ -4,7 +4,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Mapping, MutableMapping, Protocol
+import math
+from typing import Any, Iterable, Mapping, MutableMapping, Protocol
 
 
 class NodeLike(Protocol):
@@ -49,6 +50,8 @@ class IncomeSupportPolicy(Protocol):
         support_per_h: float,
         n_households: int,
         price_level: float,
+        wages_i: Any = None,
+        div_i: Any = None,
     ) -> None:
         ...
 
@@ -67,6 +70,14 @@ class UISPolicy:
 
     def __init__(self, params: Mapping[str, Any]) -> None:
         self.params = params
+
+    def _monotonic_floor_enabled(self) -> bool:
+        return bool(
+            self.params.get(
+                "income_support_monotonic_floor",
+                self.params.get("uis_monotonic_floor", True),
+            )
+        )
 
     def mode_name(self) -> str:
         return "UIS"
@@ -101,7 +112,7 @@ class UISPolicy:
             target_pool_nom = float(target_pool_real_pop) * p_now
             support = max(0.0, (target_pool_nom - float(wages_total)) / float(n))
 
-        if bool(self.params.get("uis_monotonic_floor", True)):
+        if self._monotonic_floor_enabled():
             support = max(float(previous_support_per_h), float(support))
 
         return float(support)
@@ -114,7 +125,11 @@ class UISPolicy:
         support_per_h: float,
         n_households: int,
         price_level: float,
+        wages_i: Any = None,
+        div_i: Any = None,
     ) -> None:
+        del wages_i, div_i  # unused by UIS anchor logic
+
         if state.get("income_target_pool_real_pop", None) is not None:
             return
 
@@ -129,12 +144,129 @@ class UISPolicy:
         state["baseline_wages_total_pop"] = float(wages_total)
 
 
+class UBIPolicy:
+    """Fixed per-household UBI policy (price-indexed after baseline anchor initialization)."""
+
+    def __init__(self, params: Mapping[str, Any]) -> None:
+        self.params = params
+
+    def mode_name(self) -> str:
+        return "UBI"
+
+    def label_short(self) -> str:
+        return "UBI"
+
+    def label_long(self) -> str:
+        return "Universal Basic Income (UBI)"
+
+    def _index_level(self, price_level: float) -> float:
+        p = float(price_level)
+        if p <= 0.0:
+            p = 1e-9
+        series = str(self.params.get("ubi_index_series", "P_producer")).strip()
+        if series == "C_consumer":
+            vat = max(0.0, float(self.params.get("vat_rate", 0.0)))
+            return max(1e-9, p * (1.0 + vat))
+        return max(1e-9, p)
+
+    def _monotonic_floor_enabled(self) -> bool:
+        return bool(
+            self.params.get(
+                "income_support_monotonic_floor",
+                self.params.get("uis_monotonic_floor", True),
+            )
+        )
+
+    @staticmethod
+    def _nearest_rank_percentile(values: Iterable[float], pct: float) -> float:
+        data = [float(v) for v in values]
+        if not data:
+            return 0.0
+        pct_clamped = max(0.0, min(100.0, float(pct)))
+        data.sort()
+        k = int(math.ceil((pct_clamped / 100.0) * len(data))) - 1
+        k = max(0, min(len(data) - 1, k))
+        return float(data[k])
+
+    def compute_per_household(
+        self,
+        *,
+        wages_total: float,
+        div_house_total: float,
+        price_level: float,
+        n_households: int,
+        previous_support_per_h: float,
+        state: Mapping[str, Any],
+    ) -> float:
+        del wages_total, div_house_total, n_households  # UBI amount is anchor-based after initialization
+
+        anchor_real_per_h = state.get("ubi_anchor_real_per_h", None)
+        if anchor_real_per_h is None:
+            support = 0.0
+        else:
+            support = max(0.0, float(anchor_real_per_h)) * self._index_level(float(price_level))
+
+        if self._monotonic_floor_enabled():
+            support = max(float(previous_support_per_h), float(support))
+
+        return float(support)
+
+    def initialize_anchor_if_needed(
+        self,
+        *,
+        state: MutableMapping[str, Any],
+        wages_total: float,
+        support_per_h: float,
+        n_households: int,
+        price_level: float,
+        wages_i: Any = None,
+        div_i: Any = None,
+    ) -> None:
+        del support_per_h
+
+        if state.get("ubi_anchor_real_per_h", None) is not None:
+            return
+
+        n = max(1, int(n_households))
+        pct = float(self.params.get("ubi_target_percentile", 30.0))
+        basis = str(self.params.get("ubi_anchor_income_basis", "market_income")).strip()
+
+        samples: list[float] = []
+        if basis == "wages_only":
+            if wages_i is not None:
+                samples = [float(v) for v in wages_i]
+        else:
+            if wages_i is not None and div_i is not None:
+                try:
+                    samples = [float(w) + float(d) for w, d in zip(wages_i, div_i)]
+                except Exception:
+                    samples = []
+
+        if samples:
+            anchor_nom_per_h = max(0.0, self._nearest_rank_percentile(samples, pct))
+        else:
+            anchor_nom_per_h = max(0.0, float(wages_total) / float(n))
+
+        index_level = self._index_level(float(price_level))
+        anchor_real_per_h = anchor_nom_per_h / max(1e-9, index_level)
+
+        state["ubi_anchor_real_per_h"] = float(anchor_real_per_h)
+        state["ubi_anchor_nominal_per_h_base"] = float(anchor_nom_per_h)
+        state["ubi_anchor_percentile"] = float(max(0.0, min(100.0, pct)))
+        state["ubi_anchor_basis"] = basis
+
+
 def make_income_support_policy(params: Mapping[str, Any]) -> IncomeSupportPolicy:
     """Create the active income-support policy.
 
-    Phase 1 keeps UIS behavior only; additional policies can be added later.
+    Supported modes:
+    - UIS: Universal Income Stabilizer
+    - UBI: Universal Basic Income
     """
 
+    mode = str(params.get("income_support_mode", "UIS")).strip().upper()
+    if mode == "UBI":
+        return UBIPolicy(params=params)
     return UISPolicy(params=params)
 
 

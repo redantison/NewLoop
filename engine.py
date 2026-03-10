@@ -49,7 +49,7 @@ class NewLoop:
             "price_level": p0,
             "inflation": 0.0,
 
-            # Per-tick UIS funding diagnostics (set in post_tick)
+            # Per-tick income-support funding diagnostics (set in post_tick)
             "uis_from_fund_dep_total": 0.0,
             "uis_from_gov_dep_total": 0.0,
             "uis_issued_total": 0.0,
@@ -214,7 +214,7 @@ class NewLoop:
         self.history: List[TickResult] = []
         self.bs_history: List[Dict[str, Any]] = []   # per-tick, per-node balance sheet snapshot
         self.inv_history: List[Dict[str, Any]] = []  # per-tick SFC invariant diagnostics
-        # Per-tick UIS funding diagnostics captured *pre-UIS payment* inside post_tick
+        # Per-tick income-support funding diagnostics captured *pre-payment* inside post_tick
         self.uis_debug_history: List[Dict[str, float]] = []
 
         self._assert_sfc_ok(context="init")
@@ -336,7 +336,7 @@ class NewLoop:
         elif income_series == "NominalMarketIncome":
             y = wages + div_hh
         else:
-            # NominalHHIncome (default): wages + household dividends + UIS.
+            # NominalHHIncome (default): wages + household dividends + income support.
             y = wages + div_hh + uis_total
         return max(1e-9, float(y))
 
@@ -851,7 +851,7 @@ class NewLoop:
         # Trigger metric: use last-quarter debt-service stress.
         # We take the maximum of:
         #   - pop_dti_w_p90: interest / wage among employed debtors (wage-only)
-        #   - pop_dti_p90:   interest / (wage + UIS) among debtors (inclusive)
+        #   - pop_dti_p90:   interest / (wage + income support) among debtors (inclusive)
         # This prevents “never trigger” behavior if one of the two sub-metrics is empty or near-zero.
         dti_ratio = 0.0
         dti_w_p90 = 0.0
@@ -1096,7 +1096,7 @@ class NewLoop:
             div_house_firms = (div_fa_total * (1.0 - f_fa)) + (div_fh_total * (1.0 - f_fh))
             div_fund_firms = (div_fa_total * f_fa) + (div_fh_total * f_fh)
 
-            # 4) Income-support policy (UIS in Phase 1)
+            # 4) Income-support policy (mode selected by parameters)
             uis = self.income_support_policy.compute_per_household(
                 wages_total=float(w_total),
                 div_house_total=float(div_house_total_est),
@@ -1152,7 +1152,7 @@ class NewLoop:
             div_i = w_weights * float(div_house_total)
 
             # --- Taxes & VAT credit (computed endogenously inside the solver) ---
-            taxable_income = wages_i + div_i  # excludes UIS by policy
+            taxable_income = wages_i + div_i  # excludes income support by policy
 
             # Income tax: 15% marginal above a percentile threshold (nearest-rank)
             it_rate = float(self.params.get("income_tax_rate", 0.0))
@@ -1178,7 +1178,7 @@ class NewLoop:
             vc_start_pct = max(0.0, min(100.0, vc_start_pct))
             vc_end_pct = max(vc_start_pct, min(100.0, vc_end_pct))
 
-            elig_income = taxable_income + float(uis)  # user policy: eligibility uses taxable income + UIS
+            elig_income = taxable_income + float(uis)  # user policy: eligibility uses taxable income + income support
             if elig_income.size > 0:
                 k_vc_start = int(math.ceil((vc_start_pct / 100.0) * elig_income.size)) - 1
                 k_vc_start = max(0, min(elig_income.size - 1, k_vc_start))
@@ -1601,7 +1601,7 @@ class NewLoop:
             bank.add("equity", +trust_interest)
 
         # -------------------------------------------------
-        # 5) Taxes + VAT credit (before UIS)
+        # 5) Taxes + VAT credit (before income support)
         # -------------------------------------------------
         income_tax_i = _as_np(sol.get("income_tax_i", []), dtype=float)
         vat_credit_i = _as_np(sol.get("vat_credit_i", []), dtype=float)
@@ -1650,7 +1650,7 @@ class NewLoop:
         self.state["vat_credit_total"] = float(max(0.0, vat_credit_total_initial))
 
         # -------------------------------------------------
-        # 5) Trust amortization (BEFORE UIS)
+        # 5) Trust amortization (before income support)
         # -------------------------------------------------
         fund_loan = float(self.nodes["FUND"].get("loans", 0.0))
         if fund_loan > 0:
@@ -1665,13 +1665,18 @@ class NewLoop:
                 self._xfer_deposits("FUND", "GOV", residual)
 
         # -------------------------------------------------
-        # 6) UIS payments: issuance share -> FUND dep -> GOV dep -> extra issuance
+        # 6) Income-support payments: issuance share -> FUND dep -> GOV dep -> extra issuance
         # -------------------------------------------------
         uis = float(sol.get("uis", 0.0))
         funding = apply_income_support_payment(
             support_per_household=float(uis),
             n_households=int(n),
-            issue_share=float(self.params.get("uis_issuance_share", 0.0)),
+            issue_share=float(
+                self.params.get(
+                    "income_support_issuance_share",
+                    self.params.get("uis_issuance_share", 0.0),
+                )
+            ),
             deposits=deposits,
             nodes=self.nodes,
         )
@@ -1918,6 +1923,8 @@ class NewLoop:
                     support_per_h=float(solp["uis"]),
                     n_households=int(self.hh.n),
                     price_level=float(self.state.get("price_level", 1.0)),
+                    wages_i=solp.get("wages_i"),
+                    div_i=solp.get("div_i"),
                 )
 
                 # Population inequality diagnostics (vectorized)
