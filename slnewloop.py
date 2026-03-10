@@ -74,10 +74,10 @@ COMPACT_NUMBER_COLUMNS = {
     "gov_dep_per_h",
     "fund_dep_per_h",
     "capex_per_h",
-    "ubi_per_h",
-    "ubi_from_fund_dep_per_h",
-    "ubi_from_gov_dep_per_h",
-    "ubi_issued_per_h",
+    "uis_per_h",
+    "uis_from_fund_dep_per_h",
+    "uis_from_gov_dep_per_h",
+    "uis_issued_per_h",
     "trust_debt",
     "wages_total",
     "total_consumption",
@@ -101,10 +101,10 @@ MONETARY_COLUMNS = {
     "gov_dep_per_h",
     "fund_dep_per_h",
     "capex_per_h",
-    "ubi_per_h",
-    "ubi_from_fund_dep_per_h",
-    "ubi_from_gov_dep_per_h",
-    "ubi_issued_per_h",
+    "uis_per_h",
+    "uis_from_fund_dep_per_h",
+    "uis_from_gov_dep_per_h",
+    "uis_issued_per_h",
     "trust_debt",
     "wages_total",
     "total_consumption",
@@ -543,7 +543,7 @@ def main() -> None:
 
     st.caption(
         "Gini labels: Pre-Tax/Pre-Transfer is household wages plus household-distributed dividends, "
-        "before income tax, VAT credit, UBI, and debt-service deductions. Disposable is the model's "
+        "before income tax, VAT credit, UIS, and debt-service deductions. Disposable is the model's "
         "post-policy household income measure. Wealth is deposits plus allocated household equity claims minus loans."
     )
     st.caption(
