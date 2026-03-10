@@ -11,6 +11,7 @@ import copy
 import csv
 import io
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Sequence
@@ -96,6 +97,7 @@ DISPLAY_VALUE_MODES: tuple[str, str] = ("nominal", "real")
 CONTROL_DEFAULTS_VERSION = 3
 UBI_PERCENTILE_PARAM_KEY = "param__ubi_target_percentile"
 UBI_PERCENTILE_UI_KEY = "ui__ubi_target_percentile"
+_TITLE_MODE_SUFFIX_RE = re.compile(r"\s+\((?:UIS|UBI|Stale)\)\s*$", re.IGNORECASE)
 
 # Columns to deflate when display mode is "real".
 MONETARY_COLUMNS = {
@@ -352,6 +354,32 @@ def _rows_for_value_mode(rows: Sequence[Dict[str, Any]], value_mode: str) -> Lis
     return out_rows
 
 
+def _mark_figure_stale(fig: Any) -> None:
+    """Retitle figure axes as stale and dim plotted elements."""
+    axes = list(fig.get_axes())
+    for ax in axes:
+        title = str(ax.get_title() or "").strip()
+        if title:
+            base = _TITLE_MODE_SUFFIX_RE.sub("", title).strip()
+            ax.set_title(f"{base} (Stale)")
+
+        for line in list(getattr(ax, "lines", [])):
+            cur = line.get_alpha()
+            line.set_alpha((float(cur) if cur is not None else 1.0) * 0.45)
+
+        for coll in list(getattr(ax, "collections", [])):
+            cur = coll.get_alpha()
+            coll.set_alpha((float(cur) if cur is not None else 1.0) * 0.45)
+
+        for patch in list(getattr(ax, "patches", [])):
+            cur = patch.get_alpha()
+            patch.set_alpha((float(cur) if cur is not None else 1.0) * 0.45)
+
+        for img in list(getattr(ax, "images", [])):
+            cur = img.get_alpha()
+            img.set_alpha((float(cur) if cur is not None else 1.0) * 0.45)
+
+
 def _population_dist_for_value_mode(
     population_distributions: Dict[str, Dict[str, Any]] | None,
     value_mode: str,
@@ -386,6 +414,10 @@ def _population_dist_for_value_mode(
 
 
 def _render_parameter_controls(st: Any, grouped_controls: Dict[str, List[Any]]) -> tuple[bool, bool, int]:
+    def _request_reset_defaults() -> None:
+        st.session_state["app__reset_requested"] = True
+        st.session_state["app__force_stale_after_reset"] = True
+
     def _render_control(control: Any) -> None:
         key = control_widget_key(control)
         if control.kind == "bool":
@@ -423,7 +455,7 @@ def _render_parameter_controls(st: Any, grouped_controls: Dict[str, List[Any]]) 
         st.header("Run Controls")
         col_run, col_reset = st.columns(2)
         run_clicked = col_run.button("Run Model", type="primary")
-        reset_clicked = col_reset.button("Reset Defaults")
+        reset_clicked = col_reset.button("Reset", on_click=_request_reset_defaults)
 
         quarters = st.slider(
             "Quarters",
@@ -552,10 +584,10 @@ def main() -> None:
     grouped_controls = controls_by_section()
     _ensure_control_defaults(st, base_params)
 
-    run_clicked, reset_clicked, quarters = _render_parameter_controls(st, grouped_controls)
-    if reset_clicked:
+    if bool(st.session_state.pop("app__reset_requested", False)):
         _apply_control_defaults(st, base_params)
-        st.rerun()
+
+    run_clicked, _reset_clicked, quarters = _render_parameter_controls(st, grouped_controls)
 
     metric_map = metric_options()
     selected_metrics = _render_metric_selector(st, metric_map)
@@ -582,9 +614,10 @@ def main() -> None:
         st.session_state["support_debug"] = dict(payload.get("support_debug", {}))
         st.session_state["last_run_cfg_json"] = current_cfg_json
         st.session_state["last_run_quarters"] = int(quarters)
+        st.session_state["app__force_stale_after_reset"] = False
 
     rows_raw: List[Dict[str, Any]] = list(st.session_state["rows"])
-    config_stale = (
+    config_stale = bool(st.session_state.get("app__force_stale_after_reset", False)) or (
         st.session_state.get("last_run_cfg_json", "") != current_cfg_json
         or int(st.session_state.get("last_run_quarters", 0)) != int(quarters)
     )
@@ -697,6 +730,8 @@ def main() -> None:
             secondary_ylabel=secondary_ylabel,
             support_mode=support_mode,
         )
+        if config_stale:
+            _mark_figure_stale(line_fig)
         st.pyplot(line_fig, clear_figure=False)
         plt.close(line_fig)
 
@@ -711,10 +746,14 @@ def main() -> None:
     )
 
     gini_fig = plot_gini_series(rows, support_mode=support_mode)
+    if config_stale:
+        _mark_figure_stale(gini_fig)
     st.pyplot(gini_fig, clear_figure=False)
     plt.close(gini_fig)
 
     dashboard_fig = plot_default_dashboard(rows, support_mode=support_mode)
+    if config_stale:
+        _mark_figure_stale(dashboard_fig)
     st.pyplot(dashboard_fig, clear_figure=False)
     plt.close(dashboard_fig)
 
@@ -735,6 +774,8 @@ def main() -> None:
                 value_label=value_label,
                 support_mode=support_mode,
             )
+            if config_stale:
+                _mark_figure_stale(income_fig)
             st.pyplot(income_fig, clear_figure=False)
             plt.close(income_fig)
 
@@ -754,6 +795,8 @@ def main() -> None:
                 zoom_hi_pct=float(zoom_window[1]),
                 support_mode=support_mode,
             )
+            if config_stale:
+                _mark_figure_stale(wealth_fig)
             st.pyplot(wealth_fig, clear_figure=False)
             plt.close(wealth_fig)
 
