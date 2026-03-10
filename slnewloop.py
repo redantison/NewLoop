@@ -94,6 +94,8 @@ DECIMAL_COLUMNS = {"price_level", "private_inv_cov"}
 
 DISPLAY_VALUE_MODES: tuple[str, str] = ("nominal", "real")
 CONTROL_DEFAULTS_VERSION = 3
+UBI_PERCENTILE_PARAM_KEY = "param__ubi_target_percentile"
+UBI_PERCENTILE_UI_KEY = "ui__ubi_target_percentile"
 
 # Columns to deflate when display mode is "real".
 MONETARY_COLUMNS = {
@@ -401,7 +403,6 @@ def _render_parameter_controls(st: Any, grouped_controls: Dict[str, List[Any]]) 
             st.selectbox(control.label, options=options, key=key, help=control.help_text or None)
         else:
             kwargs = {
-                "key": key,
                 "help": control.help_text or None,
                 "format": _float_format_from_step(control.step),
             }
@@ -410,7 +411,13 @@ def _render_parameter_controls(st: Any, grouped_controls: Dict[str, List[Any]]) 
             if control.max_value is not None:
                 kwargs["max_value"] = float(control.max_value)
             kwargs["step"] = float(control.step) if control.step is not None else 0.01
-            st.number_input(control.label, **kwargs)
+            if key == UBI_PERCENTILE_PARAM_KEY:
+                # Use a dedicated UI key to avoid stale hidden-widget state when switching modes.
+                val = st.number_input(control.label, key=UBI_PERCENTILE_UI_KEY, **kwargs)
+                st.session_state[UBI_PERCENTILE_PARAM_KEY] = float(val)
+            else:
+                kwargs["key"] = key
+                st.number_input(control.label, **kwargs)
 
     with st.sidebar:
         st.header("Run Controls")
@@ -453,7 +460,6 @@ def _render_parameter_controls(st: Any, grouped_controls: Dict[str, List[Any]]) 
                     # Hidden-widget state can occasionally revive stale values; in practice a 0.0
                     # percentile makes UBI anchor at zero for this population due zero-income households.
                     last_mode_key = "app__last_income_support_mode_ui"
-                    prev_mode = str(st.session_state.get(last_mode_key, "")).strip().upper()
                     if active_mode == "UBI":
                         for control in remaining_controls:
                             default_value = control.fallback_default
@@ -475,6 +481,7 @@ def _render_parameter_controls(st: Any, grouped_controls: Dict[str, List[Any]]) 
                                 pct_val = 0.0
                             if pct_val <= 0.0:
                                 st.session_state[ubi_pct_key] = 30.0
+                            st.session_state[UBI_PERCENTILE_UI_KEY] = float(st.session_state.get(ubi_pct_key, 30.0))
 
                     st.session_state[last_mode_key] = active_mode
 
