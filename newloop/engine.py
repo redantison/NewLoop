@@ -16,6 +16,7 @@ if str(_THIS_DIR) not in sys.path:
     sys.path.insert(0, str(_THIS_DIR))
 
 from mathutils import _as_np, _pct, _pct_np, automation_two_hump, calculate_gini_np
+from income_support import apply_income_support_payment, make_income_support_policy
 from newloop_types import HouseholdState, Node, TickResult
 
 class NewLoop:
@@ -36,6 +37,7 @@ class NewLoop:
 
     def __init__(self, config: Dict[str, Any]) -> None:
         self.params = config["parameters"]
+        self.income_support_policy = make_income_support_policy(self.params)
         p0 = float(config["parameters"].get("price_level_initial", 1.0))
         base_rate_q = max(0.0, float(config["parameters"].get("loan_rate_per_quarter", 0.0)))
         self.state = {
@@ -1000,10 +1002,7 @@ class NewLoop:
         fa_interest = fa_loan * rL
         fh_interest = fh_loan * rL
 
-        # Income-target pool (population mode):
-        # Store the pool in REAL terms at baseline, then index back to nominal each tick via current P.
-        # This prevents deflation from mechanically increasing UIS issuance.
-        target_pool_real_pop = self.state.get("income_target_pool_real_pop", None)
+        # Income-support policy can anchor a baseline in real terms and index to nominal each tick.
         reinvest_rate = float(self.params.get("reinvest_rate_of_retained", 0.0))
         reinvest_rate = max(0.0, min(1.0, reinvest_rate))
         # Lagged CAPEX: this quarter's investment is funded from LAST quarter's retained earnings
@@ -1097,16 +1096,15 @@ class NewLoop:
             div_house_firms = (div_fa_total * (1.0 - f_fa)) + (div_fh_total * (1.0 - f_fh))
             div_fund_firms = (div_fa_total * f_fa) + (div_fh_total * f_fh)
 
-            # 4) UIS policy (population total pool)
-            # Index baseline REAL pool back to nominal using the current tax-exclusive price level P.
-            if target_pool_real_pop is None:
-                uis = 0.0
-            else:
-                target_pool_nom = float(target_pool_real_pop) * float(P)
-                uis = max(0.0, (target_pool_nom - w_total) / float(hh.n))
-            # Optional monotonic policy floor: do not allow policy UIS to decline.
-            if bool(self.params.get("uis_monotonic_floor", True)):
-                uis = max(float(hh.prev_uis), float(uis))
+            # 4) Income-support policy (UIS in Phase 1)
+            uis = self.income_support_policy.compute_per_household(
+                wages_total=float(w_total),
+                div_house_total=float(div_house_total_est),
+                price_level=float(P),
+                n_households=int(hh.n),
+                previous_support_per_h=float(hh.prev_uis),
+                state=self.state,
+            )
 
             # Mortgage index module: compute indexed required payment per household mortgage.
             mort_index_enable = bool(self.params.get("mort_index_enable", False))
@@ -1670,57 +1668,18 @@ class NewLoop:
         # 6) UIS payments: issuance share -> FUND dep -> GOV dep -> extra issuance
         # -------------------------------------------------
         uis = float(sol.get("uis", 0.0))
-        fund_paid_from_dep_total = 0.0
-        gov_paid_from_dep_total = 0.0
-        issued_total = 0.0
-
-        if uis > 0:
-            uis_total = uis * float(n)
-            issue_share = float(self.params.get("uis_issuance_share", 0.0))
-            issue_share = max(0.0, min(1.0, issue_share))
-
-            # Policy issuance tranche (e.g., 5% of total UIS each tick).
-            issue_target = uis_total * issue_share
-            if issue_target > 0:
-                issued_total += issue_target
-                deposits[:] = deposits + (issue_target / float(n))
-                self.nodes["BANK"].add("deposit_liab", issue_target)
-                self.nodes["BANK"].add("reserves", issue_target)
-                self.nodes["GOV"].add("money_issued", issue_target)
-
-            fund_needed = max(0.0, uis_total - issue_target)
-
-            # 1) FUND deposits
-            pay_fund_total = min(fund_needed, max(0.0, self.nodes["FUND"].get("deposits")))
-            if pay_fund_total > 0:
-                self.nodes["FUND"].add("deposits", -pay_fund_total)
-                fund_paid_from_dep_total += pay_fund_total
-                deposits[:] = deposits + (pay_fund_total / float(n))
-                fund_needed -= pay_fund_total
-
-            # 2) GOV deposits
-            if fund_needed > 0:
-                pay_gov_total = min(fund_needed, max(0.0, self.nodes["GOV"].get("deposits")))
-                if pay_gov_total > 0:
-                    self.nodes["GOV"].add("deposits", -pay_gov_total)
-                    gov_paid_from_dep_total += pay_gov_total
-                    deposits[:] = deposits + (pay_gov_total / float(n))
-                    fund_needed -= pay_gov_total
-
-            # 3) Additional issuance if deposits are insufficient
-            if fund_needed > 0:
-                issued_total += fund_needed
-                deposits[:] = deposits + (fund_needed / float(n))
-
-                # Bank liability expands by issuance
-                self.nodes["BANK"].add("deposit_liab", fund_needed)
-                self.nodes["BANK"].add("reserves", fund_needed)
-                self.nodes["GOV"].add("money_issued", fund_needed)
+        funding = apply_income_support_payment(
+            support_per_household=float(uis),
+            n_households=int(n),
+            issue_share=float(self.params.get("uis_issuance_share", 0.0)),
+            deposits=deposits,
+            nodes=self.nodes,
+        )
 
         # Store diagnostics for this tick (totals across all households)
-        self.state["uis_from_fund_dep_total"] = float(fund_paid_from_dep_total)
-        self.state["uis_from_gov_dep_total"] = float(gov_paid_from_dep_total)
-        self.state["uis_issued_total"] = float(issued_total)
+        self.state["uis_from_fund_dep_total"] = float(funding.from_fund_dep_total)
+        self.state["uis_from_gov_dep_total"] = float(funding.from_gov_dep_total)
+        self.state["uis_issued_total"] = float(funding.issued_total)
 
         # -------------------------------------------------
         # 6a) Optional tax refund: rebate a share of remaining GOV deposits
@@ -1952,17 +1911,14 @@ class NewLoop:
             if solp is not None:
                 self.post_tick_population(solp)
 
-                # Establish baseline income target pool (population) after first successful baseline solve.
-                # Store in REAL terms and index to P each tick.
-                if self.state.get("income_target_pool_real_pop", None) is None:
-                    P_base = float(self.state.get("price_level", 1.0))
-                    if P_base <= 0:
-                        P_base = 1e-9
-
-                    target_pool_nom_base = float(solp["w_total"]) + float(self.hh.n) * float(solp["uis"])  # uis should be 0 here
-                    self.state["income_target_pool_real_pop"] = float(target_pool_nom_base) / float(P_base)
-                    self.state["baseline_price_level_pop"] = float(P_base)
-                    self.state["baseline_wages_total_pop"] = float(solp["w_total"])
+                # Let the active income-support policy initialize any one-time baseline anchor.
+                self.income_support_policy.initialize_anchor_if_needed(
+                    state=self.state,
+                    wages_total=float(solp["w_total"]),
+                    support_per_h=float(solp["uis"]),
+                    n_households=int(self.hh.n),
+                    price_level=float(self.state.get("price_level", 1.0)),
+                )
 
                 # Population inequality diagnostics (vectorized)
                 y_vec = _as_np(solp.get("y", []), dtype=float)             # disposable income
