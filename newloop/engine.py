@@ -1912,6 +1912,13 @@ class NewLoop:
         use_pop_dyn = bool(self.params.get("use_population", False)) and bool(self.params.get("population_dynamics", False)) and (self.hh is not None)
 
         if use_pop_dyn:
+            # Allow policy modules to initialize first-tick anchors before solving.
+            self.income_support_policy.warm_start_anchor_if_needed(
+                state=self.state,
+                baseline_wages_i=self.hh.wages0_q,
+                price_level=float(self.state.get("price_level", 1.0)),
+            )
+
             solp = self.solve_within_tick_population()
             if solp is not None:
                 self.post_tick_population(solp)
