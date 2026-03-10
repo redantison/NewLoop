@@ -203,6 +203,49 @@ def plot_income_support_funding_mix(
     return fig
 
 
+def plot_cumulative_income_support_funding(
+    rows: Sequence[Mapping[str, Any]],
+    ax: Any = None,
+    *,
+    support_mode: str = "UIS",
+    household_count: int | None = None,
+) -> Any:
+    """Line chart for cumulative income-support funding channels over time."""
+    import matplotlib.pyplot as plt
+
+    rows = _require_rows(rows)
+    x = [int(r.get("t", i)) for i, r in enumerate(rows)]
+    mode = _normalized_mode(support_mode) or "UIS"
+
+    gov = np.maximum(0.0, np.nan_to_num(np.asarray(_series(rows, "uis_from_gov_dep_per_h"), dtype=float), nan=0.0))
+    issued = np.maximum(0.0, np.nan_to_num(np.asarray(_series(rows, "uis_issued_per_h"), dtype=float), nan=0.0))
+
+    n_hh = int(household_count) if household_count is not None else 1
+    if n_hh <= 0:
+        n_hh = 1
+    scale = float(n_hh)
+
+    gov_cum = np.cumsum(gov * scale)
+    issued_cum = np.cumsum(issued * scale)
+    public_total_cum = gov_cum + issued_cum
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(9, 4.5))
+    else:
+        fig = ax.figure
+
+    ax.plot(x, gov_cum, linewidth=2.0, label="Cumulative GOV Funding")
+    ax.plot(x, issued_cum, linewidth=2.0, label="Cumulative Issuance Funding")
+    ax.plot(x, public_total_cum, linewidth=2.4, linestyle="--", label="Cumulative Public Total")
+    ax.set_title(_title_with_mode("Cumulative Income Support Funding", mode))
+    ax.set_xlabel("Quarter")
+    ax.set_ylabel("Cumulative Amount (Economy Total)")
+    _apply_compact_y_ticks(ax)
+    ax.grid(alpha=0.25)
+    ax.legend(loc="upper left")
+    return fig
+
+
 def plot_gini_series(
     rows: Sequence[Mapping[str, Any]],
     ax: Any = None,
@@ -236,8 +279,13 @@ def plot_gini_series(
     return fig
 
 
-def plot_default_dashboard(rows: Sequence[Mapping[str, Any]], support_mode: str = "UIS") -> Any:
-    """Build a 2x2 default dashboard figure for quick inspection."""
+def plot_default_dashboard(
+    rows: Sequence[Mapping[str, Any]],
+    support_mode: str = "UIS",
+    *,
+    household_count: int | None = None,
+) -> Any:
+    """Build a 2x2 dashboard for automation, gini, and funding diagnostics."""
     import matplotlib.pyplot as plt
 
     rows = _require_rows(rows)
@@ -257,14 +305,11 @@ def plot_default_dashboard(rows: Sequence[Mapping[str, Any]], support_mode: str 
     )
     plot_gini_series(rows, ax=axs[0][1], support_mode=mode)
     plot_income_support_funding_mix(rows, ax=axs[1][0], support_mode=mode)
-    plot_metric_lines(
+    plot_cumulative_income_support_funding(
         rows,
-        ["real_consumption", "real_avg_income"],
-        title="Real Household Outcomes",
         ax=axs[1][1],
-        secondary_metrics=["real_avg_income"],
-        secondary_ylabel="Real Avg Income",
         support_mode=mode,
+        household_count=household_count,
     )
 
     return fig

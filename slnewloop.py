@@ -24,7 +24,6 @@ from plotting import (
     DEFAULT_LINE_METRICS,
     metric_options,
     plot_default_dashboard,
-    plot_gini_series,
     plot_income_distribution_dual,
     plot_metric_lines,
     plot_wealth_distributions_full_zoom,
@@ -563,6 +562,7 @@ def _cached_run_payload(n_quarters: int, cfg_json: str) -> Dict[str, Any]:
             run.sim.params.get("uis_issuance_share", 0.0),
         ),
         "income_target_pool_real_pop": run.sim.state.get("income_target_pool_real_pop", None),
+        "household_count": int(run.sim.hh.n) if getattr(run.sim, "hh", None) is not None else 0,
     }
     return {
         "rows": run.rows,
@@ -745,17 +745,38 @@ def main() -> None:
         "relative to income, not debt stock divided by income."
     )
 
-    gini_fig = plot_gini_series(rows, support_mode=support_mode)
-    if config_stale:
-        _mark_figure_stale(gini_fig)
-    st.pyplot(gini_fig, clear_figure=False)
-    plt.close(gini_fig)
-
-    dashboard_fig = plot_default_dashboard(rows, support_mode=support_mode)
+    hh_count = int(support_debug.get("household_count", 0) or 0)
+    dashboard_fig = plot_default_dashboard(rows, support_mode=support_mode, household_count=hh_count)
+    target_panel_size: tuple[float, float] | None = None
+    _dash_axes = list(dashboard_fig.get_axes())
+    if _dash_axes:
+        _dw, _dh = dashboard_fig.get_size_inches()
+        _bbox = _dash_axes[0].get_position()
+        target_panel_size = (float(_dw) * float(_bbox.width), float(_dh) * float(_bbox.height))
     if config_stale:
         _mark_figure_stale(dashboard_fig)
     st.pyplot(dashboard_fig, clear_figure=False)
     plt.close(dashboard_fig)
+
+    real_outcomes_fig = plot_metric_lines(
+        rows,
+        ["real_consumption", "real_avg_income"],
+        title="Real Household Outcomes",
+        secondary_metrics=["real_avg_income"],
+        secondary_ylabel="Real Avg Income",
+        support_mode=support_mode,
+    )
+    if target_panel_size is not None:
+        real_outcomes_fig.set_size_inches(target_panel_size[0], target_panel_size[1], forward=True)
+    if config_stale:
+        _mark_figure_stale(real_outcomes_fig)
+    _left, center_col, _right = st.columns([1, 2, 1])
+    center_col.pyplot(real_outcomes_fig, clear_figure=False)
+    plt.close(real_outcomes_fig)
+    st.caption(
+        "Cumulative public funding equals cumulative GOV funding plus cumulative issuance funding "
+        "(economy totals, in the currently selected nominal/real display mode)."
+    )
 
     if pop_dist is not None:
         before = pop_dist.get("before", {})
