@@ -33,7 +33,7 @@ config = {
         # Default 0.0 means CAPEX goods/services are produced by the physical sector (FH).
         "capex_supply_share_fa": 0.0,
 
-        # Income tax (marginal above threshold) on wages + dividends (excludes UBI)
+        # Income tax (marginal above threshold) on wages + dividends (excludes UIS)
         "income_tax_rate": 0.15,          # 15% marginal rate
         "income_tax_cutoff_pct": 31.0,    # threshold percentile (same analogue as above; can be tuned)
         # Corporate tax applies to retained earnings only (distributed dividends are not taxed at the corporate level).
@@ -83,8 +83,8 @@ config = {
         "revolving_principal_pay_rate_q": 0.05,  # 5%/q max paydown if cash available
         "mortgage_principal_pay_rate_q": 0.01,   # 1%/q max paydown if cash available
         "send_fund_residual_to_gov": False, # Trust belongs to citizens; do not sweep FUND deposits to GOV by default
-        "ubi_issuance_share": 0.15,         # fixed share of each quarter's UBI paid via issuance
-        "ubi_monotonic_floor": True,        # if True, policy UBI cannot decline quarter-to-quarter
+        "uis_issuance_share": 0.15,         # fixed share of each quarter's UIS paid via issuance
+        "uis_monotonic_floor": True,        # if True, policy UIS cannot decline quarter-to-quarter
         "gov_tax_rebate_rate": 1.00,        # share of remaining GOV deposits rebated each tick by household tax-paid weights
         "hard_assert_sfc": False,          # set True to hard-fail on any mismatch
         # Dashboard display mode for money columns: "nominal" or "price_normalized" (base-period dollars).
