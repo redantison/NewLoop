@@ -28,6 +28,9 @@ METRIC_LABELS: Dict[str, str] = {
     "uis_from_fund_dep_per_h": "Income Support from FUND",
     "uis_from_gov_dep_per_h": "Income Support from GOV",
     "uis_issued_per_h": "Income Support Issued",
+    "corp_tax_rate_eff": "Effective Corporate Tax Rate",
+    "wages_total": "Total Wage Base",
+    "trust_value_per_h": "Trust Value / Household",
 }
 
 DEFAULT_LINE_METRICS: List[str] = [

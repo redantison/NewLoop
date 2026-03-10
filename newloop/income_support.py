@@ -242,6 +242,16 @@ class UBIPolicy:
     ) -> None:
         del support_per_h
 
+        # Dynamic corporate-tax logic uses baseline wages in both modes.
+        # Ensure UBI mode seeds the same baseline wage anchor that UIS provides.
+        if state.get("baseline_wages_total_pop", None) is None:
+            state["baseline_wages_total_pop"] = float(wages_total)
+        if state.get("baseline_price_level_pop", None) is None:
+            p_base = float(price_level)
+            if p_base <= 0.0:
+                p_base = 1e-9
+            state["baseline_price_level_pop"] = float(p_base)
+
         if state.get("ubi_anchor_real_per_h", None) is not None:
             return
 

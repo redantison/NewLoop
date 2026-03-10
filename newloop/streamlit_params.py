@@ -276,7 +276,7 @@ RUN_STEP_QUARTERS = 4
 
 
 NON_GINI_METRIC_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("Core", ("inflation", "trust_equity_pct")),
+    ("Core", ("inflation", "trust_equity_pct", "trust_value_per_h")),
     (
         "Households",
         (

@@ -2048,6 +2048,31 @@ class NewLoop:
                 if P_now <= 0:
                     P_now = 1e-9
 
+                # Trust value proxy (nominal): FUND deposits + FUND equity claims - FUND debt.
+                fa_equity_proxy_hist = max(
+                    0.0,
+                    float(self.nodes["FA"].get("deposits", 0.0))
+                    + float(self.nodes["FA"].get("K", 0.0)) * P_now
+                    - float(self.nodes["FA"].get("loans", 0.0)),
+                )
+                fh_equity_proxy_hist = max(
+                    0.0,
+                    float(self.nodes["FH"].get("deposits", 0.0))
+                    + float(self.nodes["FH"].get("K", 0.0)) * P_now
+                    - float(self.nodes["FH"].get("loans", 0.0)),
+                )
+                bank_equity_proxy_hist = max(0.0, float(self.nodes["BANK"].get("equity", 0.0)))
+                trust_equity_value_total = (
+                    frac("FA", "shares_FA") * fa_equity_proxy_hist
+                    + frac("FH", "shares_FH") * fh_equity_proxy_hist
+                    + frac("BANK", "shares_BANK") * bank_equity_proxy_hist
+                )
+                trust_value_total = (
+                    float(self.nodes["FUND"].get("deposits", 0.0))
+                    + float(trust_equity_value_total)
+                    - float(self.nodes["FUND"].get("loans", 0.0))
+                )
+
                 wages_total = float(solp["w_total"])
                 c_total = float(solp["c_total"])
 
@@ -2072,6 +2097,7 @@ class NewLoop:
                     vat_per_h=float(self.state.get("vat_receipts_total", 0.0)) / float(self.hh.n),
                     inc_tax_per_h=float(self.state.get("income_tax_total", 0.0)) / float(self.hh.n),
                     corp_tax_per_h=float(self.state.get("corp_tax_total", 0.0)) / float(self.hh.n),
+                    corp_tax_rate_eff=float(self.state.get("corp_tax_rate_eff", self.params.get("corporate_tax_rate", 0.0))),
                     vat_credit_per_h=float(self.state.get("vat_credit_total", 0.0)) / float(self.hh.n),
                     gov_dep_per_h=float(self.nodes["GOV"].get("deposits", 0.0)) / float(self.hh.n),
                     fund_dep_per_h=float(self.nodes["FUND"].get("deposits", 0.0)) / float(self.hh.n),
@@ -2082,6 +2108,7 @@ class NewLoop:
                     uis_issued_per_h=float(self.state.get("uis_issued_total", 0.0)) / float(self.hh.n),
                     trust_equity_pct=float(own_avg),
                     trust_debt=float(self.nodes["FUND"].get("loans", 0.0)),
+                    trust_value_per_h=float(trust_value_total) / float(self.hh.n),
                     wages_total=wages_total,
                     total_consumption=c_total,
 

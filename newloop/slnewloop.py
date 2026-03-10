@@ -62,6 +62,7 @@ PERCENT_COLUMNS = {
     "gini_wealth",
     "private_roe_q",
     "trust_equity_pct",
+    "corp_tax_rate_eff",
     "pop_dti_med",
     "pop_dti_p90",
     "pop_dti_w_med",
@@ -82,6 +83,7 @@ COMPACT_NUMBER_COLUMNS = {
     "uis_from_gov_dep_per_h",
     "uis_issued_per_h",
     "trust_debt",
+    "trust_value_per_h",
     "wages_total",
     "total_consumption",
     "real_avg_income",
@@ -113,6 +115,7 @@ MONETARY_COLUMNS = {
     "uis_from_gov_dep_per_h",
     "uis_issued_per_h",
     "trust_debt",
+    "trust_value_per_h",
     "wages_total",
     "total_consumption",
     "pop_inc_med",
@@ -747,36 +750,49 @@ def main() -> None:
 
     hh_count = int(support_debug.get("household_count", 0) or 0)
     dashboard_fig = plot_default_dashboard(rows, support_mode=support_mode, household_count=hh_count)
-    target_panel_size: tuple[float, float] | None = None
-    _dash_axes = list(dashboard_fig.get_axes())
-    if _dash_axes:
-        _dw, _dh = dashboard_fig.get_size_inches()
-        _bbox = _dash_axes[0].get_position()
-        target_panel_size = (float(_dw) * float(_bbox.width), float(_dh) * float(_bbox.height))
     if config_stale:
         _mark_figure_stale(dashboard_fig)
     st.pyplot(dashboard_fig, clear_figure=False)
     plt.close(dashboard_fig)
+    st.caption(
+        "Cumulative public funding equals cumulative GOV funding plus cumulative issuance funding "
+        "(economy totals, in the currently selected nominal/real display mode)."
+    )
 
-    real_outcomes_fig = plot_metric_lines(
+    row_fig, (ax_outcomes, ax_corp_tax) = plt.subplots(1, 2, figsize=(13, 4.5), constrained_layout=True)
+
+    plot_metric_lines(
         rows,
         ["real_consumption", "real_avg_income"],
         title="Real Household Outcomes",
         secondary_metrics=["real_avg_income"],
         secondary_ylabel="Real Avg Income",
         support_mode=support_mode,
+        ax=ax_outcomes,
     )
-    if target_panel_size is not None:
-        real_outcomes_fig.set_size_inches(target_panel_size[0], target_panel_size[1], forward=True)
+
+    plot_metric_lines(
+        rows,
+        ["corp_tax_rate_eff", "wages_total"],
+        title="Corporate Tax Rate Over Time",
+        primary_ylabel="Rate",
+        secondary_metrics=["wages_total"],
+        secondary_ylabel="Total Wage Base",
+        support_mode=support_mode,
+        ax=ax_corp_tax,
+    )
+    _corp_axes = row_fig.get_axes()
+    if _corp_axes:
+        _corp_primary = _corp_axes[1]
+        _corp_primary.set_ylim(0.0, 1.0)
+        from matplotlib.ticker import FuncFormatter
+
+        _corp_primary.yaxis.set_major_formatter(FuncFormatter(lambda val, _: f"{100.0 * float(val):.1f}%"))
+
     if config_stale:
-        _mark_figure_stale(real_outcomes_fig)
-    _left, center_col, _right = st.columns([1, 2, 1])
-    center_col.pyplot(real_outcomes_fig, clear_figure=False)
-    plt.close(real_outcomes_fig)
-    st.caption(
-        "Cumulative public funding equals cumulative GOV funding plus cumulative issuance funding "
-        "(economy totals, in the currently selected nominal/real display mode)."
-    )
+        _mark_figure_stale(row_fig)
+    st.pyplot(row_fig, clear_figure=False)
+    plt.close(row_fig)
 
     if pop_dist is not None:
         before = pop_dist.get("before", {})

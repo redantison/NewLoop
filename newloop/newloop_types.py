@@ -100,6 +100,7 @@ class TickResult:
     vat_per_h: float
     inc_tax_per_h: float
     corp_tax_per_h: float
+    corp_tax_rate_eff: float
     vat_credit_per_h: float
     gov_dep_per_h: float
     fund_dep_per_h: float
@@ -111,6 +112,7 @@ class TickResult:
     uis_issued_per_h: float
     trust_equity_pct: float
     trust_debt: float
+    trust_value_per_h: float
     wages_total: float
     total_consumption: float
 
