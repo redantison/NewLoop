@@ -40,7 +40,7 @@ class HouseholdState:
     base_real_cons_q: np.ndarray
 
     prev_income: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=float))
-    prev_ubi: float = 0.0
+    prev_uis: float = 0.0
     prev_wages_total: float = 0.0
 
     # Mortgage-index module state (one synthetic "mortgage record" per household).
@@ -100,17 +100,19 @@ class TickResult:
     vat_per_h: float
     inc_tax_per_h: float
     corp_tax_per_h: float
+    corp_tax_rate_eff: float
     vat_credit_per_h: float
     gov_dep_per_h: float
     fund_dep_per_h: float
     capex_per_h: float
 
-    ubi_per_h: float
-    ubi_from_fund_dep_per_h: float
-    ubi_from_gov_dep_per_h: float
-    ubi_issued_per_h: float
+    uis_per_h: float
+    uis_from_fund_dep_per_h: float
+    uis_from_gov_dep_per_h: float
+    uis_issued_per_h: float
     trust_equity_pct: float
     trust_debt: float
+    trust_value_per_h: float
     wages_total: float
     total_consumption: float
 

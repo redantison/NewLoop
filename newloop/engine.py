@@ -16,6 +16,7 @@ if str(_THIS_DIR) not in sys.path:
     sys.path.insert(0, str(_THIS_DIR))
 
 from mathutils import _as_np, _pct, _pct_np, automation_two_hump, calculate_gini_np
+from income_support import apply_income_support_payment, make_income_support_policy
 from newloop_types import HouseholdState, Node, TickResult
 
 class NewLoop:
@@ -36,6 +37,7 @@ class NewLoop:
 
     def __init__(self, config: Dict[str, Any]) -> None:
         self.params = config["parameters"]
+        self.income_support_policy = make_income_support_policy(self.params)
         p0 = float(config["parameters"].get("price_level_initial", 1.0))
         base_rate_q = max(0.0, float(config["parameters"].get("loan_rate_per_quarter", 0.0)))
         self.state = {
@@ -47,10 +49,10 @@ class NewLoop:
             "price_level": p0,
             "inflation": 0.0,
 
-            # Per-tick UBI funding diagnostics (set in post_tick)
-            "ubi_from_fund_dep_total": 0.0,
-            "ubi_from_gov_dep_total": 0.0,
-            "ubi_issued_total": 0.0,
+            # Per-tick income-support funding diagnostics (set in post_tick)
+            "uis_from_fund_dep_total": 0.0,
+            "uis_from_gov_dep_total": 0.0,
+            "uis_issued_total": 0.0,
             "tax_rebate_total": 0.0,
             # Lagged private equity stock used for private payout-yield proxy.
             "private_equity_prev_total": 0.0,
@@ -172,7 +174,7 @@ class NewLoop:
                 self.nodes["HH"].set("deposits", self.hh.sum_deposits())
                 self.nodes["HH"].set("loans", self.hh.sum_loans())
                 p_series0 = self._mort_price_series_value(float(self.state.get("price_level", p0)))
-                y_series0 = self._mort_income_series_value(float(np.sum(self.hh.wages0_q)), 0.0, float(self.hh.prev_ubi))
+                y_series0 = self._mort_income_series_value(float(np.sum(self.hh.wages0_q)), 0.0, float(self.hh.prev_uis))
                 self.state["mort_price_series_prev"] = float(p_series0)
                 self.state["mort_income_series_prev"] = float(y_series0)
                 self._ensure_mortgage_index_anchors(p_series0, y_series0, base_rate_q)
@@ -212,8 +214,8 @@ class NewLoop:
         self.history: List[TickResult] = []
         self.bs_history: List[Dict[str, Any]] = []   # per-tick, per-node balance sheet snapshot
         self.inv_history: List[Dict[str, Any]] = []  # per-tick SFC invariant diagnostics
-        # Per-tick UBI funding diagnostics captured *pre-UBI payment* inside post_tick
-        self.ubi_debug_history: List[Dict[str, float]] = []
+        # Per-tick income-support funding diagnostics captured *pre-payment* inside post_tick
+        self.uis_debug_history: List[Dict[str, float]] = []
 
         self._assert_sfc_ok(context="init")
 
@@ -322,11 +324,11 @@ class NewLoop:
             return max(1e-9, p * (1.0 + vat))
         return max(1e-9, p)
 
-    def _mort_income_series_value(self, wages_total: float, div_house_total: float, ubi_per_h: float) -> float:
+    def _mort_income_series_value(self, wages_total: float, div_house_total: float, uis_per_h: float) -> float:
         n_hh = float(self.hh.n) if (self.hh is not None and self.hh.n > 0) else 1.0
         wages = max(0.0, float(wages_total))
         div_hh = max(0.0, float(div_house_total))
-        ubi_total = max(0.0, float(ubi_per_h)) * n_hh
+        uis_total = max(0.0, float(uis_per_h)) * n_hh
 
         income_series = str(self.params.get("mort_index_income_series", "NominalHHIncome")).strip()
         if income_series == "NominalWages":
@@ -334,8 +336,8 @@ class NewLoop:
         elif income_series == "NominalMarketIncome":
             y = wages + div_hh
         else:
-            # NominalHHIncome (default): wages + household dividends + UBI.
-            y = wages + div_hh + ubi_total
+            # NominalHHIncome (default): wages + household dividends + income support.
+            y = wages + div_hh + uis_total
         return max(1e-9, float(y))
 
     def _ensure_mortgage_index_anchors(self, p_series_now: float, y_series_now: float, rL: float) -> None:
@@ -374,7 +376,7 @@ class NewLoop:
         rL: float,
         wages_total: float,
         div_house_total: float,
-        ubi_per_h: float,
+        uis_per_h: float,
         commit_state: bool,
     ) -> Dict[str, Any]:
         if self.hh is None or self.hh.n <= 0:
@@ -411,7 +413,7 @@ class NewLoop:
         mort_pay_ctr_i = mort_interest_due_i + mort_principal_ctr_i
 
         p_series_now = self._mort_price_series_value(float(self.state.get("price_level", 1.0)))
-        y_series_now = self._mort_income_series_value(wages_total, div_house_total, ubi_per_h)
+        y_series_now = self._mort_income_series_value(wages_total, div_house_total, uis_per_h)
         p_series_prev = float(self.state.get("mort_price_series_prev", p_series_now))
         y_series_prev = float(self.state.get("mort_income_series_prev", y_series_now))
         p_series_prev = max(1e-9, p_series_prev)
@@ -849,7 +851,7 @@ class NewLoop:
         # Trigger metric: use last-quarter debt-service stress.
         # We take the maximum of:
         #   - pop_dti_w_p90: interest / wage among employed debtors (wage-only)
-        #   - pop_dti_p90:   interest / (wage + UBI) among debtors (inclusive)
+        #   - pop_dti_p90:   interest / (wage + income support) among debtors (inclusive)
         # This prevents “never trigger” behavior if one of the two sub-metrics is empty or near-zero.
         dti_ratio = 0.0
         dti_w_p90 = 0.0
@@ -1000,10 +1002,7 @@ class NewLoop:
         fa_interest = fa_loan * rL
         fh_interest = fh_loan * rL
 
-        # Income-target pool (population mode):
-        # Store the pool in REAL terms at baseline, then index back to nominal each tick via current P.
-        # This prevents deflation from mechanically increasing UBI issuance.
-        target_pool_real_pop = self.state.get("income_target_pool_real_pop", None)
+        # Income-support policy can anchor a baseline in real terms and index to nominal each tick.
         reinvest_rate = float(self.params.get("reinvest_rate_of_retained", 0.0))
         reinvest_rate = max(0.0, min(1.0, reinvest_rate))
         # Lagged CAPEX: this quarter's investment is funded from LAST quarter's retained earnings
@@ -1097,28 +1096,27 @@ class NewLoop:
             div_house_firms = (div_fa_total * (1.0 - f_fa)) + (div_fh_total * (1.0 - f_fh))
             div_fund_firms = (div_fa_total * f_fa) + (div_fh_total * f_fh)
 
-            # 4) UBI policy (population total pool)
-            # Index baseline REAL pool back to nominal using the current tax-exclusive price level P.
-            if target_pool_real_pop is None:
-                ubi = 0.0
-            else:
-                target_pool_nom = float(target_pool_real_pop) * float(P)
-                ubi = max(0.0, (target_pool_nom - w_total) / float(hh.n))
-            # Optional monotonic policy floor: do not allow policy UBI to decline.
-            if bool(self.params.get("ubi_monotonic_floor", True)):
-                ubi = max(float(hh.prev_ubi), float(ubi))
+            # 4) Income-support policy (mode selected by parameters)
+            uis = self.income_support_policy.compute_per_household(
+                wages_total=float(w_total),
+                div_house_total=float(div_house_total_est),
+                price_level=float(P),
+                n_households=int(hh.n),
+                previous_support_per_h=float(hh.prev_uis),
+                state=self.state,
+            )
 
             # Mortgage index module: compute indexed required payment per household mortgage.
             mort_index_enable = bool(self.params.get("mort_index_enable", False))
             p_series_now = self._mort_price_series_value(P)
-            y_series_now = self._mort_income_series_value(w_total, float(div_house_total_est), float(ubi))
+            y_series_now = self._mort_income_series_value(w_total, float(div_house_total_est), float(uis))
             self._ensure_mortgage_index_anchors(p_series_now, y_series_now, rL)
             mort_terms = self._compute_mortgage_index_terms(
                 mort=mort,
                 rL=rL,
                 wages_total=w_total,
                 div_house_total=float(div_house_total_est),
-                ubi_per_h=float(ubi),
+                uis_per_h=float(uis),
                 commit_state=False,
             )
             mort_pay_req_i = _as_np(mort_terms.get("mort_pay_req_i", np.zeros(hh.n, dtype=float)), dtype=float)
@@ -1154,7 +1152,7 @@ class NewLoop:
             div_i = w_weights * float(div_house_total)
 
             # --- Taxes & VAT credit (computed endogenously inside the solver) ---
-            taxable_income = wages_i + div_i  # excludes UBI by policy
+            taxable_income = wages_i + div_i  # excludes income support by policy
 
             # Income tax: 15% marginal above a percentile threshold (nearest-rank)
             it_rate = float(self.params.get("income_tax_rate", 0.0))
@@ -1180,7 +1178,7 @@ class NewLoop:
             vc_start_pct = max(0.0, min(100.0, vc_start_pct))
             vc_end_pct = max(vc_start_pct, min(100.0, vc_end_pct))
 
-            elig_income = taxable_income + float(ubi)  # user policy: eligibility uses taxable income + UBI
+            elig_income = taxable_income + float(uis)  # user policy: eligibility uses taxable income + income support
             if elig_income.size > 0:
                 k_vc_start = int(math.ceil((vc_start_pct / 100.0) * elig_income.size)) - 1
                 k_vc_start = max(0, min(elig_income.size - 1, k_vc_start))
@@ -1223,9 +1221,9 @@ class NewLoop:
             # When mortgage indexing is enabled, households service mortgage-required payment
             # plus revolving interest (contractual); otherwise retain legacy interest-only burden.
             if mort_index_enable:
-                y_new = wages_i + float(ubi) + div_i + vat_credit_i - rev_interest - mort_pay_req_i - income_tax_i
+                y_new = wages_i + float(uis) + div_i + vat_credit_i - rev_interest - mort_pay_req_i - income_tax_i
             else:
-                y_new = wages_i + float(ubi) + div_i + vat_credit_i - interest_hh - income_tax_i
+                y_new = wages_i + float(uis) + div_i + vat_credit_i - interest_hh - income_tax_i
             max_delta = float(np.max(np.abs(y_new - y_guess)))
 
             if max_delta < tol:
@@ -1263,7 +1261,7 @@ class NewLoop:
                     "f_bk": f_bk,
                     "div_fund": div_fund,
                     "div_house_total": float(div_house_total),
-                    "ubi": float(ubi),
+                    "uis": float(uis),
                     "wages_i": wages_i,
                     "div_i": div_i,
                     "y": y_new,
@@ -1284,7 +1282,7 @@ class NewLoop:
                     "mort_dln_i": _as_np(mort_terms.get("mort_dln_i", np.zeros(hh.n, dtype=float)), dtype=float),
                     "mort_dln_sm_i": _as_np(mort_terms.get("mort_dln_sm_i", np.zeros(hh.n, dtype=float)), dtype=float),
                     "p_series_now": float(mort_terms.get("p_series_now", P)),
-                    "y_series_now": float(mort_terms.get("y_series_now", max(1e-9, w_total + div_house_total + float(ubi) * float(hh.n)))),
+                    "y_series_now": float(mort_terms.get("y_series_now", max(1e-9, w_total + div_house_total + float(uis) * float(hh.n)))),
                     "rev_interest_i": rev_interest,
                     "taxable_income": taxable_income,
                     "income_tax_i": income_tax_i,
@@ -1603,7 +1601,7 @@ class NewLoop:
             bank.add("equity", +trust_interest)
 
         # -------------------------------------------------
-        # 5) Taxes + VAT credit (before UBI)
+        # 5) Taxes + VAT credit (before income support)
         # -------------------------------------------------
         income_tax_i = _as_np(sol.get("income_tax_i", []), dtype=float)
         vat_credit_i = _as_np(sol.get("vat_credit_i", []), dtype=float)
@@ -1652,7 +1650,7 @@ class NewLoop:
         self.state["vat_credit_total"] = float(max(0.0, vat_credit_total_initial))
 
         # -------------------------------------------------
-        # 5) Trust amortization (BEFORE UBI)
+        # 5) Trust amortization (before income support)
         # -------------------------------------------------
         fund_loan = float(self.nodes["FUND"].get("loans", 0.0))
         if fund_loan > 0:
@@ -1667,60 +1665,26 @@ class NewLoop:
                 self._xfer_deposits("FUND", "GOV", residual)
 
         # -------------------------------------------------
-        # 6) UBI payments: issuance share -> FUND dep -> GOV dep -> extra issuance
+        # 6) Income-support payments: issuance share -> FUND dep -> GOV dep -> extra issuance
         # -------------------------------------------------
-        ubi = float(sol.get("ubi", 0.0))
-        fund_paid_from_dep_total = 0.0
-        gov_paid_from_dep_total = 0.0
-        issued_total = 0.0
-
-        if ubi > 0:
-            ubi_total = ubi * float(n)
-            issue_share = float(self.params.get("ubi_issuance_share", 0.0))
-            issue_share = max(0.0, min(1.0, issue_share))
-
-            # Policy issuance tranche (e.g., 5% of total UBI each tick).
-            issue_target = ubi_total * issue_share
-            if issue_target > 0:
-                issued_total += issue_target
-                deposits[:] = deposits + (issue_target / float(n))
-                self.nodes["BANK"].add("deposit_liab", issue_target)
-                self.nodes["BANK"].add("reserves", issue_target)
-                self.nodes["GOV"].add("money_issued", issue_target)
-
-            fund_needed = max(0.0, ubi_total - issue_target)
-
-            # 1) FUND deposits
-            pay_fund_total = min(fund_needed, max(0.0, self.nodes["FUND"].get("deposits")))
-            if pay_fund_total > 0:
-                self.nodes["FUND"].add("deposits", -pay_fund_total)
-                fund_paid_from_dep_total += pay_fund_total
-                deposits[:] = deposits + (pay_fund_total / float(n))
-                fund_needed -= pay_fund_total
-
-            # 2) GOV deposits
-            if fund_needed > 0:
-                pay_gov_total = min(fund_needed, max(0.0, self.nodes["GOV"].get("deposits")))
-                if pay_gov_total > 0:
-                    self.nodes["GOV"].add("deposits", -pay_gov_total)
-                    gov_paid_from_dep_total += pay_gov_total
-                    deposits[:] = deposits + (pay_gov_total / float(n))
-                    fund_needed -= pay_gov_total
-
-            # 3) Additional issuance if deposits are insufficient
-            if fund_needed > 0:
-                issued_total += fund_needed
-                deposits[:] = deposits + (fund_needed / float(n))
-
-                # Bank liability expands by issuance
-                self.nodes["BANK"].add("deposit_liab", fund_needed)
-                self.nodes["BANK"].add("reserves", fund_needed)
-                self.nodes["GOV"].add("money_issued", fund_needed)
+        uis = float(sol.get("uis", 0.0))
+        funding = apply_income_support_payment(
+            support_per_household=float(uis),
+            n_households=int(n),
+            issue_share=float(
+                self.params.get(
+                    "income_support_issuance_share",
+                    self.params.get("uis_issuance_share", 0.0),
+                )
+            ),
+            deposits=deposits,
+            nodes=self.nodes,
+        )
 
         # Store diagnostics for this tick (totals across all households)
-        self.state["ubi_from_fund_dep_total"] = float(fund_paid_from_dep_total)
-        self.state["ubi_from_gov_dep_total"] = float(gov_paid_from_dep_total)
-        self.state["ubi_issued_total"] = float(issued_total)
+        self.state["uis_from_fund_dep_total"] = float(funding.from_fund_dep_total)
+        self.state["uis_from_gov_dep_total"] = float(funding.from_gov_dep_total)
+        self.state["uis_issued_total"] = float(funding.issued_total)
 
         # -------------------------------------------------
         # 6a) Optional tax refund: rebate a share of remaining GOV deposits
@@ -1821,7 +1785,7 @@ class NewLoop:
 
         if y_vec.shape[0] == n:
             hh.prev_income = y_vec.astype(float, copy=True)
-        hh.prev_ubi = float(ubi)
+        hh.prev_uis = float(uis)
         hh.prev_wages_total = float(sol.get("w_total", 0.0))
 
         # 8b) Store last-quarter retained earnings for lagged CAPEX decision
@@ -1948,21 +1912,27 @@ class NewLoop:
         use_pop_dyn = bool(self.params.get("use_population", False)) and bool(self.params.get("population_dynamics", False)) and (self.hh is not None)
 
         if use_pop_dyn:
+            # Allow policy modules to initialize first-tick anchors before solving.
+            self.income_support_policy.warm_start_anchor_if_needed(
+                state=self.state,
+                baseline_wages_i=self.hh.wages0_q,
+                price_level=float(self.state.get("price_level", 1.0)),
+            )
+
             solp = self.solve_within_tick_population()
             if solp is not None:
                 self.post_tick_population(solp)
 
-                # Establish baseline income target pool (population) after first successful baseline solve.
-                # Store in REAL terms and index to P each tick.
-                if self.state.get("income_target_pool_real_pop", None) is None:
-                    P_base = float(self.state.get("price_level", 1.0))
-                    if P_base <= 0:
-                        P_base = 1e-9
-
-                    target_pool_nom_base = float(solp["w_total"]) + float(self.hh.n) * float(solp["ubi"])  # ubi should be 0 here
-                    self.state["income_target_pool_real_pop"] = float(target_pool_nom_base) / float(P_base)
-                    self.state["baseline_price_level_pop"] = float(P_base)
-                    self.state["baseline_wages_total_pop"] = float(solp["w_total"])
+                # Let the active income-support policy initialize any one-time baseline anchor.
+                self.income_support_policy.initialize_anchor_if_needed(
+                    state=self.state,
+                    wages_total=float(solp["w_total"]),
+                    support_per_h=float(solp["uis"]),
+                    n_households=int(self.hh.n),
+                    price_level=float(self.state.get("price_level", 1.0)),
+                    wages_i=solp.get("wages_i"),
+                    div_i=solp.get("div_i"),
+                )
 
                 # Population inequality diagnostics (vectorized)
                 y_vec = _as_np(solp.get("y", []), dtype=float)             # disposable income
@@ -2045,10 +2015,10 @@ class NewLoop:
 
                 # Population DTI percentiles directly from solver components (vectorized)
                 interest_hh = _as_np(solp.get("interest_hh", []), dtype=float)
-                ubi = float(solp.get("ubi", 0.0))
+                uis = float(solp.get("uis", 0.0))
 
                 if interest_hh.size and wages_i.size and interest_hh.size == wages_i.size:
-                    gross = wages_i + ubi
+                    gross = wages_i + uis
 
                     # Income percentiles: everyone with gross income
                     incs = (gross - interest_hh)[gross > 0]
@@ -2078,6 +2048,31 @@ class NewLoop:
                 if P_now <= 0:
                     P_now = 1e-9
 
+                # Trust value proxy (nominal): FUND deposits + FUND equity claims - FUND debt.
+                fa_equity_proxy_hist = max(
+                    0.0,
+                    float(self.nodes["FA"].get("deposits", 0.0))
+                    + float(self.nodes["FA"].get("K", 0.0)) * P_now
+                    - float(self.nodes["FA"].get("loans", 0.0)),
+                )
+                fh_equity_proxy_hist = max(
+                    0.0,
+                    float(self.nodes["FH"].get("deposits", 0.0))
+                    + float(self.nodes["FH"].get("K", 0.0)) * P_now
+                    - float(self.nodes["FH"].get("loans", 0.0)),
+                )
+                bank_equity_proxy_hist = max(0.0, float(self.nodes["BANK"].get("equity", 0.0)))
+                trust_equity_value_total = (
+                    frac("FA", "shares_FA") * fa_equity_proxy_hist
+                    + frac("FH", "shares_FH") * fh_equity_proxy_hist
+                    + frac("BANK", "shares_BANK") * bank_equity_proxy_hist
+                )
+                trust_value_total = (
+                    float(self.nodes["FUND"].get("deposits", 0.0))
+                    + float(trust_equity_value_total)
+                    - float(self.nodes["FUND"].get("loans", 0.0))
+                )
+
                 wages_total = float(solp["w_total"])
                 c_total = float(solp["c_total"])
 
@@ -2102,20 +2097,22 @@ class NewLoop:
                     vat_per_h=float(self.state.get("vat_receipts_total", 0.0)) / float(self.hh.n),
                     inc_tax_per_h=float(self.state.get("income_tax_total", 0.0)) / float(self.hh.n),
                     corp_tax_per_h=float(self.state.get("corp_tax_total", 0.0)) / float(self.hh.n),
+                    corp_tax_rate_eff=float(self.state.get("corp_tax_rate_eff", self.params.get("corporate_tax_rate", 0.0))),
                     vat_credit_per_h=float(self.state.get("vat_credit_total", 0.0)) / float(self.hh.n),
                     gov_dep_per_h=float(self.nodes["GOV"].get("deposits", 0.0)) / float(self.hh.n),
                     fund_dep_per_h=float(self.nodes["FUND"].get("deposits", 0.0)) / float(self.hh.n),
                     capex_per_h=float(self.state.get("capex_total", 0.0)) / float(self.hh.n),
-                    ubi_per_h=float(ubi),
-                    ubi_from_fund_dep_per_h=float(self.state.get("ubi_from_fund_dep_total", 0.0)) / float(self.hh.n),
-                    ubi_from_gov_dep_per_h=float(self.state.get("ubi_from_gov_dep_total", 0.0)) / float(self.hh.n),
-                    ubi_issued_per_h=float(self.state.get("ubi_issued_total", 0.0)) / float(self.hh.n),
+                    uis_per_h=float(uis),
+                    uis_from_fund_dep_per_h=float(self.state.get("uis_from_fund_dep_total", 0.0)) / float(self.hh.n),
+                    uis_from_gov_dep_per_h=float(self.state.get("uis_from_gov_dep_total", 0.0)) / float(self.hh.n),
+                    uis_issued_per_h=float(self.state.get("uis_issued_total", 0.0)) / float(self.hh.n),
                     trust_equity_pct=float(own_avg),
                     trust_debt=float(self.nodes["FUND"].get("loans", 0.0)),
+                    trust_value_per_h=float(trust_value_total) / float(self.hh.n),
                     wages_total=wages_total,
                     total_consumption=c_total,
 
-                    real_avg_income=float(((wages_total / float(self.hh.n)) + float(ubi)) / P_now),
+                    real_avg_income=float(((wages_total / float(self.hh.n)) + float(uis)) / P_now),
                     real_consumption=float(c_total / P_now),
 
                     pop_gini=float(gini_disp),

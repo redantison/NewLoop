@@ -93,20 +93,20 @@ def _run_scenario(
     denom = float(sim.hh.n) if sim.hh is not None else 1.0
 
     rcons = [(r.total_consumption / denom) / max(r.price_level, 1e-9) for r in hist]
-    ubi = [float(r.ubi_per_h) for r in hist]
-    ubi_f = [float(r.ubi_from_fund_dep_per_h) for r in hist]
-    ubi_g = [float(r.ubi_from_gov_dep_per_h) for r in hist]
-    ubi_i = [float(r.ubi_issued_per_h) for r in hist]
+    uis = [float(r.uis_per_h) for r in hist]
+    uis_f = [float(r.uis_from_fund_dep_per_h) for r in hist]
+    uis_g = [float(r.uis_from_gov_dep_per_h) for r in hist]
+    uis_i = [float(r.uis_issued_per_h) for r in hist]
 
-    ubi_total = float(sum(ubi))
-    if ubi_total > 1e-12:
-        ubi_f_share = float(sum(ubi_f) / ubi_total)
-        ubi_g_share = float(sum(ubi_g) / ubi_total)
-        ubi_i_share = float(sum(ubi_i) / ubi_total)
+    uis_total = float(sum(uis))
+    if uis_total > 1e-12:
+        uis_f_share = float(sum(uis_f) / uis_total)
+        uis_g_share = float(sum(uis_g) / uis_total)
+        uis_i_share = float(sum(uis_i) / uis_total)
     else:
-        ubi_f_share = 0.0
-        ubi_g_share = 0.0
-        ubi_i_share = 0.0
+        uis_f_share = 0.0
+        uis_g_share = 0.0
+        uis_i_share = 0.0
 
     last = hist[-1]
     return {
@@ -117,10 +117,10 @@ def _run_scenario(
         "payout": float(p["dividend_payout_rate_firms"]),
         "rcons_end": float(rcons[-1]),
         "rcons_slope": _slope_last(rcons, window),
-        "ubi_i_max": float(max(ubi_i)),
-        "ubi_f_share": float(ubi_f_share),
-        "ubi_g_share": float(ubi_g_share),
-        "ubi_i_share": float(ubi_i_share),
+        "uis_i_max": float(max(uis_i)),
+        "uis_f_share": float(uis_f_share),
+        "uis_g_share": float(uis_g_share),
+        "uis_i_share": float(uis_i_share),
         "eqcap_end": float(last.trust_equity_pct),
         "p_roe_end": float(last.private_roe_q),
         "p_eq_end": float(last.private_eq_per_h),
@@ -141,24 +141,24 @@ def _add_rank_scores(rows: List[Dict[str, float]]) -> None:
 
     rcons_vals = [float(r["rcons_end"]) for r in rows]
     slope_vals = [float(r["rcons_slope"]) for r in rows]
-    ubi_i_vals = [float(r["ubi_i_max"]) for r in rows]
-    gov_share_vals = [float(r["ubi_g_share"]) for r in rows]
+    uis_i_vals = [float(r["uis_i_max"]) for r in rows]
+    gov_share_vals = [float(r["uis_g_share"]) for r in rows]
 
     rcons_lo, rcons_hi = min(rcons_vals), max(rcons_vals)
     slope_lo, slope_hi = min(slope_vals), max(slope_vals)
-    ubi_i_lo, ubi_i_hi = min(ubi_i_vals), max(ubi_i_vals)
+    uis_i_lo, uis_i_hi = min(uis_i_vals), max(uis_i_vals)
     gov_lo, gov_hi = min(gov_share_vals), max(gov_share_vals)
 
     for r in rows:
         rcons_n = _norm(float(r["rcons_end"]), rcons_lo, rcons_hi)               # higher better
         slope_n = _norm(float(r["rcons_slope"]), slope_lo, slope_hi)             # higher better
-        ubi_i_n = _norm(float(r["ubi_i_max"]), ubi_i_lo, ubi_i_hi)               # lower better
-        gov_n = _norm(float(r["ubi_g_share"]), gov_lo, gov_hi)                   # lower better
+        uis_i_n = _norm(float(r["uis_i_max"]), uis_i_lo, uis_i_hi)               # lower better
+        gov_n = _norm(float(r["uis_g_share"]), gov_lo, gov_hi)                   # lower better
 
         score = 100.0 * (
             (0.35 * rcons_n)
             + (0.25 * slope_n)
-            + (0.20 * (1.0 - ubi_i_n))
+            + (0.20 * (1.0 - uis_i_n))
             + (0.20 * (1.0 - gov_n))
         )
         r["score"] = float(score)
@@ -182,7 +182,7 @@ def _build_table(rows: List[Dict[str, float]]) -> TableOfData:
         "reb|Rr|.2f",
         "RConsEnd|Rr|.2f",
         "dRCons20|Rr|.3f",
-        "UBI_Imax|Rr|.2f",
+        "IS_Imax|Rr|.2f",
         "Fsh|Rr|.1%",
         "Gsh|Rr|.1%",
         "Ish|Rr|.1%",
@@ -201,10 +201,10 @@ def _build_table(rows: List[Dict[str, float]]) -> TableOfData:
         row[4] = float(r["rebate_rate"])
         row[5] = float(r["rcons_end"])
         row[6] = float(r["rcons_slope"])
-        row[7] = float(r["ubi_i_max"])
-        row[8] = float(r["ubi_f_share"])
-        row[9] = float(r["ubi_g_share"])
-        row[10] = float(r["ubi_i_share"])
+        row[7] = float(r["uis_i_max"])
+        row[8] = float(r["uis_f_share"])
+        row[9] = float(r["uis_g_share"])
+        row[10] = float(r["uis_i_share"])
         row[11] = float(r["eqcap_end"])
         row[12] = float(r["p_roe_end"])
         row[13] = float(r["p_eq_end"])
@@ -272,10 +272,10 @@ def main() -> None:
             "payout",
             "rcons_end",
             "rcons_slope",
-            "ubi_i_max",
-            "ubi_f_share",
-            "ubi_g_share",
-            "ubi_i_share",
+            "uis_i_max",
+            "uis_f_share",
+            "uis_g_share",
+            "uis_i_share",
             "eqcap_end",
             "p_roe_end",
             "p_eq_end",

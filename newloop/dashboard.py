@@ -269,7 +269,7 @@ def run_cli(config: Dict[str, Any], n_quarters: int = 80) -> None:
         "FUNDdep|Rr",
         "TrClm|Rr",
         "TrBal$|Rr",
-        "UBI,F,G,I|Cc",
+        "IS,F,G,I|Cc",
         "Wages|Rr",
         "CAPEX|Rr",
         "AvgInc|Rr",
@@ -315,16 +315,16 @@ def run_cli(config: Dict[str, Any], n_quarters: int = 80) -> None:
         trust_ever_activated = trust_ever_activated or bool(r.trust_active)
 
         denom = float(sim.hh.n) if (sim.hh is not None and bool(sim.params.get("use_population", False))) else 1.0
-        avg_inc_nom = (float(r.wages_total) / denom) + float(r.ubi_per_h)
+        avg_inc_nom = (float(r.wages_total) / denom) + float(r.uis_per_h)
         P_now = float(r.price_level) if float(r.price_level) > 0 else 1e-9
 
         row = dashboard.AddRow()
         corp_tax_rate_pct = int(round(100.0 * float(sim.state.get("corp_tax_rate_eff", sim.params.get("corporate_tax_rate", 0.0)))))
-        ubi_bundle = " ".join([
-            _fmt_compact(_disp_money(r.ubi_per_h, P_now), 5).strip(),
-            _fmt_compact(_disp_money(r.ubi_from_fund_dep_per_h, P_now), 5).strip(),
-            _fmt_compact(_disp_money(r.ubi_from_gov_dep_per_h, P_now), 5).strip(),
-            _fmt_compact(_disp_money(r.ubi_issued_per_h, P_now), 5).strip(),
+        uis_bundle = " ".join([
+            _fmt_compact(_disp_money(r.uis_per_h, P_now), 5).strip(),
+            _fmt_compact(_disp_money(r.uis_from_fund_dep_per_h, P_now), 5).strip(),
+            _fmt_compact(_disp_money(r.uis_from_gov_dep_per_h, P_now), 5).strip(),
+            _fmt_compact(_disp_money(r.uis_issued_per_h, P_now), 5).strip(),
         ])
         row[0] = f"{int(r.t):02d}"
         row[1] = float(r.automation)
@@ -341,7 +341,7 @@ def run_cli(config: Dict[str, Any], n_quarters: int = 80) -> None:
         row[12] = _fmt_compact(_disp_money(sim.state.get("vat_credit_total", 0.0) / denom, P_now), 5).strip()
         row[13] = _fmt_compact(_disp_money(sim.nodes["GOV"].get("deposits", 0.0) / denom, P_now), 8).strip()
         row[14] = _fmt_compact(_disp_money(sim.nodes["FUND"].get("deposits", 0.0) / denom, P_now), 8).strip()
-        row[17] = ubi_bundle
+        row[17] = uis_bundle
         row[18] = _fmt_compact(_disp_money(r.wages_total, P_now), 8, 1).strip()
         row[19] = _fmt_compact(_disp_money(sim.state.get("capex_total", 0.0) / denom, P_now), 8).strip()
         row[20] = _fmt_compact(_disp_money(avg_inc_nom, P_now), 8).strip()
@@ -480,10 +480,10 @@ def run_cli(config: Dict[str, Any], n_quarters: int = 80) -> None:
         ("FUNDdep","Trust/Fund deposits per household (display-currency stock, end of quarter)") ,
         ("TrClm", "Per-household beneficial claim on trust balance (display-currency stock)") ,
         ("TrBal$", "Total trust balance (FUND deposits + FUND equity claims - FUND loans; display-currency)") ,
-        ("UBI,F,G,I",  "UBI bundle (per-household): UBI UBI_F UBI_G UBI_I, one-space separated") ,
+        ("IS,F,G,I",  "Income-support bundle (per-household): IS IS_F IS_G IS_I, one-space separated") ,
         ("Wages", "Total wages paid economy-wide this quarter (display-currency total)") ,
         ("CAPEX", "Firm capital expenditures per household this quarter (display-currency flow; lagged-from-retained)") ,
-        ("AvgInc","Average income proxy per household = wages/HH + UBI (display-currency; excludes dividends)") ,
+        ("AvgInc","Average income proxy per household = wages/HH + income support (display-currency; excludes dividends)") ,
         ("RAvgInc","Real AvgInc proxy = AvgInc / P") ,
         ("Cons",  "Consumption per household at producer prices (display-currency; tax-exclusive)") ,
         ("RCons", "Real consumption per household = Cons / P") ,

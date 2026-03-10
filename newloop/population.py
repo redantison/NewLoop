@@ -430,7 +430,7 @@ def baseline_report(pop: Population, cfg: PopulationConfig) -> None:
     revolving_interest_q = [r_r_q * L for L in pop.revolving_loans]
     interest_q = [mortgage_interest_q[i] + revolving_interest_q[i] for i in range(len(loans))]
 
-    # Income proxy: wages only (Phase 1). Later add UBI, taxes, dividends.
+    # Income proxy: wages only (Phase 1). Later add income support, taxes, dividends.
     income_q = wages
 
     # Avoid division by zero

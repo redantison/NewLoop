@@ -24,10 +24,13 @@ METRIC_LABELS: Dict[str, str] = {
     "pop_dti_p90": "Debt-Service-to-Income (DTI) P90",
     "pop_dti_w_p90": "Debt-Service-to-Income (DTI) P90 (Wages)",
     "trust_equity_pct": "Trust Equity %",
-    "ubi_per_h": "UBI / Household",
-    "ubi_from_fund_dep_per_h": "UBI from FUND",
-    "ubi_from_gov_dep_per_h": "UBI from GOV",
-    "ubi_issued_per_h": "UBI Issued",
+    "uis_per_h": "Income Support / Household",
+    "uis_from_fund_dep_per_h": "Income Support from FUND",
+    "uis_from_gov_dep_per_h": "Income Support from GOV",
+    "uis_issued_per_h": "Income Support Issued",
+    "corp_tax_rate_eff": "Effective Corporate Tax Rate",
+    "wages_total": "Total Wage Base",
+    "trust_value_per_h": "Trust Value / Household",
 }
 
 DEFAULT_LINE_METRICS: List[str] = [
@@ -82,6 +85,22 @@ def _apply_compact_y_ticks(ax: Any) -> None:
     ax.yaxis.set_major_formatter(FuncFormatter(lambda val, _: _compact_tick_label(val)))
 
 
+def _normalized_mode(support_mode: str | None) -> str | None:
+    if support_mode is None:
+        return None
+    mode = str(support_mode).strip().upper()
+    if mode in {"UIS", "UBI"}:
+        return mode
+    return None
+
+
+def _title_with_mode(title: str, support_mode: str | None) -> str:
+    mode = _normalized_mode(support_mode)
+    if mode is None:
+        return title
+    return f"{title} ({mode})"
+
+
 def plot_metric_lines(
     rows: Sequence[Mapping[str, Any]],
     metrics: Iterable[str],
@@ -92,6 +111,7 @@ def plot_metric_lines(
     secondary_metrics: Iterable[str] | None = None,
     secondary_ylabel: str = "Secondary Scale",
     legend_loc: str = "best",
+    support_mode: str | None = None,
 ) -> Any:
     """Plot one or more line metrics over simulation quarter."""
     import matplotlib.pyplot as plt
@@ -136,7 +156,7 @@ def plot_metric_lines(
         _apply_compact_y_ticks(ax2)
         ax2.grid(False)
 
-    ax.set_title(title)
+    ax.set_title(_title_with_mode(title, support_mode))
     ax.set_xlabel("Quarter")
     ax.grid(alpha=0.25)
 
@@ -147,31 +167,37 @@ def plot_metric_lines(
     return fig
 
 
-def plot_ubi_funding_mix(rows: Sequence[Mapping[str, Any]], ax: Any = None) -> Any:
-    """Stacked-area chart for UBI funding channels."""
+def plot_income_support_funding_mix(
+    rows: Sequence[Mapping[str, Any]],
+    ax: Any = None,
+    *,
+    support_mode: str = "UIS",
+) -> Any:
+    """Stacked-area chart for income-support funding channels."""
     import matplotlib.pyplot as plt
 
     rows = _require_rows(rows)
     x = [int(r.get("t", i)) for i, r in enumerate(rows)]
+    mode = _normalized_mode(support_mode) or "UIS"
 
-    fund = _series(rows, "ubi_from_fund_dep_per_h")
-    gov = _series(rows, "ubi_from_gov_dep_per_h")
-    issued = _series(rows, "ubi_issued_per_h")
+    fund = np.maximum(0.0, np.nan_to_num(np.asarray(_series(rows, "uis_from_fund_dep_per_h"), dtype=float), nan=0.0))
+    gov = np.maximum(0.0, np.nan_to_num(np.asarray(_series(rows, "uis_from_gov_dep_per_h"), dtype=float), nan=0.0))
+    issued = np.maximum(0.0, np.nan_to_num(np.asarray(_series(rows, "uis_issued_per_h"), dtype=float), nan=0.0))
 
     if ax is None:
         fig, ax = plt.subplots(figsize=(9, 4.5))
     else:
         fig = ax.figure
 
-    ax.stackplot(
-        x,
-        fund,
-        gov,
-        issued,
-        labels=[metric_label("ubi_from_fund_dep_per_h"), metric_label("ubi_from_gov_dep_per_h"), metric_label("ubi_issued_per_h")],
-        alpha=0.8,
-    )
-    ax.set_title("UBI Funding Mix")
+    layers = [fund, gov, issued]
+    labels = [
+        metric_label("uis_from_fund_dep_per_h"),
+        metric_label("uis_from_gov_dep_per_h"),
+        metric_label("uis_issued_per_h"),
+    ]
+
+    ax.stackplot(x, *layers, labels=labels, alpha=0.8)
+    ax.set_title(_title_with_mode("Income Support Funding Mix", mode))
     ax.set_xlabel("Quarter")
     ax.set_ylabel("Per-Household")
     _apply_compact_y_ticks(ax)
@@ -180,7 +206,55 @@ def plot_ubi_funding_mix(rows: Sequence[Mapping[str, Any]], ax: Any = None) -> A
     return fig
 
 
-def plot_gini_series(rows: Sequence[Mapping[str, Any]], ax: Any = None) -> Any:
+def plot_cumulative_income_support_funding(
+    rows: Sequence[Mapping[str, Any]],
+    ax: Any = None,
+    *,
+    support_mode: str = "UIS",
+    household_count: int | None = None,
+) -> Any:
+    """Line chart for cumulative income-support funding channels over time."""
+    import matplotlib.pyplot as plt
+
+    rows = _require_rows(rows)
+    x = [int(r.get("t", i)) for i, r in enumerate(rows)]
+    mode = _normalized_mode(support_mode) or "UIS"
+
+    gov = np.maximum(0.0, np.nan_to_num(np.asarray(_series(rows, "uis_from_gov_dep_per_h"), dtype=float), nan=0.0))
+    issued = np.maximum(0.0, np.nan_to_num(np.asarray(_series(rows, "uis_issued_per_h"), dtype=float), nan=0.0))
+
+    n_hh = int(household_count) if household_count is not None else 1
+    if n_hh <= 0:
+        n_hh = 1
+    scale = float(n_hh)
+
+    gov_cum = np.cumsum(gov * scale)
+    issued_cum = np.cumsum(issued * scale)
+    public_total_cum = gov_cum + issued_cum
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(9, 4.5))
+    else:
+        fig = ax.figure
+
+    ax.plot(x, gov_cum, linewidth=2.0, label="Cumulative GOV Funding")
+    ax.plot(x, issued_cum, linewidth=2.0, label="Cumulative Issuance Funding")
+    ax.plot(x, public_total_cum, linewidth=2.4, linestyle="--", label="Cumulative Public Total")
+    ax.set_title(_title_with_mode("Cumulative Income Support Funding", mode))
+    ax.set_xlabel("Quarter")
+    ax.set_ylabel("Cumulative Amount (Economy Total)")
+    _apply_compact_y_ticks(ax)
+    ax.grid(alpha=0.25)
+    ax.legend(loc="upper left")
+    return fig
+
+
+def plot_gini_series(
+    rows: Sequence[Mapping[str, Any]],
+    ax: Any = None,
+    *,
+    support_mode: str | None = None,
+) -> Any:
     """Plot pre-tax/pre-transfer, disposable, and wealth Gini series on a dedicated 0-1 scale."""
     import matplotlib.pyplot as plt
 
@@ -196,7 +270,7 @@ def plot_gini_series(rows: Sequence[Mapping[str, Any]], ax: Any = None) -> Any:
     for metric in metrics:
         ax.plot(x, _series(rows, metric), linewidth=2.0, label=metric_label(metric))
 
-    ax.set_title("Gini Metrics")
+    ax.set_title(_title_with_mode("Gini Metrics", support_mode))
     ax.set_xlabel("Quarter")
     ax.set_ylabel("Gini (0-1)")
     ax.set_ylim(0.0, 1.0)
@@ -208,11 +282,17 @@ def plot_gini_series(rows: Sequence[Mapping[str, Any]], ax: Any = None) -> Any:
     return fig
 
 
-def plot_default_dashboard(rows: Sequence[Mapping[str, Any]]) -> Any:
-    """Build a 2x2 default dashboard figure for quick inspection."""
+def plot_default_dashboard(
+    rows: Sequence[Mapping[str, Any]],
+    support_mode: str = "UIS",
+    *,
+    household_count: int | None = None,
+) -> Any:
+    """Build a 2x2 dashboard for automation, gini, and funding diagnostics."""
     import matplotlib.pyplot as plt
 
     rows = _require_rows(rows)
+    mode = _normalized_mode(support_mode) or "UIS"
     fig, axs = plt.subplots(2, 2, figsize=(13, 8), constrained_layout=True)
 
     plot_metric_lines(
@@ -224,19 +304,23 @@ def plot_default_dashboard(rows: Sequence[Mapping[str, Any]]) -> Any:
         secondary_metrics=["automation_info_flow", "automation_phys_flow"],
         secondary_ylabel="Automation Flow (Δ per quarter)",
         legend_loc="upper right",
+        support_mode=mode,
     )
-    plot_gini_series(rows, ax=axs[0][1])
-    plot_ubi_funding_mix(rows, ax=axs[1][0])
-    plot_metric_lines(
+    plot_gini_series(rows, ax=axs[0][1], support_mode=mode)
+    plot_income_support_funding_mix(rows, ax=axs[1][0], support_mode=mode)
+    plot_cumulative_income_support_funding(
         rows,
-        ["real_consumption", "real_avg_income"],
-        title="Real Household Outcomes",
         ax=axs[1][1],
-        secondary_metrics=["real_avg_income"],
-        secondary_ylabel="Real Avg Income",
+        support_mode=mode,
+        household_count=household_count,
     )
 
     return fig
+
+
+def plot_uis_funding_mix(rows: Sequence[Mapping[str, Any]], ax: Any = None) -> Any:
+    """Backward-compatible alias."""
+    return plot_income_support_funding_mix(rows, ax=ax, support_mode="UIS")
 
 
 def plot_distribution_compare(
@@ -347,6 +431,7 @@ def plot_income_distribution(
     income_after: Sequence[float],
     *,
     value_label: str,
+    support_mode: str | None = None,
 ) -> Any:
     """Single-panel income before/after ECDF."""
     import matplotlib.pyplot as plt
@@ -355,7 +440,7 @@ def plot_income_distribution(
     plot_distribution_compare(
         income_before,
         income_after,
-        title="Income Distribution (Before vs After)",
+        title=_title_with_mode("Income Distribution (Before vs After)", support_mode),
         x_label=value_label,
         ax=ax,
     )
@@ -367,6 +452,7 @@ def plot_income_distribution_dual(
     income_after: Sequence[float],
     *,
     value_label: str,
+    support_mode: str | None = None,
 ) -> Any:
     """Two-panel income distributions: cumulative + share-per-bin."""
     import matplotlib.pyplot as plt
@@ -375,14 +461,14 @@ def plot_income_distribution_dual(
     plot_distribution_compare(
         income_before,
         income_after,
-        title="Income Distribution (Cumulative)",
+        title=_title_with_mode("Income Distribution (Cumulative)", support_mode),
         x_label=value_label,
         ax=axs[0],
     )
     plot_distribution_share(
         income_before,
         income_after,
-        title="Income Distribution (% per Bin)",
+        title=_title_with_mode("Income Distribution (% per Bin)", support_mode),
         x_label=value_label,
         ax=axs[1],
     )
@@ -396,6 +482,7 @@ def plot_wealth_distributions_full_zoom(
     value_label: str,
     zoom_lo_pct: float = 2.0,
     zoom_hi_pct: float = 98.0,
+    support_mode: str | None = None,
 ) -> Any:
     """Two-panel wealth ECDF: full range + zoomed percentile window."""
     import matplotlib.pyplot as plt
@@ -426,14 +513,14 @@ def plot_wealth_distributions_full_zoom(
     plot_distribution_compare(
         w_b,
         w_a,
-        title="Wealth Distribution (Full Range)",
+        title=_title_with_mode("Wealth Distribution (Full Range)", support_mode),
         x_label=value_label,
         ax=axs[0],
     )
     plot_distribution_compare(
         w_b,
         w_a,
-        title=f"Wealth Distribution (Zoomed p{int(round(lo))} to p{int(round(hi))})",
+        title=_title_with_mode(f"Wealth Distribution (Zoomed p{int(round(lo))} to p{int(round(hi))})", support_mode),
         x_label=value_label,
         x_limits=(x_lo, x_hi),
         ax=axs[1],
@@ -448,6 +535,7 @@ def plot_income_wealth_distributions(
     wealth_after: Sequence[float],
     *,
     value_label: str,
+    support_mode: str | None = None,
 ) -> Any:
     """Build a 1x2 before/after distribution figure for income and wealth."""
     import matplotlib.pyplot as plt
@@ -456,14 +544,14 @@ def plot_income_wealth_distributions(
     plot_distribution_compare(
         income_before,
         income_after,
-        title="Income Distribution (Before vs After)",
+        title=_title_with_mode("Income Distribution (Before vs After)", support_mode),
         x_label=value_label,
         ax=axs[0],
     )
     plot_distribution_compare(
         wealth_before,
         wealth_after,
-        title="Wealth Distribution (Before vs After)",
+        title=_title_with_mode("Wealth Distribution (Before vs After)", support_mode),
         x_label=value_label,
         ax=axs[1],
     )

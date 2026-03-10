@@ -130,6 +130,6 @@ def summarize_rows(rows: Sequence[Dict[str, Any]]) -> Dict[str, float]:
         "real_consumption_delta": _get(last, "real_consumption") - _get(first, "real_consumption"),
         "gini_disp_end": _get(last, "gini_disp"),
         "trust_equity_end": _get(last, "trust_equity_pct"),
-        "ubi_end": _get(last, "ubi_per_h"),
-        "ubi_issued_end": _get(last, "ubi_issued_per_h"),
+        "income_support_end": _get(last, "uis_per_h"),
+        "income_support_issued_end": _get(last, "uis_issued_per_h"),
     }
