@@ -415,6 +415,30 @@ def _population_dist_for_value_mode(
     return {"before": _scaled(before), "after": _scaled(after)}
 
 
+def _inject_selectbox_chevron_fallback(st: Any) -> None:
+    """Safari/iPad fallback when Material icon text appears in selectbox arrows."""
+    st.markdown(
+        """
+        <style>
+        div[data-baseweb="select"] span[class*="material-symbols"],
+        div[data-baseweb="select"] [data-testid="stIconMaterial"] {
+            font-size: 0 !important;
+            line-height: 1 !important;
+        }
+
+        div[data-baseweb="select"] span[class*="material-symbols"]::before,
+        div[data-baseweb="select"] [data-testid="stIconMaterial"]::before {
+            content: "▾";
+            font-size: 0.95rem;
+            line-height: 1 !important;
+            color: currentColor;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def _render_parameter_controls(st: Any, grouped_controls: Dict[str, List[Any]]) -> tuple[bool, bool, int]:
     def _request_reset_defaults() -> None:
         st.session_state["app__reset_requested"] = True
@@ -579,6 +603,7 @@ def main() -> None:
     import streamlit as st
 
     st.set_page_config(page_title="NewLoop", layout="wide")
+    _inject_selectbox_chevron_fallback(st)
     st.title("NewLoop")
     st.caption("Interactive simulation with parameterized runs and reusable plotting.")
 
