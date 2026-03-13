@@ -27,28 +27,23 @@ class PolicyAlignmentTests(unittest.TestCase):
         self.assertLessEqual(max_deposit_gap, 1e-6)
         self.assertLessEqual(max_loan_gap, 1e-6)
 
-    def test_trust_launch_loan_changes_initial_equity_block(self):
-        cfg_low = make_cfg()
-        cfg_high = make_cfg()
+    def test_trust_launch_targets_fixed_initial_equity_block(self):
+        cfg = make_cfg()
+        params = cfg["parameters"]
+        params["trust_trigger_dti"] = 0.0
+        params["trust_launch_loan"] = 12000.0
+        params["trust_launch_target_pct"] = 0.10
+        params["gov_tax_rebate_rate"] = 0.0
 
-        for cfg, loan in ((cfg_low, 6000.0), (cfg_high, 24000.0)):
-            params = cfg["parameters"]
-            params["trust_trigger_dti"] = 0.0
-            params["trust_launch_loan"] = loan
-            params["gov_tax_rebate_rate"] = 0.0
+        sim = NewLoop(cfg)
+        sim.step()
+        sim.step()
 
-        sim_low = NewLoop(cfg_low)
-        sim_high = NewLoop(cfg_high)
-        for _ in range(3):
-            sim_low.step()
-            sim_high.step()
-
-        self.assertTrue(sim_low.state["trust_active"])
-        self.assertTrue(sim_high.state["trust_active"])
-
-        low_shares = sum(sim_low.nodes["FUND"].get(key, 0.0) for key in ("shares_FA", "shares_FH", "shares_BANK"))
-        high_shares = sum(sim_high.nodes["FUND"].get(key, 0.0) for key in ("shares_FA", "shares_FH", "shares_BANK"))
-        self.assertGreater(high_shares, low_shares)
+        self.assertTrue(sim.state["trust_active"])
+        # First visible trust point includes both the 10% launch buy and the first scheduled issuance.
+        phi_qtr = 1.0 - (0.98 ** 0.25)
+        expected_pct = (0.10 + phi_qtr) / (1.0 + phi_qtr)
+        self.assertAlmostEqual(float(sim.history[1].trust_equity_pct), expected_pct, places=3)
 
     def test_corporate_tax_depreciation_allowance_reduces_tax(self):
         cfg_no_depr = make_cfg()

@@ -8,7 +8,8 @@ from typing import Any, Dict
 config = {
     "parameters": {
         # Policy
-        "trust_launch_loan": 12000.0,       # set to zero if no trust launch booster loan
+        "trust_launch_loan": 12000.0,       # positive value enables the leveraged launch sequence
+        "trust_launch_target_pct": 0.10,    # initial trust purchase target as a share of each issuer's equity
         "trust_trigger_dti": 0.10,        # Trust triggers if last-quarter DTI metric exceeds this (population p90 when enabled; otherwise legacy proxy).
         "trust_equity_cap": 0.30,         # dilution target for FUND ownership share (avg per issuer)
         "debug_trust_trigger": True,
