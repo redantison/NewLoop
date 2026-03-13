@@ -141,6 +141,8 @@ class NewLoop:
             revolving_loans = _as_np(revolving_loans_raw, dtype=float)
             mpc_q = _as_np(mpc_q_raw, dtype=float)
             base_real_cons_q = _as_np(base_real_cons_q_raw, dtype=float)
+            liquid_buffer_months_target_raw = getattr(pop, "liquid_buffer_months_target", np.zeros(base_real_cons_q.shape[0], dtype=float))
+            liquid_buffer_months_target = _as_np(liquid_buffer_months_target_raw, dtype=float)
 
             n = int(min(
                 wages0_q.shape[0],
@@ -149,6 +151,7 @@ class NewLoop:
                 revolving_loans.shape[0],
                 mpc_q.shape[0],
                 base_real_cons_q.shape[0],
+                liquid_buffer_months_target.shape[0],
             ))
 
             if n > 0:
@@ -160,6 +163,7 @@ class NewLoop:
                     revolving_loans=revolving_loans[:n].copy(),
                     mpc_q=mpc_q[:n].copy(),
                     base_real_cons_q=base_real_cons_q[:n].copy(),
+                    liquid_buffer_months_target=liquid_buffer_months_target[:n].copy(),
                 )
                 self.hh.ensure_memos()
             else:
@@ -216,6 +220,8 @@ class NewLoop:
         self.inv_history: List[Dict[str, Any]] = []  # per-tick SFC invariant diagnostics
         # Per-tick income-support funding diagnostics captured *pre-payment* inside post_tick
         self.uis_debug_history: List[Dict[str, float]] = []
+        # Prior-quarter GOV obligations used to retain a stabilization buffer before rebating surpluses.
+        self.gov_obligation_history: List[float] = []
 
         self._assert_sfc_ok(context="init")
 
@@ -829,6 +835,52 @@ class NewLoop:
                 for r in self.inv_history:
                     writer.writerow(r)
 
+    def _issuer_equity_proxy_value(self, issuer: str) -> float:
+        """Nominal equity proxy used for share-transfer sizing and diagnostics."""
+        if issuer == "BANK":
+            return max(0.0, float(self.nodes["BANK"].get("equity", 0.0)))
+
+        p_now = float(self.state.get("price_level", self.params.get("price_level_initial", 1.0)))
+        if p_now <= 0.0:
+            p_now = 1e-9
+
+        node = self.nodes[issuer]
+        return max(
+            0.0,
+            float(node.get("deposits", 0.0))
+            + float(node.get("K", 0.0)) * p_now
+            - float(node.get("loans", 0.0)),
+        )
+
+    def _gov_rebate_buffer_amount(self) -> float | None:
+        """Return the GOV deposit buffer implied by trailing obligations, or None if not yet available."""
+        buffer_quarters = int(self.params.get("gov_rebate_buffer_quarters", 4))
+        buffer_quarters = max(0, buffer_quarters)
+        if buffer_quarters == 0:
+            return 0.0
+        if len(self.gov_obligation_history) < buffer_quarters:
+            return None
+
+        trailing = self.gov_obligation_history[-buffer_quarters:]
+        avg_obligation = sum(float(v) for v in trailing) / float(len(trailing))
+        return max(0.0, float(buffer_quarters) * avg_obligation)
+
+    def _gov_rebate_ramp_multiplier(self) -> float:
+        """Return a 0-1 multiplier for phased GOV surplus recycling."""
+        start_delay = int(self.params.get("gov_rebate_start_delay_quarters", 4))
+        ramp_quarters = int(self.params.get("gov_rebate_ramp_quarters", 20))
+        start_delay = max(0, start_delay)
+        ramp_quarters = max(0, ramp_quarters)
+
+        t = int(self.state.get("t", 0))
+        if t < start_delay:
+            return 0.0
+        if ramp_quarters == 0:
+            return 1.0
+
+        elapsed = (t - start_delay) + 1
+        return max(0.0, min(1.0, float(elapsed) / float(ramp_quarters)))
+
     # ---------------------------------------------------------
     # Phase A: Trigger logic + leveraged launch
     # ---------------------------------------------------------
@@ -876,26 +928,49 @@ class NewLoop:
         t = self.state["t"]
         launch_loan = float(self.params.get("trust_launch_loan", 15000.0))
 
-        # Optional leveraged launch: BANK lends to FUND and FUND buys 10% equity from aggregate HH.
-        # If launch_loan is 0, we still activate the Trust regime (dilution can still grow ownership),
-        # but we skip the leveraged purchase to avoid an unpaid equity transfer.
+        # Optional leveraged launch: BANK lends to FUND and FUND buys an initial equity block from HH.
+        # Purchase size is determined by the loan amount and current issuer equity proxies, so the
+        # configured launch loan actually controls the size of the initial block.
         if launch_loan > 0:
-            # (1) Loan creates deposits
             self._create_loan("FUND", launch_loan, memo_tag="launch_loan_created")
 
-            # (2) Purchase 10% equity from HH with those deposits.
             seller = "HH"
-
-            cash_per = launch_loan / 3.0
             issuers = [("FA", "shares_FA"), ("FH", "shares_FH"), ("BANK", "shares_BANK")]
+            purchasable: List[tuple[str, str, float, float, float]] = []
+            total_available_value = 0.0
 
             for issuer, key in issuers:
-                shares_out = self.nodes[issuer].get("shares_outstanding", 0.0)
-                equity_jump = 0.10 * shares_out
+                shares_out = float(self.nodes[issuer].get("shares_outstanding", 0.0))
+                hh_shares = max(0.0, float(self.nodes[seller].get(key, 0.0)))
+                issuer_equity_value = self._issuer_equity_proxy_value(issuer)
+                if shares_out <= 0.0 or hh_shares <= 0.0 or issuer_equity_value <= 0.0:
+                    continue
 
-                self.nodes[seller].add(key, -equity_jump)
-                self.nodes["FUND"].add(key, +equity_jump)
-                self._xfer_deposits_to_households("FUND", cash_per)
+                hh_value = issuer_equity_value * min(1.0, hh_shares / shares_out)
+                if hh_value <= 0.0:
+                    continue
+
+                purchasable.append((issuer, key, shares_out, hh_shares, issuer_equity_value))
+                total_available_value += hh_value
+
+            cash_budget = min(float(launch_loan), total_available_value)
+
+            if cash_budget > 0.0 and total_available_value > 0.0:
+                for issuer, key, shares_out, hh_shares, issuer_equity_value in purchasable:
+                    hh_value = issuer_equity_value * min(1.0, hh_shares / shares_out)
+                    cash_alloc = cash_budget * (hh_value / total_available_value)
+                    price_per_share = issuer_equity_value / shares_out
+                    if price_per_share <= 0.0:
+                        continue
+
+                    shares_to_buy = min(hh_shares, cash_alloc / price_per_share)
+                    if shares_to_buy <= 0.0:
+                        continue
+
+                    cash_spent = shares_to_buy * price_per_share
+                    self.nodes[seller].add(key, -shares_to_buy)
+                    self.nodes["FUND"].add(key, +shares_to_buy)
+                    self._xfer_deposits_to_households("FUND", cash_spent)
 
             for _, key in issuers:
                 if self.nodes[seller].get(key, 0.0) < -1e-9:
@@ -977,6 +1052,9 @@ class NewLoop:
         mpc = _as_np(hh.mpc_q, dtype=float)
         mort = _as_np(hh.mortgage_loans, dtype=float)
         rev = _as_np(hh.revolving_loans, dtype=float)
+        liquid_buffer_months_target = _as_np(hh.liquid_buffer_months_target, dtype=float)
+        if liquid_buffer_months_target.shape[0] != hh.n:
+            liquid_buffer_months_target = np.zeros(hh.n, dtype=float)
 
         # Beginning-of-tick deposits (nominal). Use a copy so the solver is not affected by post-tick mutations.
         dep0 = _as_np(hh.deposits, dtype=float).copy()
@@ -1014,15 +1092,29 @@ class NewLoop:
         capex_fh_nom = reinvest_rate * max(0.0, retained_fh_prev)
         capex_total_nom = capex_fa_nom + capex_fh_nom
         div_house_total_est = 0.0
+        spend_excess_rate = float(self.params.get("hh_buffer_spend_excess_rate_q", 0.10))
+        conserve_shortfall_rate = float(self.params.get("hh_buffer_shortfall_conserve_rate_q", 0.35))
+        spend_excess_rate = max(0.0, min(1.0, spend_excess_rate))
+        conserve_shortfall_rate = max(0.0, min(1.0, conserve_shortfall_rate))
 
         for _ in range(max_iter):
             # 1) Household consumption (nominal), vectorized
             # Consumption decision uses the consumer price (includes VAT wedge)
             y_real = y_guess / P_cons
 
-            # Desired real consumption
-            c_real_des = np.maximum(0.0, base_real + mpc * y_real)
-            c_hh_nom_des = P_cons * c_real_des
+            # Desired real consumption: an income-driven core moderated by a precautionary
+            # liquid-buffer rule. Households spend only a fraction of buffer excess and
+            # begin conserving before the hard cash constraint binds.
+            c_real_core = np.maximum(0.0, base_real + mpc * y_real)
+            c_hh_nom_core = P_cons * c_real_core
+            target_buffer_nom = (liquid_buffer_months_target / 3.0) * c_hh_nom_core
+            buffer_gap_nom = dep0 - target_buffer_nom
+            c_hh_nom_des = (
+                c_hh_nom_core
+                + (spend_excess_rate * np.maximum(0.0, buffer_gap_nom))
+                - (conserve_shortfall_rate * np.maximum(0.0, -buffer_gap_nom))
+            )
+            c_hh_nom_des = np.maximum(0.0, c_hh_nom_des)
 
             # Cash-in-advance constraint (no new borrowing for consumption inside the solver):
             # available = beginning deposits + current-quarter disposable income guess.
@@ -1061,11 +1153,13 @@ class NewLoop:
 
             # Corporate income tax policy:
             # - Distributed dividends are NOT taxed at the corporate level.
-            # - Retained earnings ARE taxed at the corporate level.
+            # - Retained earnings are taxed after a depreciation allowance on the capital stock.
             # Household recipients are still taxed via income_tax_i; FUND is untaxed.
             # Optional policy: raise tax rate as wages fall relative to baseline.
             corp_tax_rate = float(self.params.get("corporate_tax_rate", 0.0))
             corp_tax_rate = max(0.0, min(1.0, corp_tax_rate))
+            corp_tax_depr_rate_q = float(self.params.get("corporate_tax_depr_rate_q", 0.025))
+            corp_tax_depr_rate_q = max(0.0, min(1.0, corp_tax_depr_rate_q))
 
             if bool(self.params.get("corporate_tax_dynamic_with_wages", False)):
                 wage_baseline = float(self.state.get("baseline_wages_total_pop", 0.0))
@@ -1132,8 +1226,12 @@ class NewLoop:
             retained_fh_pre_tax = max(0.0, p_fh_pre_tax - div_fh_total)
             retained_bk_pre_tax = max(0.0, bank_profit_pre_tax - div_bk_total)
 
-            corp_tax_fa = corp_tax_rate * retained_fa_pre_tax
-            corp_tax_fh = corp_tax_rate * retained_fh_pre_tax
+            corp_tax_depr_fa = max(0.0, float(self.nodes["FA"].get("K", 0.0))) * P * corp_tax_depr_rate_q
+            corp_tax_depr_fh = max(0.0, float(self.nodes["FH"].get("K", 0.0))) * P * corp_tax_depr_rate_q
+            corp_tax_base_fa = max(0.0, retained_fa_pre_tax - corp_tax_depr_fa)
+            corp_tax_base_fh = max(0.0, retained_fh_pre_tax - corp_tax_depr_fh)
+            corp_tax_fa = corp_tax_rate * corp_tax_base_fa
+            corp_tax_fh = corp_tax_rate * corp_tax_base_fh
             corp_tax_bk = corp_tax_rate * retained_bk_pre_tax
 
             retained_fa = max(0.0, retained_fa_pre_tax - corp_tax_fa)
@@ -1244,6 +1342,11 @@ class NewLoop:
                     "fh_interest": float(fh_interest),
                     "bank_profit": bank_profit,
                     "corp_tax_rate": float(corp_tax_rate),
+                    "corp_tax_depr_rate_q": float(corp_tax_depr_rate_q),
+                    "corp_tax_depr_fa": float(corp_tax_depr_fa),
+                    "corp_tax_depr_fh": float(corp_tax_depr_fh),
+                    "corp_tax_base_fa": float(corp_tax_base_fa),
+                    "corp_tax_base_fh": float(corp_tax_base_fh),
                     "corp_tax_fa": float(corp_tax_fa),
                     "corp_tax_fh": float(corp_tax_fh),
                     "corp_tax_bk": float(corp_tax_bk),
@@ -1265,6 +1368,10 @@ class NewLoop:
                     "wages_i": wages_i,
                     "div_i": div_i,
                     "y": y_new,
+                    "buffer_target_total": float(target_buffer_nom.sum()),
+                    "buffer_gap_total": float(buffer_gap_nom.sum()),
+                    "buffer_gap_positive_total": float(np.maximum(0.0, buffer_gap_nom).sum()),
+                    "buffer_gap_shortfall_total": float(np.maximum(0.0, -buffer_gap_nom).sum()),
                     "mort_index_enable": bool(mort_index_enable),
                     "mort_pay_req_i": mort_pay_req_i,
                     "mort_pay_ctr_i": _as_np(mort_terms.get("mort_pay_ctr_i", np.zeros(hh.n, dtype=float)), dtype=float),
@@ -1331,6 +1438,10 @@ class NewLoop:
         mort_dln_sm_i = _as_np(sol.get("mort_dln_sm_i", []), dtype=float)
         mort_index_enable = bool(sol.get("mort_index_enable", False))
         y_vec = _as_np(sol.get("y", []), dtype=float)
+        self.state["hh_buffer_target_total"] = float(sol.get("buffer_target_total", 0.0))
+        self.state["hh_buffer_gap_total"] = float(sol.get("buffer_gap_total", 0.0))
+        self.state["hh_buffer_gap_positive_total"] = float(sol.get("buffer_gap_positive_total", 0.0))
+        self.state["hh_buffer_gap_shortfall_total"] = float(sol.get("buffer_gap_shortfall_total", 0.0))
 
         if c_firm_nom.shape[0] != n:
             raise ValueError("population solver returned c_firm_nom of wrong length")
@@ -1659,10 +1770,18 @@ class NewLoop:
             if repay_amt > 0:
                 self._repay_loan("FUND", repay_amt)
 
-        if self.params.get("send_fund_residual_to_gov", False):
+        fund_residual_share = self.params.get("fund_residual_to_gov_share", None)
+        if fund_residual_share is None:
+            fund_residual_share = 1.0 if self.params.get("send_fund_residual_to_gov", False) else 0.0
+        fund_residual_share = max(0.0, min(1.0, float(fund_residual_share)))
+        if fund_residual_share <= 0.0 and self.params.get("send_fund_residual_to_gov", False):
+            fund_residual_share = 1.0
+
+        if fund_residual_share > 0.0:
             residual = max(0.0, self.nodes["FUND"].get("deposits"))
-            if residual > 0:
-                self._xfer_deposits("FUND", "GOV", residual)
+            transfer = residual * fund_residual_share
+            if transfer > 0:
+                self._xfer_deposits("FUND", "GOV", transfer)
 
         # -------------------------------------------------
         # 6) Income-support payments: issuance share -> FUND dep -> GOV dep -> extra issuance
@@ -1690,12 +1809,23 @@ class NewLoop:
         # 6a) Optional tax refund: rebate a share of remaining GOV deposits
         # in proportion to each household's tax paid (VAT + income tax).
         # -------------------------------------------------
+        current_gov_obligation = (
+            float(self.state.get("uis_from_gov_dep_total", 0.0))
+            + float(self.state.get("vat_credit_paid_total", 0.0))
+            + float(self.state.get("mort_gap_paid_by_gov", 0.0))
+        )
         tax_rebate_total = 0.0
-        rebate_rate = float(self.params.get("gov_tax_rebate_rate", 0.0))
-        rebate_rate = max(0.0, min(1.0, rebate_rate))
+        rebate_rate_target = float(self.params.get("gov_tax_rebate_rate", 0.0))
+        rebate_rate_target = max(0.0, min(1.0, rebate_rate_target))
+        rebate_rate = rebate_rate_target * self._gov_rebate_ramp_multiplier()
         if rebate_rate > 0.0:
             gov_dep_avail = max(0.0, self.nodes["GOV"].get("deposits", 0.0))
-            tax_rebate_total = rebate_rate * gov_dep_avail
+            gov_buffer_target = self._gov_rebate_buffer_amount()
+            if gov_buffer_target is None:
+                rebate_base = 0.0
+            else:
+                rebate_base = max(0.0, gov_dep_avail - gov_buffer_target)
+            tax_rebate_total = rebate_rate * rebate_base
             if tax_rebate_total > 0.0:
                 # Per-household VAT paid is the VAT wedge on each household's consumption.
                 vat_paid_i = np.maximum(0.0, c_hh_nom - c_firm_nom)
@@ -1714,6 +1844,11 @@ class NewLoop:
                     deposits[:] = deposits + (tax_rebate_total / float(n))
 
         self.state["tax_rebate_total"] = float(max(0.0, tax_rebate_total))
+        self.state["gov_obligation_total"] = float(max(0.0, current_gov_obligation))
+        self.state["gov_rebate_rate_eff"] = float(max(0.0, rebate_rate))
+        buffer_target = self._gov_rebate_buffer_amount()
+        self.state["gov_rebate_buffer_target"] = float(buffer_target if buffer_target is not None else 0.0)
+        self.gov_obligation_history.append(float(max(0.0, current_gov_obligation)))
 
         # -------------------------------------------------
         # 6b) Household principal repayment (revolving first, then mortgage)
@@ -2076,6 +2211,8 @@ class NewLoop:
                 wages_total = float(solp["w_total"])
                 c_total = float(solp["c_total"])
 
+                real_avg_income = float(np.mean(y_vec) / P_now) if y_vec.size else float(((wages_total / float(self.hh.n)) + float(uis)) / P_now)
+
                 self.history.append(TickResult(
                     t=self.state["t"],
                     automation=float(self.state["automation"]),
@@ -2112,7 +2249,7 @@ class NewLoop:
                     wages_total=wages_total,
                     total_consumption=c_total,
 
-                    real_avg_income=float(((wages_total / float(self.hh.n)) + float(uis)) / P_now),
+                    real_avg_income=real_avg_income,
                     real_consumption=float(c_total / P_now),
 
                     pop_gini=float(gini_disp),

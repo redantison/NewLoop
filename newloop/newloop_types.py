@@ -38,6 +38,7 @@ class HouseholdState:
     revolving_loans: np.ndarray
     mpc_q: np.ndarray
     base_real_cons_q: np.ndarray
+    liquid_buffer_months_target: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=float))
 
     prev_income: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=float))
     prev_uis: float = 0.0
@@ -52,6 +53,8 @@ class HouseholdState:
     mort_dlnI_sm_prev: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=float))
 
     def ensure_memos(self) -> None:
+        if (self.liquid_buffer_months_target.size == 0) or (self.liquid_buffer_months_target.shape[0] != self.n):
+            self.liquid_buffer_months_target = np.zeros(self.n, dtype=float)
         if (self.prev_income.size == 0) or (self.prev_income.shape[0] != self.n):
             self.prev_income = np.asarray(self.wages0_q, dtype=float).copy()
         if (self.mort_P0.size == 0) or (self.mort_P0.shape[0] != self.n):
