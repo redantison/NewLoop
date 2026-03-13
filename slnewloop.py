@@ -100,7 +100,8 @@ UBI_PERCENTILE_PARAM_KEY = "param__ubi_target_percentile"
 UBI_PERCENTILE_UI_KEY = "ui__ubi_target_percentile"
 _TITLE_MODE_SUFFIX_RE = re.compile(r"\s+\((?:UIS|UBI|Stale)\)\s*$", re.IGNORECASE)
 RECENT_IMPROVEMENTS_TEXT = (
-    "- Improved household consumption behavior to be forward-looking and maintain a liquidity buffer."
+    "- Improved household consumption behavior to be forward-looking and maintain a liquidity buffer.\n"
+    "- Income lines now plot disposable income."
 )
 
 # Columns to deflate when display mode is "real".
