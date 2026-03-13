@@ -54,7 +54,51 @@ def metric_options() -> Dict[str, str]:
 
 
 def _series(rows: Sequence[Mapping[str, Any]], metric: str) -> List[float]:
+    if metric == "trust_equity_pct":
+        values: List[float] = []
+        trust_started = False
+        for row in rows:
+            active = bool(row.get("trust_active", False))
+            value = float(row.get(metric, 0.0))
+            if active:
+                trust_started = True
+            values.append(value if trust_started else float("nan"))
+        return values
     return [float(r.get(metric, 0.0)) for r in rows]
+
+
+def _plot_points(
+    rows: Sequence[Mapping[str, Any]],
+    x: Sequence[float],
+    metric: str,
+) -> tuple[List[float], List[float]]:
+    y = _series(rows, metric)
+    if metric != "trust_equity_pct":
+        return list(x), y
+
+    launch_idx = None
+    for i, row in enumerate(rows):
+        if bool(row.get("trust_active", False)) and float(row.get("trust_equity_pct", 0.0)) > 0.0:
+            launch_idx = i
+            break
+
+    if launch_idx is None:
+        return list(x), y
+
+    x_plot = list(x)
+    y_plot = list(y)
+    x_launch = float(x[launch_idx])
+    y_launch = float(rows[launch_idx].get("trust_equity_pct", 0.0))
+
+    # Insert an explicit zero-height point at the launch quarter so the line
+    # shows the initial leveraged buy as a vertical jump rather than merely
+    # starting at the post-buy level.
+    x_plot.insert(launch_idx, x_launch)
+    y_plot.insert(launch_idx, 0.0)
+    if launch_idx > 0:
+        y_plot[launch_idx - 1] = float("nan")
+    y_plot[launch_idx + 1] = y_launch
+    return x_plot, y_plot
 
 
 def _compact_tick_label(value: float) -> str:
@@ -101,6 +145,39 @@ def _title_with_mode(title: str, support_mode: str | None) -> str:
     return f"{title} ({mode})"
 
 
+def _annotate_trust_launch(
+    ax: Any,
+    rows: Sequence[Mapping[str, Any]],
+    x: Sequence[float],
+    y: Sequence[float],
+) -> None:
+    """Call out the initial leveraged trust buy on trust-equity plots."""
+    launch_idx = None
+    for i, row in enumerate(rows):
+        if bool(row.get("trust_active", False)) and float(row.get("trust_equity_pct", 0.0)) > 0.0:
+            launch_idx = i
+            break
+
+    if launch_idx is None:
+        return
+
+    x_launch = float(x[launch_idx])
+    y_launch = float(y[launch_idx])
+    if not np.isfinite(y_launch):
+        return
+    ax.axvline(x_launch, color="0.45", linewidth=1.2, linestyle=":", alpha=0.8)
+    ax.scatter([x_launch], [y_launch], color="0.15", s=26, zorder=5)
+    ax.annotate(
+        "Launch buy",
+        xy=(x_launch, y_launch),
+        xytext=(6, 10),
+        textcoords="offset points",
+        fontsize=9,
+        color="0.15",
+        bbox={"boxstyle": "round,pad=0.2", "fc": "white", "ec": "0.6", "alpha": 0.9},
+    )
+
+
 def plot_metric_lines(
     rows: Sequence[Mapping[str, Any]],
     metrics: Iterable[str],
@@ -135,8 +212,11 @@ def plot_metric_lines(
 
     primary_lines = []
     for metric in primary_list:
-        (line,) = ax.plot(x, _series(rows, metric), linewidth=2.0, label=metric_label(metric))
+        x_plot, y_plot = _plot_points(rows, x, metric)
+        (line,) = ax.plot(x_plot, y_plot, linewidth=2.0, label=metric_label(metric))
         primary_lines.append(line)
+        if metric == "trust_equity_pct":
+            _annotate_trust_launch(ax, rows, x, _series(rows, metric))
 
     _apply_compact_y_ticks(ax)
     if primary_ylabel is None:
@@ -150,7 +230,8 @@ def plot_metric_lines(
     if secondary_list:
         ax2 = ax.twinx()
         for metric in secondary_list:
-            (line,) = ax2.plot(x, _series(rows, metric), linewidth=2.0, linestyle="--", label=metric_label(metric))
+            x_plot, y_plot = _plot_points(rows, x, metric)
+            (line,) = ax2.plot(x_plot, y_plot, linewidth=2.0, linestyle="--", label=metric_label(metric))
             secondary_lines.append(line)
         ax2.set_ylabel(secondary_ylabel)
         _apply_compact_y_ticks(ax2)

@@ -46,6 +46,7 @@ SECTION_ORDER: tuple[str, ...] = (
 PARAMETER_CONTROLS: tuple[ParamControl, ...] = (
     ParamControl(("trust_trigger_dti",), "Trust Trigger Debt-Service-to-Income (DTI)", "Trust", "float", 0.0, 1.0, 0.01),
     ParamControl(("trust_launch_loan",), "Trust Launch Loan", "Trust", "float", 0.0, 50000.0, 500.0),
+    ParamControl(("trust_launch_target_pct",), "Trust Launch Target %", "Trust", "float", 0.0, 1.0, 0.01, fallback_default=0.10),
     ParamControl(("trust_equity_cap",), "Trust Equity Cap", "Trust", "float", 0.0, 1.0, 0.01),
     ParamControl(("send_fund_residual_to_gov",), "Sweep Fund Residual To GOV", "Trust", "bool"),
     ParamControl(("fund_residual_to_gov_share",), "Fund Residual To GOV Share", "Trust", "float", 0.0, 1.0, 0.01),

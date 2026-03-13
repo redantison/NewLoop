@@ -929,15 +929,16 @@ class NewLoop:
         launch_loan = float(self.params.get("trust_launch_loan", 15000.0))
 
         # Optional leveraged launch: BANK lends to FUND and FUND buys an initial equity block from HH.
-        # Purchase size is determined by the loan amount and current issuer equity proxies, so the
-        # configured launch loan actually controls the size of the initial block.
+        # The launch targets a configured ownership share per issuer, defaulting to 10%.
+        # If the configured seed loan is insufficient to fund that purchase at current equity proxies,
+        # the FUND borrows the additional cash needed so the visible launch block matches the target.
         if launch_loan > 0:
-            self._create_loan("FUND", launch_loan, memo_tag="launch_loan_created")
-
             seller = "HH"
             issuers = [("FA", "shares_FA"), ("FH", "shares_FH"), ("BANK", "shares_BANK")]
-            purchasable: List[tuple[str, str, float, float, float]] = []
-            total_available_value = 0.0
+            launch_target_pct = float(self.params.get("trust_launch_target_pct", 0.10))
+            launch_target_pct = max(0.0, min(1.0, launch_target_pct))
+            purchasable: List[tuple[str, str, float, float, float, float]] = []
+            total_required_cash = 0.0
 
             for issuer, key in issuers:
                 shares_out = float(self.nodes[issuer].get("shares_outstanding", 0.0))
@@ -946,25 +947,28 @@ class NewLoop:
                 if shares_out <= 0.0 or hh_shares <= 0.0 or issuer_equity_value <= 0.0:
                     continue
 
-                hh_value = issuer_equity_value * min(1.0, hh_shares / shares_out)
-                if hh_value <= 0.0:
+                target_shares = min(hh_shares, launch_target_pct * shares_out)
+                if target_shares <= 0.0:
                     continue
 
-                purchasable.append((issuer, key, shares_out, hh_shares, issuer_equity_value))
-                total_available_value += hh_value
+                price_per_share = issuer_equity_value / shares_out
+                if price_per_share <= 0.0:
+                    continue
 
-            cash_budget = min(float(launch_loan), total_available_value)
+                cash_required = target_shares * price_per_share
+                purchasable.append((issuer, key, shares_out, hh_shares, issuer_equity_value, target_shares))
+                total_required_cash += cash_required
 
-            if cash_budget > 0.0 and total_available_value > 0.0:
-                for issuer, key, shares_out, hh_shares, issuer_equity_value in purchasable:
-                    hh_value = issuer_equity_value * min(1.0, hh_shares / shares_out)
-                    cash_alloc = cash_budget * (hh_value / total_available_value)
+            if total_required_cash > 0.0:
+                self._create_loan("FUND", launch_loan, memo_tag="launch_loan_created")
+                extra_cash_needed = max(0.0, total_required_cash - float(self.nodes["FUND"].get("deposits", 0.0)))
+                if extra_cash_needed > 0.0:
+                    self._create_loan("FUND", extra_cash_needed, memo_tag="launch_topup_loan_created")
+
+                for issuer, key, shares_out, hh_shares, issuer_equity_value, target_shares in purchasable:
                     price_per_share = issuer_equity_value / shares_out
-                    if price_per_share <= 0.0:
-                        continue
-
-                    shares_to_buy = min(hh_shares, cash_alloc / price_per_share)
-                    if shares_to_buy <= 0.0:
+                    shares_to_buy = min(hh_shares, target_shares)
+                    if price_per_share <= 0.0 or shares_to_buy <= 0.0:
                         continue
 
                     cash_spent = shares_to_buy * price_per_share
