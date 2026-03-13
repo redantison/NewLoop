@@ -26,6 +26,10 @@ config = {
         "startup_bootstrap_lagged_retained": True,
         "startup_bootstrap_retained_scale": 0.20,
         "capital_depr_rate_per_quarter": 0.02,
+        # Household consumption buffer behavior: spend only a fraction of deposits above
+        # the target liquid buffer, and conserve when below target.
+        "hh_buffer_spend_excess_rate_q": 0.10,
+        "hh_buffer_shortfall_conserve_rate_q": 0.05,
         # Capital -> productivity feedback (A_eff = clamp(A + kappa*(K_per_h/K_scale)))
         "capital_productivity_k": 0.25,
         "capital_productivity_scale": 5000.0,
@@ -39,6 +43,7 @@ config = {
         # Corporate tax applies to retained earnings only (distributed dividends are not taxed at the corporate level).
         # Household dividend recipients are taxed via income tax; FUND recipients are untaxed.
         "corporate_tax_rate": 0.25,
+        "corporate_tax_depr_rate_q": 0.025, # ten-year straight-line depreciation allowance for the corporate tax base
         # Optional dynamic corporate tax policy (easy to disable/revert):
         # raise corporate tax as wages fall relative to baseline wages.
         "corporate_tax_dynamic_with_wages": True,
@@ -82,14 +87,18 @@ config = {
         "mort_neutralize_cap_value": 0.0,
         "revolving_principal_pay_rate_q": 0.05,  # 5%/q max paydown if cash available
         "mortgage_principal_pay_rate_q": 0.01,   # 1%/q max paydown if cash available
-        "send_fund_residual_to_gov": False, # Trust belongs to citizens; do not sweep FUND deposits to GOV by default
+        "send_fund_residual_to_gov": False, # legacy compatibility toggle for a full FUND residual sweep
+        "fund_residual_to_gov_share": 0.0,  # optional share of residual FUND deposits sent to GOV after debt-first treatment
         "income_support_mode": "UIS",       # "UIS" | "UBI"
         "income_support_issuance_share": 0.15,  # fixed share of each quarter's income support paid via issuance
         "income_support_monotonic_floor": True, # if True, policy support cannot decline quarter-to-quarter
         "ubi_target_percentile": 30.0,      # nearest-rank percentile target used to anchor UBI per-household amount
         "ubi_anchor_income_basis": "market_income",  # "market_income" | "wages_only"
         "ubi_index_series": "P_producer",   # "P_producer" | "C_consumer"
-        "gov_tax_rebate_rate": 1.00,        # share of remaining GOV deposits rebated each tick by household tax-paid weights
+        "gov_tax_rebate_rate": 0.25,        # share of GOV deposits above the stabilization buffer rebated each tick
+        "gov_rebate_buffer_quarters": 4,    # keep one year of trailing GOV obligations before surplus recycling
+        "gov_rebate_start_delay_quarters": 4, # wait one year before any GOV surplus rebate begins
+        "gov_rebate_ramp_quarters": 20,     # linear ramp from zero to full rebate rate over five years
         "hard_assert_sfc": False,          # set True to hard-fail on any mismatch
         # Dashboard display mode for money columns: "nominal" or "price_normalized" (base-period dollars).
         "dashboard_value_mode": "price_normalized",
@@ -105,7 +114,17 @@ config = {
             "median_wage_q": 450.0,
             "sigma_wage_ln": 0.60,
             "employment_rate": 0.94,
-            # Deposits / wealth proxy
+            # Deposits / liquid-balance rule
+            "deposit_generation_mode": "liquid_buffer_months",
+            "liquid_buffer_months_by_wealth_pct": (
+                (20.0, 1.5),
+                (50.0, 3.0),
+                (80.0, 5.0),
+                (95.0, 8.0),
+                (100.0, 12.0),
+            ),
+            "liquid_buffer_sigma_ln": 0.30,
+            # Legacy deposit-mixture parameters retained for comparison scenarios
             "median_deposits_q": 1200.0,
             "sigma_deposits_ln": 1.05,
             "wage_deposit_corr": 0.40,
