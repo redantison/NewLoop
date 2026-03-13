@@ -134,7 +134,21 @@ class PopulationConfig:
     # Work attachment (share of families with positive wages)
     employment_rate: float = 0.94
 
-    # Deposits / liquid wealth (quarterly dollars) mixture:
+    # Deposits / liquid wealth.
+    # Default mode uses a wealth-conditioned liquid-buffer rule:
+    # households target enough liquid savings for a piecewise number of months
+    # of baseline consumption, depending on pre-liquidity wealth rank.
+    deposit_generation_mode: str = "liquid_buffer_months"  # "liquid_buffer_months" | "legacy_mixture"
+    liquid_buffer_months_by_wealth_pct: Tuple[Tuple[float, float], ...] = (
+        (20.0, 1.5),
+        (50.0, 3.0),
+        (80.0, 5.0),
+        (95.0, 8.0),
+        (100.0, 12.0),
+    )
+    liquid_buffer_sigma_ln: float = 0.30
+
+    # Legacy deposit-mixture parameters retained for compatibility.
     # body: lognormal with median_deposits_q and sigma
     # tail: Pareto with alpha and scale at a percentile boundary
     median_deposits_q: float = 1200.0
@@ -186,6 +200,7 @@ class Population:
     revolving_loans: List[float]
     mpc_q: List[float]
     base_real_cons_q: List[float]
+    liquid_buffer_months_target: List[float]
 
 
 # ----------------------------
@@ -266,6 +281,28 @@ def _assign_mpc_from_deposits(deposits: List[float], schedule: Tuple[Tuple[float
     return mpc.astype(float).tolist()
 
 
+def _assign_piecewise_by_percentile_rank(
+    values: "NP.ndarray",
+    schedule: Tuple[Tuple[float, float], ...],
+) -> "NP.ndarray":
+    """Assign piecewise-constant values from percentile-rank schedule."""
+    np = NP
+    if np is None:
+        raise RuntimeError("NumPy is required for percentile-rank assignment.")
+
+    n = int(values.shape[0])
+    if n <= 0:
+        return np.asarray([], dtype=float)
+
+    order = np.argsort(values)
+    rank = np.empty(n, dtype=np.int32)
+    rank[order] = np.arange(n, dtype=np.int32)
+    cutoff_idx = np.array([int(round((pct / 100.0) * (n - 1))) for pct, _ in schedule], dtype=np.int32)
+    piece_vals = np.array([float(v) for _, v in schedule], dtype=float)
+    bin_idx = np.searchsorted(cutoff_idx, rank, side="left")
+    return piece_vals[bin_idx]
+
+
 def generate_population(cfg: PopulationConfig) -> Population:
     # Vectorized implementation (NumPy). Keeps the same public interface and outputs.
     if NP is None:
@@ -291,56 +328,69 @@ def generate_population(cfg: PopulationConfig) -> Population:
     ln_w = mu_w + cfg.sigma_wage_ln * (rho * z + s * e_w)
     wages = np.exp(ln_w)
 
+    wage_potential = wages.copy()
+
     # Apply employment rate by zeroing out some families
     if cfg.employment_rate < 1.0:
         employed = rng.random(n) < float(cfg.employment_rate)
         wages = wages * employed
 
-    # --- Deposits (liquid wealth proxy), correlated body + Pareto tail ---
-    n_tail = int(round(float(cfg.tail_share) * n))
-    n_tail = max(0, min(n, n_tail))
-    n_body = n - n_tail
+    # --- Liquid-buffer target (used both for initialization and in-run consumption behavior) ---
+    wealth_signal = np.asarray(wage_potential, dtype=float)
+    target_months = _assign_piecewise_by_percentile_rank(
+        wealth_signal,
+        tuple((float(pct), float(months)) for pct, months in cfg.liquid_buffer_months_by_wealth_pct),
+    )
 
-    idx_all = np.arange(n, dtype=np.int32)
-    if n_tail > 0:
-        idx_sorted_by_z = np.argsort(z)
-        tail_idxs = idx_sorted_by_z[-n_tail:]
-        # Match original behavior: body_idxs are the indices not in tail (sorted ascending).
-        body_mask = np.ones(n, dtype=bool)
-        body_mask[tail_idxs] = False
-        body_idxs = idx_all[body_mask]
+    # --- Deposits (liquid wealth proxy) ---
+    deposit_mode = str(getattr(cfg, "deposit_generation_mode", "liquid_buffer_months")).strip().lower()
+    if deposit_mode == "legacy_mixture":
+        n_tail = int(round(float(cfg.tail_share) * n))
+        n_tail = max(0, min(n, n_tail))
+        n_body = n - n_tail
+
+        idx_all = np.arange(n, dtype=np.int32)
+        if n_tail > 0:
+            idx_sorted_by_z = np.argsort(z)
+            tail_idxs = idx_sorted_by_z[-n_tail:]
+            body_mask = np.ones(n, dtype=bool)
+            body_mask[tail_idxs] = False
+            body_idxs = idx_all[body_mask]
+        else:
+            tail_idxs = np.empty(0, dtype=np.int32)
+            body_idxs = idx_all
+
+        mu_d = math.log(max(cfg.median_deposits_q, 1e-12))
+        if n_body > 0:
+            e_d = rng.standard_normal(n_body)
+            ln_d = mu_d + cfg.sigma_deposits_ln * (rho * z[body_idxs] + s * e_d)
+            body_deposits = np.exp(ln_d)
+        else:
+            body_deposits = np.empty(0, dtype=float)
+
+        anchor_pct = 92.0
+        if body_deposits.size > 0:
+            anchor = float(np.percentile(body_deposits, anchor_pct))
+        else:
+            anchor = float(cfg.median_deposits_q)
+
+        if n_tail > 0:
+            alpha = max(float(cfg.pareto_alpha), 0.10)
+            u = np.clip(rng.random(n_tail), 1e-12, 1.0 - 1e-12)
+            tail_deposits = anchor / (u ** (1.0 / alpha))
+        else:
+            tail_deposits = np.empty(0, dtype=float)
+
+        deposits = np.empty(n, dtype=float)
+        if n_body > 0:
+            deposits[body_idxs] = rng.permutation(body_deposits)
+        if n_tail > 0:
+            deposits[tail_idxs] = rng.permutation(tail_deposits)
     else:
-        tail_idxs = np.empty(0, dtype=np.int32)
-        body_idxs = idx_all
-
-    mu_d = math.log(max(cfg.median_deposits_q, 1e-12))
-    if n_body > 0:
-        e_d = rng.standard_normal(n_body)
-        ln_d = mu_d + cfg.sigma_deposits_ln * (rho * z[body_idxs] + s * e_d)
-        body_deposits = np.exp(ln_d)
-    else:
-        body_deposits = np.empty(0, dtype=float)
-
-    # anchor tail scale to the body 92nd-ish percentile boundary
-    anchor_pct = 92.0
-    if body_deposits.size > 0:
-        anchor = float(np.percentile(body_deposits, anchor_pct))
-    else:
-        anchor = float(cfg.median_deposits_q)
-
-    if n_tail > 0:
-        alpha = max(float(cfg.pareto_alpha), 0.10)
-        u = np.clip(rng.random(n_tail), 1e-12, 1.0 - 1e-12)
-        tail_deposits = anchor / (u ** (1.0 / alpha))
-    else:
-        tail_deposits = np.empty(0, dtype=float)
-
-    # Preserve original semantics: shuffle deposits within body and tail before assigning.
-    deposits = np.empty(n, dtype=float)
-    if n_body > 0:
-        deposits[body_idxs] = rng.permutation(body_deposits)
-    if n_tail > 0:
-        deposits[tail_idxs] = rng.permutation(tail_deposits)
+        monthly_base_cons = max(0.0, float(cfg.base_real_cons_q)) / 3.0
+        sigma_liq = max(0.0, float(cfg.liquid_buffer_sigma_ln))
+        liq_noise = np.exp(sigma_liq * rng.standard_normal(n))
+        deposits = np.maximum(0.0, monthly_base_cons * target_months * liq_noise)
 
     # --- MPC (decreasing with deposits percentile) ---
     mpc_q = _assign_mpc_from_deposits(deposits.tolist(), cfg.mpc_by_wealth_pct)
@@ -410,6 +460,7 @@ def generate_population(cfg: PopulationConfig) -> Population:
         revolving_loans=revolving_loans.astype(float).tolist(),
         mpc_q=[float(x) for x in mpc_q],
         base_real_cons_q=base_real.astype(float).tolist(),
+        liquid_buffer_months_target=target_months.astype(float).tolist(),
     )
 
 
