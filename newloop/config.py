@@ -116,6 +116,13 @@ config = {
             "employment_rate": 0.94,
             # Deposits / liquid-balance rule
             "deposit_generation_mode": "liquid_buffer_months",
+            "base_real_cons_by_wealth_pct": (
+                (20.0, 450.0),
+                (50.0, 525.0),
+                (80.0, 600.0),
+                (95.0, 675.0),
+                (100.0, 800.0),
+            ),
             "liquid_buffer_months_by_wealth_pct": (
                 (20.0, 1.5),
                 (50.0, 3.0),

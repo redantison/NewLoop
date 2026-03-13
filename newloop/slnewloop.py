@@ -99,6 +99,9 @@ CONTROL_DEFAULTS_VERSION = 3
 UBI_PERCENTILE_PARAM_KEY = "param__ubi_target_percentile"
 UBI_PERCENTILE_UI_KEY = "ui__ubi_target_percentile"
 _TITLE_MODE_SUFFIX_RE = re.compile(r"\s+\((?:UIS|UBI|Stale)\)\s*$", re.IGNORECASE)
+RECENT_IMPROVEMENTS_TEXT = (
+    "- Improved household consumption behavior to be forward-looking and maintain a liquidity buffer."
+)
 
 # Columns to deflate when display mode is "real".
 MONETARY_COLUMNS = {
@@ -606,6 +609,12 @@ def main() -> None:
     _inject_selectbox_chevron_fallback(st)
     st.title("NewLoop")
     st.caption("Interactive simulation with parameterized runs and reusable plotting.")
+    st.text_area(
+        "Recent improvements",
+        value=RECENT_IMPROVEMENTS_TEXT,
+        height=80,
+        disabled=True,
+    )
 
     base_cfg = copy.deepcopy(get_default_config())
     base_params = copy.deepcopy(base_cfg.get("parameters", {}))

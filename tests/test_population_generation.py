@@ -21,26 +21,34 @@ class PopulationGenerationTests(unittest.TestCase):
         pop = generate_population(cfg)
 
         pairs = sorted(
-            zip(pop.wages_q, pop.deposits, pop.liquid_buffer_months_target),
+            zip(pop.wages_q, pop.deposits, pop.base_real_cons_q, pop.liquid_buffer_months_target),
             key=lambda item: item[0],
         )
         n = len(pairs)
         bins = [pairs[int(i * n / 5): int((i + 1) * n / 5)] for i in range(5)]
-        medians = [statistics.median(dep for _, dep, _ in bucket) for bucket in bins]
-        month_medians = [statistics.median(months for _, _, months in bucket) for bucket in bins]
+        deposit_medians = [statistics.median(dep for _, dep, _, _ in bucket) for bucket in bins]
+        base_real_medians = [statistics.median(base for _, _, base, _ in bucket) for bucket in bins]
+        month_medians = [statistics.median(months for _, _, _, months in bucket) for bucket in bins]
+        realized_buffer_months = [
+            statistics.median((dep / max(base / 3.0, 1e-9)) for _, dep, base, _ in bucket)
+            for bucket in bins
+        ]
 
-        for left, right in zip(medians, medians[1:]):
+        for left, right in zip(deposit_medians, deposit_medians[1:]):
             self.assertLess(left, right)
+        for left, right in zip(base_real_medians, base_real_medians[1:]):
+            self.assertLessEqual(left, right)
         for left, right in zip(month_medians, month_medians[1:]):
             self.assertLessEqual(left, right)
 
-        monthly_base = cfg.base_real_cons_q / 3.0
-        bottom_months = medians[0] / monthly_base
-        top_months = medians[-1] / monthly_base
-        self.assertGreaterEqual(bottom_months, 1.0)
-        self.assertLessEqual(bottom_months, 3.0)
-        self.assertGreaterEqual(top_months, 7.0)
-        self.assertLessEqual(top_months, 14.0)
+        self.assertGreaterEqual(base_real_medians[0], 400.0)
+        self.assertLessEqual(base_real_medians[0], 500.0)
+        self.assertGreaterEqual(base_real_medians[-1], 625.0)
+        self.assertLessEqual(base_real_medians[-1], 725.0)
+        self.assertGreaterEqual(realized_buffer_months[0], 1.0)
+        self.assertLessEqual(realized_buffer_months[0], 3.0)
+        self.assertGreaterEqual(realized_buffer_months[-1], 7.0)
+        self.assertLessEqual(realized_buffer_months[-1], 14.0)
         self.assertGreaterEqual(month_medians[0], 1.0)
         self.assertLessEqual(month_medians[0], 3.0)
         self.assertGreaterEqual(month_medians[-1], 7.0)
