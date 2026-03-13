@@ -187,8 +187,17 @@ class PopulationConfig:
         (100.0, 0.18),
     )
 
-    # Baseline real consumption per quarter (for Phase 2 integration)
+    # Baseline real consumption per quarter (for Phase 2 integration).
+    # Default: piecewise by pre-liquidity wealth rank; `base_real_cons_q` is retained as
+    # a legacy/global fallback if the schedule is cleared.
     base_real_cons_q: float = 600.0
+    base_real_cons_by_wealth_pct: Tuple[Tuple[float, float], ...] = (
+        (20.0, 450.0),
+        (50.0, 525.0),
+        (80.0, 600.0),
+        (95.0, 675.0),
+        (100.0, 800.0),
+    )
 
 
 @dataclass
@@ -335,8 +344,15 @@ def generate_population(cfg: PopulationConfig) -> Population:
         employed = rng.random(n) < float(cfg.employment_rate)
         wages = wages * employed
 
-    # --- Liquid-buffer target (used both for initialization and in-run consumption behavior) ---
+    # --- Baseline consumption target (used in both startup calibration and in-run behavior) ---
     wealth_signal = np.asarray(wage_potential, dtype=float)
+    base_schedule = tuple((float(pct), float(val)) for pct, val in getattr(cfg, "base_real_cons_by_wealth_pct", ()))
+    if len(base_schedule) > 0:
+        base_real = _assign_piecewise_by_percentile_rank(wealth_signal, base_schedule)
+    else:
+        base_real = np.full(n, float(cfg.base_real_cons_q), dtype=float)
+
+    # --- Liquid-buffer target (used both for initialization and in-run consumption behavior) ---
     target_months = _assign_piecewise_by_percentile_rank(
         wealth_signal,
         tuple((float(pct), float(months)) for pct, months in cfg.liquid_buffer_months_by_wealth_pct),
@@ -387,16 +403,13 @@ def generate_population(cfg: PopulationConfig) -> Population:
         if n_tail > 0:
             deposits[tail_idxs] = rng.permutation(tail_deposits)
     else:
-        monthly_base_cons = max(0.0, float(cfg.base_real_cons_q)) / 3.0
+        monthly_base_cons = np.maximum(0.0, base_real) / 3.0
         sigma_liq = max(0.0, float(cfg.liquid_buffer_sigma_ln))
         liq_noise = np.exp(sigma_liq * rng.standard_normal(n))
         deposits = np.maximum(0.0, monthly_base_cons * target_months * liq_noise)
 
     # --- MPC (decreasing with deposits percentile) ---
     mpc_q = _assign_mpc_from_deposits(deposits.tolist(), cfg.mpc_by_wealth_pct)
-
-    # --- Base real consumption (constant for now; can be heterogeneous later) ---
-    base_real = np.full(n, float(cfg.base_real_cons_q), dtype=float)
 
     # --- Debt (loan principal) ---
     wages_annual = 4.0 * wages
