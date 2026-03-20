@@ -95,16 +95,16 @@ COMPACT_NUMBER_COLUMNS = {
 DECIMAL_COLUMNS = {"price_level", "private_inv_cov"}
 
 DISPLAY_VALUE_MODES: tuple[str, str] = ("nominal", "real")
-CONTROL_DEFAULTS_VERSION = 3
+CONTROL_DEFAULTS_VERSION = 5
 UBI_PERCENTILE_PARAM_KEY = "param__ubi_target_percentile"
 UBI_PERCENTILE_UI_KEY = "ui__ubi_target_percentile"
 _TITLE_MODE_SUFFIX_RE = re.compile(r"\s+\((?:UIS|UBI|Stale)\)\s*$", re.IGNORECASE)
 RECENT_IMPROVEMENTS_TEXT = (
     "- Added a top-level Policy Switches panel for baseline and no-policy diagnostics.\n"
+    "- Added iterative debt-aware baseline calibration for startup household consumption and liquidity targets.\n"
     "- Added an income-tax disable switch for cleaner baseline diagnostics.\n"
     "- Added a mortgage-indexing disable switch for cleaner baseline diagnostics.\n"
     "- Added a mortgage-policy disable switch for cleaner baseline diagnostics.\n"
-    "- Added optional startup stabilization: hidden pre-run quarters before visible Q0.\n"
     "- Improved household consumption behavior to be forward-looking and maintain a liquidity buffer.\n"
     "- Income lines now plot disposable income."
 )
@@ -215,7 +215,7 @@ def _render_summary(summary: Dict[str, float], st: Any) -> None:
     c4.metric("Trust Equity", f"{summary['trust_equity_end']:.2%}")
 
 
-def _render_startup_diagnostics(startup_diag: Dict[str, Any], st: Any) -> None:
+def _render_startup_diagnostics(startup_diag: Dict[str, Any], baseline_calibration: Dict[str, Any], st: Any) -> None:
     if not startup_diag:
         return
 
@@ -225,14 +225,23 @@ def _render_startup_diagnostics(startup_diag: Dict[str, Any], st: Any) -> None:
     c2.metric("Deposit / Target", f"{float(startup_diag.get('mean_deposit_to_target_ratio', 0.0)):.2f}x")
     c3.metric("Median Buffer Gap", _compact_number(float(startup_diag.get("median_buffer_gap", 0.0))))
     c4.metric("DTI P90 (Wages)", f"{100.0 * float(startup_diag.get('startup_dti_w_p90', 0.0)):.1f}%")
-    if bool(startup_diag.get("stabilization_enabled", False)) and int(startup_diag.get("stabilization_quarters", 0)) > 0:
+    c5, c6 = st.columns(2)
+    c5.metric("Base Cons Uncovered", f"{100.0 * float(startup_diag.get('share_base_consumption_uncovered', 0.0)):.1f}%")
+    c6.metric("Mean Base Gap", _compact_number(float(startup_diag.get("mean_base_consumption_gap", 0.0))))
+    if baseline_calibration and bool(baseline_calibration.get("enabled", False)):
+        iterations = int(baseline_calibration.get("iterations_completed", 0))
+        max_change = 100.0 * float(baseline_calibration.get("max_target_change_pct", 0.0))
+        converged = bool(baseline_calibration.get("converged", False))
         st.caption(
-            f"Visible Q0 starts after {int(startup_diag.get('stabilization_quarters', 0))} hidden startup-stabilization quarter(s) with automation held at zero."
+            f"Baseline calibration ran for {iterations} iteration(s) before visible Q0; final quintile-target change was {max_change:.2f}%."
         )
+        st.caption("Visible Q0 is the calibrated startup state directly; no hidden startup burn-in is applied.")
+        if not converged:
+            st.caption("Baseline calibration has not fully converged yet, so some residual startup drift is still expected.")
     st.caption(f"Aggregate buffer shortfall to hit runtime targets: {_compact_number(float(startup_diag.get('buffer_shortfall_total', 0.0)))}.")
     st.caption(
-        "Quarter-0 diagnostics compare initialized household deposits to the solver's live liquidity-buffer target "
-        "before the first simulated quarter updates incomes and balance sheets."
+        "Quarter-0 diagnostics compare initialized household deposits and baseline consumption needs to the solver's "
+        "debt-aware disposable-income path before the first simulated quarter updates balances."
     )
 
     rows_in = startup_diag.get("table_rows", [])
@@ -282,10 +291,13 @@ def _render_startup_diagnostics(startup_diag: Dict[str, Any], st: Any) -> None:
                 {
                     "Decile": row.get("Decile", ""),
                     "Mean Wage": _compact_number(float(row.get("Mean Wage", 0.0))),
+                    "Mean Net Disp": _compact_number(float(row.get("Mean Net Disp", 0.0))),
                     "Mean Deposits": _compact_number(float(row.get("Mean Deposits", 0.0))),
                     "Mean Target": _compact_number(float(row.get("Mean Target", 0.0))),
                     "Mean Gap": _compact_number(float(row.get("Mean Gap", 0.0))),
+                    "Mean Base Gap": _compact_number(float(row.get("Mean Base Gap", 0.0))),
                     "Below Buffer": f"{100.0 * float(row.get('Below Buffer', 0.0)):.1f}%",
+                    "Base Uncovered": f"{100.0 * float(row.get('Base Uncovered', 0.0)):.1f}%",
                     "DTI P90": f"{100.0 * float(row.get('DTI P90', 0.0)):.1f}%",
                 }
             )
@@ -682,6 +694,7 @@ def _cached_run_payload(n_quarters: int, cfg_json: str) -> Dict[str, Any]:
         "rows": run.rows,
         "population_distributions": run.population_distributions or {},
         "startup_diagnostics": run.startup_diagnostics or {},
+        "baseline_calibration": run.baseline_calibration or {},
         "support_debug": support_debug,
     }
 
@@ -720,6 +733,8 @@ def main() -> None:
         st.session_state["population_distributions"] = {}
     if "startup_diagnostics" not in st.session_state:
         st.session_state["startup_diagnostics"] = {}
+    if "baseline_calibration" not in st.session_state:
+        st.session_state["baseline_calibration"] = {}
     if "support_debug" not in st.session_state:
         st.session_state["support_debug"] = {}
     if "last_run_cfg_json" not in st.session_state:
@@ -736,6 +751,7 @@ def main() -> None:
         st.session_state["rows"] = list(payload.get("rows", []))
         st.session_state["population_distributions"] = dict(payload.get("population_distributions", {}))
         st.session_state["startup_diagnostics"] = dict(payload.get("startup_diagnostics", {}))
+        st.session_state["baseline_calibration"] = dict(payload.get("baseline_calibration", {}))
         st.session_state["support_debug"] = dict(payload.get("support_debug", {}))
         st.session_state["last_run_cfg_json"] = current_cfg_json
         st.session_state["last_run_quarters"] = int(quarters)
@@ -759,7 +775,11 @@ def main() -> None:
 
     summary = summarize_rows(rows)
     _render_summary(summary, st)
-    _render_startup_diagnostics(dict(st.session_state.get("startup_diagnostics", {})), st)
+    _render_startup_diagnostics(
+        dict(st.session_state.get("startup_diagnostics", {})),
+        dict(st.session_state.get("baseline_calibration", {})),
+        st,
+    )
     support_debug = dict(st.session_state.get("support_debug", {}))
     support_mode_cfg = str(current_cfg.get("parameters", {}).get("income_support_mode", "UIS")).strip().upper()
     if support_mode_cfg not in {"UIS", "UBI"}:
