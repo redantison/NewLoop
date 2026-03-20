@@ -28,12 +28,16 @@ class ParamControl:
     support_modes: tuple[str, ...] | None = None
 
 
+POLICY_SWITCHES_SECTION = "Policy Switches"
+STARTUP_SECTION = "Startup"
 INCOME_SUPPORT_SECTION = "Income Support"
 INCOME_SUPPORT_MODE_PATH: tuple[str, ...] = ("income_support_mode",)
 INCOME_SUPPORT_MODE_WIDGET_KEY = "param__income_support_mode"
 
 
 SECTION_ORDER: tuple[str, ...] = (
+    POLICY_SWITCHES_SECTION,
+    STARTUP_SECTION,
     "Trust",
     "Taxes",
     INCOME_SUPPORT_SECTION,
@@ -44,6 +48,39 @@ SECTION_ORDER: tuple[str, ...] = (
 
 
 PARAMETER_CONTROLS: tuple[ParamControl, ...] = (
+    ParamControl(("disable_trust",), "Disable Trust", POLICY_SWITCHES_SECTION, "bool", fallback_default=False, help_text="Prevent trust activation, launch, and dilution."),
+    ParamControl(("disable_mortgage_index",), "Disable Mortgage Indexing", POLICY_SWITCHES_SECTION, "bool", fallback_default=False, help_text="Force mortgage required payments back to the non-indexed contractual path while leaving mortgage balances in place."),
+    ParamControl(("disable_mortgage_policy",), "Disable Mortgage Policy", POLICY_SWITCHES_SECTION, "bool", fallback_default=False, help_text="Turn off mortgage-gap neutralization transfers while leaving mortgage balances and required payments in place."),
+    ParamControl(("disable_income_tax",), "Disable Income Tax", POLICY_SWITCHES_SECTION, "bool", fallback_default=False, help_text="Force household income taxes to zero while leaving other taxes and fiscal settings unchanged."),
+    ParamControl(("disable_vat",), "Disable VAT", POLICY_SWITCHES_SECTION, "bool", fallback_default=False, help_text="Turn off VAT and VAT-credit effects while leaving other tax settings unchanged."),
+    ParamControl(("disable_income_support",), "Disable Income Support", POLICY_SWITCHES_SECTION, "bool", fallback_default=False, help_text="Force income-support payments to zero in all quarters."),
+    ParamControl(
+        ("automation_disabled",),
+        "Disable Automation Entirely",
+        POLICY_SWITCHES_SECTION,
+        "bool",
+        fallback_default=False,
+        help_text="Hold automation levels and flows at zero for all quarters. Useful for baseline-equilibrium checks.",
+    ),
+    ParamControl(
+        ("startup_stabilization_enabled",),
+        "Use Startup Stabilization",
+        STARTUP_SECTION,
+        "bool",
+        fallback_default=True,
+        help_text="Run hidden quarters before visible Q0 to settle the economy. Automation is held at zero during stabilization.",
+    ),
+    ParamControl(
+        ("startup_stabilization_quarters",),
+        "Startup Stabilization Quarters",
+        STARTUP_SECTION,
+        "int",
+        0,
+        200,
+        5,
+        fallback_default=40,
+        help_text="Number of hidden pre-run quarters before the visible simulation begins.",
+    ),
     ParamControl(("trust_trigger_dti",), "Trust Trigger Debt-Service-to-Income (DTI)", "Trust", "float", 0.0, 1.0, 0.01),
     ParamControl(("trust_launch_loan",), "Trust Launch Loan", "Trust", "float", 0.0, 50000.0, 500.0),
     ParamControl(("trust_launch_target_pct",), "Trust Launch Target %", "Trust", "float", 0.0, 1.0, 0.01, fallback_default=0.10),

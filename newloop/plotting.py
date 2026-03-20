@@ -408,7 +408,7 @@ def plot_default_dashboard(
         legend_loc="upper right",
         support_mode=mode,
     )
-    automation_ax.set_ylim(0.0, 1.0)
+    automation_ax.set_ylim(-0.05, 1.0)
     plot_gini_series(rows, ax=axs[0][1], support_mode=mode)
     plot_income_support_funding_mix(rows, ax=axs[1][0], support_mode=mode)
     plot_cumulative_income_support_funding(

@@ -100,6 +100,11 @@ UBI_PERCENTILE_PARAM_KEY = "param__ubi_target_percentile"
 UBI_PERCENTILE_UI_KEY = "ui__ubi_target_percentile"
 _TITLE_MODE_SUFFIX_RE = re.compile(r"\s+\((?:UIS|UBI|Stale)\)\s*$", re.IGNORECASE)
 RECENT_IMPROVEMENTS_TEXT = (
+    "- Added a top-level Policy Switches panel for baseline and no-policy diagnostics.\n"
+    "- Added an income-tax disable switch for cleaner baseline diagnostics.\n"
+    "- Added a mortgage-indexing disable switch for cleaner baseline diagnostics.\n"
+    "- Added a mortgage-policy disable switch for cleaner baseline diagnostics.\n"
+    "- Added optional startup stabilization: hidden pre-run quarters before visible Q0.\n"
     "- Improved household consumption behavior to be forward-looking and maintain a liquidity buffer.\n"
     "- Income lines now plot disposable income."
 )
@@ -208,6 +213,83 @@ def _render_summary(summary: Dict[str, float], st: Any) -> None:
         delta=_signed_compact(summary["real_consumption_delta"]),
     )
     c4.metric("Trust Equity", f"{summary['trust_equity_end']:.2%}")
+
+
+def _render_startup_diagnostics(startup_diag: Dict[str, Any], st: Any) -> None:
+    if not startup_diag:
+        return
+
+    st.subheader("Startup Diagnostics")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("HH Below Buffer", f"{100.0 * float(startup_diag.get('share_below_runtime_buffer', 0.0)):.1f}%")
+    c2.metric("Deposit / Target", f"{float(startup_diag.get('mean_deposit_to_target_ratio', 0.0)):.2f}x")
+    c3.metric("Median Buffer Gap", _compact_number(float(startup_diag.get("median_buffer_gap", 0.0))))
+    c4.metric("DTI P90 (Wages)", f"{100.0 * float(startup_diag.get('startup_dti_w_p90', 0.0)):.1f}%")
+    if bool(startup_diag.get("stabilization_enabled", False)) and int(startup_diag.get("stabilization_quarters", 0)) > 0:
+        st.caption(
+            f"Visible Q0 starts after {int(startup_diag.get('stabilization_quarters', 0))} hidden startup-stabilization quarter(s) with automation held at zero."
+        )
+    st.caption(f"Aggregate buffer shortfall to hit runtime targets: {_compact_number(float(startup_diag.get('buffer_shortfall_total', 0.0)))}.")
+    st.caption(
+        "Quarter-0 diagnostics compare initialized household deposits to the solver's live liquidity-buffer target "
+        "before the first simulated quarter updates incomes and balance sheets."
+    )
+
+    rows_in = startup_diag.get("table_rows", [])
+    if not rows_in:
+        return
+
+    table_rows: List[Dict[str, Any]] = []
+    for row in rows_in:
+        is_pct = bool(row.get("percent", False))
+        table_rows.append(
+            {
+                "Metric": row.get("Metric", ""),
+                "Mean": (f"{100.0 * float(row.get('Mean', 0.0)):.1f}%" if is_pct else _compact_number(float(row.get("Mean", 0.0)))),
+                "P10": (f"{100.0 * float(row.get('P10', 0.0)):.1f}%" if is_pct else _compact_number(float(row.get("P10", 0.0)))),
+                "P50": (f"{100.0 * float(row.get('P50', 0.0)):.1f}%" if is_pct else _compact_number(float(row.get("P50", 0.0)))),
+                "P90": (f"{100.0 * float(row.get('P90', 0.0)):.1f}%" if is_pct else _compact_number(float(row.get("P90", 0.0)))),
+            }
+        )
+    st.dataframe(table_rows, use_container_width=True)
+
+    circular_flow = dict(startup_diag.get("circular_flow", {}))
+    if circular_flow:
+        st.caption("Quarter-0 circular flow decomposition")
+        flow_rows = [
+            {"Flow": "Household Consumption", "Amount": _compact_number(float(circular_flow.get("hh_consumption_nom", 0.0)))},
+            {"Flow": "Firm Revenue", "Amount": _compact_number(float(circular_flow.get("firm_revenue_nom", 0.0)))},
+            {"Flow": "Wages Returned", "Amount": _compact_number(float(circular_flow.get("wages_total", 0.0)))},
+            {"Flow": "Household Dividends", "Amount": _compact_number(float(circular_flow.get("household_dividends_total", 0.0)))},
+            {"Flow": "Disposable Income", "Amount": _compact_number(float(circular_flow.get("hh_disposable_income_total", 0.0)))},
+            {"Flow": "Debt Service", "Amount": _compact_number(float(circular_flow.get("debt_service_total", 0.0)))},
+            {"Flow": "Income Tax", "Amount": _compact_number(float(circular_flow.get("income_tax_total", 0.0)))},
+            {"Flow": "Corporate Tax", "Amount": _compact_number(float(circular_flow.get("corporate_tax_total", 0.0)))},
+            {"Flow": "VAT Receipts", "Amount": _compact_number(float(circular_flow.get("vat_receipts_total", 0.0)))},
+            {"Flow": "VAT Credit", "Amount": _compact_number(float(circular_flow.get("vat_credit_total", 0.0)))},
+            {"Flow": "Income Support", "Amount": _compact_number(float(circular_flow.get("income_support_total", 0.0)))},
+            {"Flow": "Private Retained", "Amount": _compact_number(float(circular_flow.get("private_retained_total", 0.0)))},
+            {"Flow": "CAPEX", "Amount": _compact_number(float(circular_flow.get("capex_total_nom", 0.0)))},
+        ]
+        st.dataframe(flow_rows, use_container_width=True)
+
+    decile_rows_in = startup_diag.get("decile_rows", [])
+    if decile_rows_in:
+        st.caption("Buffer-gap diagnostics by wage decile")
+        decile_rows: List[Dict[str, Any]] = []
+        for row in decile_rows_in:
+            decile_rows.append(
+                {
+                    "Decile": row.get("Decile", ""),
+                    "Mean Wage": _compact_number(float(row.get("Mean Wage", 0.0))),
+                    "Mean Deposits": _compact_number(float(row.get("Mean Deposits", 0.0))),
+                    "Mean Target": _compact_number(float(row.get("Mean Target", 0.0))),
+                    "Mean Gap": _compact_number(float(row.get("Mean Gap", 0.0))),
+                    "Below Buffer": f"{100.0 * float(row.get('Below Buffer', 0.0)):.1f}%",
+                    "DTI P90": f"{100.0 * float(row.get('DTI P90', 0.0)):.1f}%",
+                }
+            )
+        st.dataframe(decile_rows, use_container_width=True)
 
 
 def _available_line_metric_ids() -> List[str]:
@@ -583,6 +665,7 @@ def _cached_run_payload(n_quarters: int, cfg_json: str) -> Dict[str, Any]:
     run = run_simulation(n_quarters=int(n_quarters), cfg=cfg)
     support_debug = {
         "mode": str(run.sim.params.get("income_support_mode", "UIS")).strip().upper(),
+        "disabled": bool(run.sim.params.get("disable_income_support", False)),
         "ubi_anchor_real_per_h": run.sim.state.get("ubi_anchor_real_per_h", None),
         "ubi_anchor_nominal_per_h_base": run.sim.state.get("ubi_anchor_nominal_per_h_base", None),
         "ubi_anchor_percentile": run.sim.state.get("ubi_anchor_percentile", None),
@@ -598,6 +681,7 @@ def _cached_run_payload(n_quarters: int, cfg_json: str) -> Dict[str, Any]:
     return {
         "rows": run.rows,
         "population_distributions": run.population_distributions or {},
+        "startup_diagnostics": run.startup_diagnostics or {},
         "support_debug": support_debug,
     }
 
@@ -634,6 +718,8 @@ def main() -> None:
         st.session_state["rows"] = []
     if "population_distributions" not in st.session_state:
         st.session_state["population_distributions"] = {}
+    if "startup_diagnostics" not in st.session_state:
+        st.session_state["startup_diagnostics"] = {}
     if "support_debug" not in st.session_state:
         st.session_state["support_debug"] = {}
     if "last_run_cfg_json" not in st.session_state:
@@ -649,6 +735,7 @@ def main() -> None:
             payload = _cached_run_payload(quarters, current_cfg_json)
         st.session_state["rows"] = list(payload.get("rows", []))
         st.session_state["population_distributions"] = dict(payload.get("population_distributions", {}))
+        st.session_state["startup_diagnostics"] = dict(payload.get("startup_diagnostics", {}))
         st.session_state["support_debug"] = dict(payload.get("support_debug", {}))
         st.session_state["last_run_cfg_json"] = current_cfg_json
         st.session_state["last_run_quarters"] = int(quarters)
@@ -672,6 +759,7 @@ def main() -> None:
 
     summary = summarize_rows(rows)
     _render_summary(summary, st)
+    _render_startup_diagnostics(dict(st.session_state.get("startup_diagnostics", {})), st)
     support_debug = dict(st.session_state.get("support_debug", {}))
     support_mode_cfg = str(current_cfg.get("parameters", {}).get("income_support_mode", "UIS")).strip().upper()
     if support_mode_cfg not in {"UIS", "UBI"}:
@@ -680,44 +768,48 @@ def main() -> None:
     if support_mode not in {"UIS", "UBI"}:
         support_mode = support_mode_cfg
     support_label = "Universal Income Stabilizer (UIS)" if support_mode == "UIS" else "Universal Basic Income (UBI)"
-    st.caption(f"Income support mode (last run): {support_label}.")
-    if config_stale and support_mode_cfg != support_mode:
-        pending_label = "Universal Income Stabilizer (UIS)" if support_mode_cfg == "UIS" else "Universal Basic Income (UBI)"
-        st.caption(f"Pending mode in controls: {pending_label}.")
-
-    issuance_share = float(support_debug.get("income_support_issuance_share", 0.0))
-    st.caption(
-        "Income-support funding order (all modes): "
-        f"{issuance_share:.0%} issuance share first, then FUND deposits, then GOV deposits, then residual issuance."
-    )
-
-    if support_mode == "UBI":
-        anchor_real = support_debug.get("ubi_anchor_real_per_h", None)
-        anchor_nom = support_debug.get("ubi_anchor_nominal_per_h_base", None)
-        anchor_pct = support_debug.get("ubi_anchor_percentile", None)
-        anchor_basis = support_debug.get("ubi_anchor_basis", None)
-        index_series = support_debug.get("ubi_index_series", None)
-        if anchor_real is not None:
-            pct_txt = f"{float(anchor_pct):.1f}" if anchor_pct is not None else "?"
-            basis_txt = str(anchor_basis) if anchor_basis is not None else "?"
-            idx_txt = str(index_series) if index_series is not None else "?"
-            nom_txt = f"{float(anchor_nom):.3g}" if anchor_nom is not None else "?"
-            st.caption(
-                "UBI anchor: "
-                f"P{pct_txt} of {basis_txt} at baseline; "
-                f"base nominal/HH={nom_txt}; "
-                f"real anchor/HH={float(anchor_real):.3g}; "
-                f"index={idx_txt}."
-            )
-            if float(anchor_real) <= 0.0:
-                st.warning(
-                    "UBI anchor resolved to zero at baseline. This usually means "
-                    "`UBI Target Percentile` is at or near 0 in a population with zero market-income households."
-                )
+    support_disabled = bool(support_debug.get("disabled", False))
+    if support_disabled:
+        st.caption("Income support disabled for this run.")
     else:
-        target_pool = support_debug.get("income_target_pool_real_pop", None)
-        if target_pool is not None:
-            st.caption(f"UIS real target pool (population): {float(target_pool):.6g}.")
+        st.caption(f"Income support mode (last run): {support_label}.")
+        if config_stale and support_mode_cfg != support_mode:
+            pending_label = "Universal Income Stabilizer (UIS)" if support_mode_cfg == "UIS" else "Universal Basic Income (UBI)"
+            st.caption(f"Pending mode in controls: {pending_label}.")
+
+        issuance_share = float(support_debug.get("income_support_issuance_share", 0.0))
+        st.caption(
+            "Income-support funding order (all modes): "
+            f"{issuance_share:.0%} issuance share first, then FUND deposits, then GOV deposits, then residual issuance."
+        )
+
+        if support_mode == "UBI":
+            anchor_real = support_debug.get("ubi_anchor_real_per_h", None)
+            anchor_nom = support_debug.get("ubi_anchor_nominal_per_h_base", None)
+            anchor_pct = support_debug.get("ubi_anchor_percentile", None)
+            anchor_basis = support_debug.get("ubi_anchor_basis", None)
+            index_series = support_debug.get("ubi_index_series", None)
+            if anchor_real is not None:
+                pct_txt = f"{float(anchor_pct):.1f}" if anchor_pct is not None else "?"
+                basis_txt = str(anchor_basis) if anchor_basis is not None else "?"
+                idx_txt = str(index_series) if index_series is not None else "?"
+                nom_txt = f"{float(anchor_nom):.3g}" if anchor_nom is not None else "?"
+                st.caption(
+                    "UBI anchor: "
+                    f"P{pct_txt} of {basis_txt} at baseline; "
+                    f"base nominal/HH={nom_txt}; "
+                    f"real anchor/HH={float(anchor_real):.3g}; "
+                    f"index={idx_txt}."
+                )
+                if float(anchor_real) <= 0.0:
+                    st.warning(
+                        "UBI anchor resolved to zero at baseline. This usually means "
+                        "`UBI Target Percentile` is at or near 0 in a population with zero market-income households."
+                    )
+        else:
+            target_pool = support_debug.get("income_target_pool_real_pop", None)
+            if target_pool is not None:
+                st.caption(f"UIS real target pool (population): {float(target_pool):.6g}.")
     st.caption(
         "Displayed monetary values are "
         + ("price-normalized (real, base-period dollars)." if display_value_mode == "real" else "nominal.")

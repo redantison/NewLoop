@@ -326,9 +326,35 @@ class NewLoop:
         p = float(producer_price_level) if float(producer_price_level) > 0.0 else 1e-9
         price_series = str(self.params.get("mort_index_price_series", "P_producer")).strip()
         if price_series == "C_consumer":
-            vat = max(0.0, float(self.params.get("vat_rate", 0.0)))
+            vat = self._effective_vat_rate()
             return max(1e-9, p * (1.0 + vat))
         return max(1e-9, p)
+
+    def _trust_disabled(self) -> bool:
+        return bool(self.params.get("disable_trust", False))
+
+    def _mortgage_index_disabled(self) -> bool:
+        return bool(self.params.get("disable_mortgage_index", False))
+
+    def _mortgage_policy_disabled(self) -> bool:
+        return bool(self.params.get("disable_mortgage_policy", False))
+
+    def _income_tax_disabled(self) -> bool:
+        return bool(self.params.get("disable_income_tax", False))
+
+    def _income_support_disabled(self) -> bool:
+        return bool(self.params.get("disable_income_support", False))
+
+    def _effective_income_tax_rate(self) -> float:
+        if self._income_tax_disabled():
+            return 0.0
+        return max(0.0, float(self.params.get("income_tax_rate", 0.0)))
+
+    def _effective_vat_rate(self) -> float:
+        if bool(self.params.get("disable_vat", False)):
+            return 0.0
+        vat = float(self.params.get("vat_rate", 0.0))
+        return max(0.0, vat)
 
     def _mort_income_series_value(self, wages_total: float, div_house_total: float, uis_per_h: float) -> float:
         n_hh = float(self.hh.n) if (self.hh is not None and self.hh.n > 0) else 1.0
@@ -425,7 +451,7 @@ class NewLoop:
         p_series_prev = max(1e-9, p_series_prev)
         y_series_prev = max(1e-9, y_series_prev)
 
-        enabled = bool(self.params.get("mort_index_enable", False))
+        enabled = bool(self.params.get("mort_index_enable", False)) and (not self._mortgage_index_disabled())
         active = (mort_vec > 1e-12) & (hh.mort_t0 >= 0)
         max_pay_i = mort_interest_due_i + np.maximum(0.0, mort_vec)
 
@@ -556,6 +582,8 @@ class NewLoop:
         if gap_total_raw <= 0.0:
             return {"gap_total": 0.0, "paid_gov": 0.0, "paid_fund": 0.0, "paid_issuance": 0.0, "paid_total": 0.0}
 
+        if self._mortgage_policy_disabled():
+            return {"gap_total": gap_total_raw, "paid_gov": 0.0, "paid_fund": 0.0, "paid_issuance": 0.0, "paid_total": 0.0}
         if not bool(self.params.get("mort_bank_neutralize_enable", True)):
             return {"gap_total": gap_total_raw, "paid_gov": 0.0, "paid_fund": 0.0, "paid_issuance": 0.0, "paid_total": 0.0}
         if not self._neutralize_stress_active():
@@ -893,6 +921,9 @@ class NewLoop:
         - BANK makes a loan to FUND (creates FUND deposits).
         - FUND uses those deposits to buy 10% of FA/FH/BANK shares from HH.
         """
+        if self._trust_disabled():
+            self.state["trust_active"] = False
+            return
         if self.state["trust_active"]:
             return
 
@@ -987,6 +1018,8 @@ class NewLoop:
     # ---------------------------------------------------------
 
     def issue_social_shares(self) -> None:
+        if self._trust_disabled():
+            return
         if not self.state["trust_active"]:
             return
 
@@ -1039,9 +1072,7 @@ class NewLoop:
         if P <= 0:
             P = 1e-9
         # VAT wedge: consumer price includes VAT as a markup
-        vat_rate = float(self.params.get("vat_rate", 0.0))
-        if vat_rate < 0:
-            vat_rate = 0.0
+        vat_rate = self._effective_vat_rate()
         P_cons = P * (1.0 + vat_rate)  # tax-exclusive VAT treated as higher consumer price
 
         # Baseline wage weights used to distribute wages and (temporarily) dividends.
@@ -1195,17 +1226,20 @@ class NewLoop:
             div_fund_firms = (div_fa_total * f_fa) + (div_fh_total * f_fh)
 
             # 4) Income-support policy (mode selected by parameters)
-            uis = self.income_support_policy.compute_per_household(
-                wages_total=float(w_total),
-                div_house_total=float(div_house_total_est),
-                price_level=float(P),
-                n_households=int(hh.n),
-                previous_support_per_h=float(hh.prev_uis),
-                state=self.state,
-            )
+            if self._income_support_disabled():
+                uis = 0.0
+            else:
+                uis = self.income_support_policy.compute_per_household(
+                    wages_total=float(w_total),
+                    div_house_total=float(div_house_total_est),
+                    price_level=float(P),
+                    n_households=int(hh.n),
+                    previous_support_per_h=float(hh.prev_uis),
+                    state=self.state,
+                )
 
             # Mortgage index module: compute indexed required payment per household mortgage.
-            mort_index_enable = bool(self.params.get("mort_index_enable", False))
+            mort_index_enable = bool(self.params.get("mort_index_enable", False)) and (not self._mortgage_index_disabled())
             p_series_now = self._mort_price_series_value(P)
             y_series_now = self._mort_income_series_value(w_total, float(div_house_total_est), float(uis))
             self._ensure_mortgage_index_anchors(p_series_now, y_series_now, rL)
@@ -1257,10 +1291,8 @@ class NewLoop:
             taxable_income = wages_i + div_i  # excludes income support by policy
 
             # Income tax: 15% marginal above a percentile threshold (nearest-rank)
-            it_rate = float(self.params.get("income_tax_rate", 0.0))
+            it_rate = self._effective_income_tax_rate()
             it_pct = float(self.params.get("income_tax_cutoff_pct", 100.0))
-            if it_rate < 0:
-                it_rate = 0.0
             if it_pct < 0:
                 it_pct = 0.0
             if it_pct > 100:
@@ -1483,9 +1515,7 @@ class NewLoop:
         # -------------------------------------------------
         # 1) Consumption: households -> firms, VAT remitted to GOV
         # -------------------------------------------------
-        vat_rate = float(self.params.get("vat_rate", 0.0))
-        if vat_rate < 0:
-            vat_rate = 0.0
+        vat_rate = self._effective_vat_rate()
 
         deposits[:] = deposits - c_hh_nom
 
@@ -1951,9 +1981,17 @@ class NewLoop:
 
         # Automation path (levels + per-quarter flow for visualization)
         t = int(self.state["t"])
+        automation_disabled = bool(self.params.get("automation_disabled", False))
         path = str(self.params.get("automation_path", "two_hump")).lower()
 
-        if path == "linear":
+        if automation_disabled:
+            self.state["automation"] = 0.0
+            self.state["automation_flow"] = 0.0
+            self.state["automation_info"] = 0.0
+            self.state["automation_info_flow"] = 0.0
+            self.state["automation_phys"] = 0.0
+            self.state["automation_phys_flow"] = 0.0
+        elif path == "linear":
             horizon_q = float(self.params.get("automation_horizon_quarters", 60.0))
             a = min(1.0, t / horizon_q) if horizon_q > 0 else 1.0
             a_prev = min(1.0, (t - 1) / horizon_q) if (horizon_q > 0 and t > 0) else 0.0
@@ -2052,26 +2090,28 @@ class NewLoop:
 
         if use_pop_dyn:
             # Allow policy modules to initialize first-tick anchors before solving.
-            self.income_support_policy.warm_start_anchor_if_needed(
-                state=self.state,
-                baseline_wages_i=self.hh.wages0_q,
-                price_level=float(self.state.get("price_level", 1.0)),
-            )
+            if not self._income_support_disabled():
+                self.income_support_policy.warm_start_anchor_if_needed(
+                    state=self.state,
+                    baseline_wages_i=self.hh.wages0_q,
+                    price_level=float(self.state.get("price_level", 1.0)),
+                )
 
             solp = self.solve_within_tick_population()
             if solp is not None:
                 self.post_tick_population(solp)
 
                 # Let the active income-support policy initialize any one-time baseline anchor.
-                self.income_support_policy.initialize_anchor_if_needed(
-                    state=self.state,
-                    wages_total=float(solp["w_total"]),
-                    support_per_h=float(solp["uis"]),
-                    n_households=int(self.hh.n),
-                    price_level=float(self.state.get("price_level", 1.0)),
-                    wages_i=solp.get("wages_i"),
-                    div_i=solp.get("div_i"),
-                )
+                if not self._income_support_disabled():
+                    self.income_support_policy.initialize_anchor_if_needed(
+                        state=self.state,
+                        wages_total=float(solp["w_total"]),
+                        support_per_h=float(solp["uis"]),
+                        n_households=int(self.hh.n),
+                        price_level=float(self.state.get("price_level", 1.0)),
+                        wages_i=solp.get("wages_i"),
+                        div_i=solp.get("div_i"),
+                    )
 
                 # Population inequality diagnostics (vectorized)
                 y_vec = _as_np(solp.get("y", []), dtype=float)             # disposable income

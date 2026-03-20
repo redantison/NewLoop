@@ -8,6 +8,10 @@ from typing import Any, Dict
 config = {
     "parameters": {
         # Policy
+        "disable_trust": False,
+        "disable_mortgage_index": False,
+        "disable_mortgage_policy": False,
+        "disable_income_tax": False,
         "trust_launch_loan": 12000.0,       # positive value enables the leveraged launch sequence
         "trust_launch_target_pct": 0.10,    # initial trust purchase target as a share of each issuer's equity
         "trust_trigger_dti": 0.10,        # Trust triggers if last-quarter DTI metric exceeds this (population p90 when enabled; otherwise legacy proxy).
@@ -15,6 +19,7 @@ config = {
         "debug_trust_trigger": True,
 
         # Consumption tax (VAT / sales tax) + low-income VAT credit ("prebate")
+        "disable_vat": False,
         "vat_rate": 0.18,                 # 18% tax-exclusive VAT on consumption
         "vat_credit_phaseout_start_pct": 25.0,  # full credit through this eligibility-income percentile
         "vat_credit_phaseout_end_pct": 45.0,    # zero credit at and above this eligibility-income percentile
@@ -90,6 +95,7 @@ config = {
         "mortgage_principal_pay_rate_q": 0.01,   # 1%/q max paydown if cash available
         "send_fund_residual_to_gov": False, # legacy compatibility toggle for a full FUND residual sweep
         "fund_residual_to_gov_share": 0.0,  # optional share of residual FUND deposits sent to GOV after debt-first treatment
+        "disable_income_support": False,
         "income_support_mode": "UIS",       # "UIS" | "UBI"
         "income_support_issuance_share": 0.15,  # fixed share of each quarter's income support paid via issuance
         "income_support_monotonic_floor": True, # if True, policy support cannot decline quarter-to-quarter
@@ -108,6 +114,8 @@ config = {
         "use_population": True,
         "population_dynamics": True,
         "population_print_baseline": False,
+        "startup_stabilization_enabled": True,
+        "startup_stabilization_quarters": 40,
         "population_config": {
             "n_families": 20000,
             "seed": 7919,
@@ -161,6 +169,7 @@ config = {
         "wage_share_of_revenue": {"FH": 0.65, "FA": 0.40},
 
         # Automation path ("two_hump" recommended; "linear" available as fallback)
+        "automation_disabled": False,
         "automation_path": "two_hump",
         "automation_horizon_quarters": 60.0,  # used only if automation_path == "linear"
 

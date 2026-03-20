@@ -183,7 +183,10 @@ class UBIPolicy:
             p = 1e-9
         series = str(self.params.get("ubi_index_series", "P_producer")).strip()
         if series == "C_consumer":
-            vat = max(0.0, float(self.params.get("vat_rate", 0.0)))
+            if bool(self.params.get("disable_vat", False)):
+                vat = 0.0
+            else:
+                vat = max(0.0, float(self.params.get("vat_rate", 0.0)))
             return max(1e-9, p * (1.0 + vat))
         return max(1e-9, p)
 
