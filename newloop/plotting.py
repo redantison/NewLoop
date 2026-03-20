@@ -8,8 +8,8 @@ from typing import Any, Dict, Iterable, List, Mapping, Sequence
 import numpy as np
 
 METRIC_LABELS: Dict[str, str] = {
-    "automation": "Automation",
-    "automation_flow": "Automation Flow (Total, Δ/q)",
+    "automation": "Automation (Whole Economy)",
+    "automation_flow": "Automation Flow (Whole Economy, Δ/q)",
     "automation_info": "Automation (Info)",
     "automation_info_flow": "Automation Flow (Info, Δ/q)",
     "automation_phys": "Automation (Physical)",
@@ -99,6 +99,19 @@ def _plot_points(
         y_plot[launch_idx - 1] = float("nan")
     y_plot[launch_idx + 1] = y_launch
     return x_plot, y_plot
+
+
+def _line_style(metric: str, *, secondary: bool) -> Dict[str, Any]:
+    style: Dict[str, Any] = {"linewidth": 2.0}
+    if secondary:
+        style["linestyle"] = "--"
+    if metric == "automation":
+        style["linewidth"] = 2.6
+        style["linestyle"] = "-"
+    elif metric == "automation_flow":
+        style["linewidth"] = 2.6
+        style["linestyle"] = ":"
+    return style
 
 
 def _compact_tick_label(value: float) -> str:
@@ -213,7 +226,7 @@ def plot_metric_lines(
     primary_lines = []
     for metric in primary_list:
         x_plot, y_plot = _plot_points(rows, x, metric)
-        (line,) = ax.plot(x_plot, y_plot, linewidth=2.0, label=metric_label(metric))
+        (line,) = ax.plot(x_plot, y_plot, label=metric_label(metric), **_line_style(metric, secondary=False))
         primary_lines.append(line)
         if metric == "trust_equity_pct":
             _annotate_trust_launch(ax, rows, x, _series(rows, metric))
@@ -231,7 +244,7 @@ def plot_metric_lines(
         ax2 = ax.twinx()
         for metric in secondary_list:
             x_plot, y_plot = _plot_points(rows, x, metric)
-            (line,) = ax2.plot(x_plot, y_plot, linewidth=2.0, linestyle="--", label=metric_label(metric))
+            (line,) = ax2.plot(x_plot, y_plot, label=metric_label(metric), **_line_style(metric, secondary=True))
             secondary_lines.append(line)
         ax2.set_ylabel(secondary_ylabel)
         _apply_compact_y_ticks(ax2)
@@ -376,17 +389,26 @@ def plot_default_dashboard(
     mode = _normalized_mode(support_mode) or "UIS"
     fig, axs = plt.subplots(2, 2, figsize=(13, 8), constrained_layout=True)
 
+    automation_ax = axs[0][0]
     plot_metric_lines(
         rows,
-        ["automation_info", "automation_phys", "automation_info_flow", "automation_phys_flow"],
+        [
+            "automation_info",
+            "automation_phys",
+            "automation",
+            "automation_info_flow",
+            "automation_phys_flow",
+            "automation_flow",
+        ],
         title="Automation By Sector",
-        ax=axs[0][0],
+        ax=automation_ax,
         primary_ylabel="Automation Level",
-        secondary_metrics=["automation_info_flow", "automation_phys_flow"],
+        secondary_metrics=["automation_info_flow", "automation_phys_flow", "automation_flow"],
         secondary_ylabel="Automation Flow (Δ per quarter)",
         legend_loc="upper right",
         support_mode=mode,
     )
+    automation_ax.set_ylim(0.0, 1.0)
     plot_gini_series(rows, ax=axs[0][1], support_mode=mode)
     plot_income_support_funding_mix(rows, ax=axs[1][0], support_mode=mode)
     plot_cumulative_income_support_funding(

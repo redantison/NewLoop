@@ -880,7 +880,7 @@ def main() -> None:
         display_rows = rows[-int(tail_n):]
 
     st.caption(f"Displaying {len(display_rows)} of {len(rows)} quarters.")
-    st.dataframe(_build_styled_rows(display_rows), width="stretch")
+    st.dataframe(_build_styled_rows(display_rows), use_container_width=True)
 
     csv_data = _rows_csv(rows)
     st.download_button(
