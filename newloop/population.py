@@ -312,6 +312,32 @@ def _assign_piecewise_by_percentile_rank(
     return piece_vals[bin_idx]
 
 
+def _assign_linear_by_percentile_rank(
+    values: "NP.ndarray",
+    schedule: Tuple[Tuple[float, float], ...],
+) -> "NP.ndarray":
+    """Assign linearly interpolated values from percentile-rank anchor schedule."""
+    np = NP
+    if np is None:
+        raise RuntimeError("NumPy is required for percentile-rank assignment.")
+
+    n = int(values.shape[0])
+    if n <= 0:
+        return np.asarray([], dtype=float)
+
+    if len(schedule) == 0:
+        return np.asarray([], dtype=float)
+
+    order = np.argsort(values)
+    rank = np.empty(n, dtype=np.int32)
+    rank[order] = np.arange(n, dtype=np.int32)
+    rank_pct = 100.0 * (rank.astype(float) / float(max(1, n - 1)))
+
+    pct_vals = np.array([float(pct) for pct, _ in schedule], dtype=float)
+    anchor_vals = np.array([float(v) for _, v in schedule], dtype=float)
+    return np.interp(rank_pct, pct_vals, anchor_vals).astype(float)
+
+
 def generate_population(cfg: PopulationConfig) -> Population:
     # Vectorized implementation (NumPy). Keeps the same public interface and outputs.
     if NP is None:
@@ -345,10 +371,11 @@ def generate_population(cfg: PopulationConfig) -> Population:
         wages = wages * employed
 
     # --- Baseline consumption target (used in both startup calibration and in-run behavior) ---
+    # Use interpolation between percentile anchors so households within a bucket can vary smoothly.
     wealth_signal = np.asarray(wage_potential, dtype=float)
     base_schedule = tuple((float(pct), float(val)) for pct, val in getattr(cfg, "base_real_cons_by_wealth_pct", ()))
     if len(base_schedule) > 0:
-        base_real = _assign_piecewise_by_percentile_rank(wealth_signal, base_schedule)
+        base_real = _assign_linear_by_percentile_rank(wealth_signal, base_schedule)
     else:
         base_real = np.full(n, float(cfg.base_real_cons_q), dtype=float)
 
