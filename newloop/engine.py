@@ -1889,10 +1889,30 @@ class NewLoop:
         # -------------------------------------------------
         rev_pay_rate = float(self.params.get("revolving_principal_pay_rate_q", 0.0))
         mort_pay_rate = float(self.params.get("mortgage_principal_pay_rate_q", 0.0))
+        rL = float(self.params.get("loan_rate_q", 0.0))
+        rev_rollover_share = float(self.params.get("revolving_rollover_share", 0.0))
+        mort_turnover_enabled = bool(self.params.get("mortgage_turnover_enabled", False))
+        mort_turnover_replace_share = float(self.params.get("mortgage_turnover_replace_share", 0.0))
+        mort_turnover_dti_cap = float(self.params.get("mortgage_turnover_dti_cap", 0.40))
+        mort_turnover_income_mult_cap = float(self.params.get("mortgage_turnover_income_mult_cap", 4.0))
+        mort_turnover_min_wage_q = float(self.params.get("mortgage_turnover_min_wage_q", 1.0))
         rev_pay_rate = max(0.0, min(1.0, rev_pay_rate))
         mort_pay_rate = max(0.0, min(1.0, mort_pay_rate))
+        rev_rollover_share = max(0.0, min(1.0, rev_rollover_share))
+        mort_turnover_replace_share = max(0.0, min(1.0, mort_turnover_replace_share))
+        mort_turnover_dti_cap = max(0.0, mort_turnover_dti_cap)
+        mort_turnover_income_mult_cap = max(0.0, mort_turnover_income_mult_cap)
+        mort_turnover_min_wage_q = max(0.0, mort_turnover_min_wage_q)
 
         principal_paid_total = 0.0
+        rev_rollover_total = 0.0
+        mort_principal_paid_total = 0.0
+        mort_turnover_total = 0.0
+        self.state["rev_principal_paid_total"] = 0.0
+        self.state["rev_rollover_total"] = 0.0
+        self.state["mort_principal_paid_total"] = 0.0
+        self.state["mort_turnover_total"] = 0.0
+        self.state["mort_turnover_households"] = 0.0
 
         if rev_pay_rate > 0.0:
             # desired paydown is a fraction of outstanding revolver
@@ -1906,6 +1926,16 @@ class NewLoop:
                 deposits[:] = deposits - rev_pay
                 rev[:] = rev - rev_pay
                 principal_paid_total += pay_sum
+                self.state["rev_principal_paid_total"] = float(pay_sum)
+
+                if rev_rollover_share > 0.0:
+                    reissue = rev_pay * rev_rollover_share
+                    reissue_sum = float(np.sum(np.maximum(0.0, reissue)))
+                    if reissue_sum > 0.0:
+                        deposits[:] = deposits + reissue
+                        rev[:] = rev + reissue
+                        rev_rollover_total += reissue_sum
+                        self.state["rev_rollover_total"] = float(reissue_sum)
 
         if (not mort_index_enable) and mort_pay_rate > 0.0:
             desired_mort_pay = mort * mort_pay_rate
@@ -1917,11 +1947,65 @@ class NewLoop:
                 deposits[:] = deposits - mort_pay
                 mort[:] = mort - mort_pay
                 principal_paid_total += pay_sum
+                mort_principal_paid_total = pay_sum
+                self.state["mort_principal_paid_total"] = float(pay_sum)
 
         if principal_paid_total > 0.0:
             # Principal repayment destroys deposits and loans (double-entry)
             self.nodes["BANK"].add("loan_assets", -principal_paid_total)
             self.nodes["BANK"].add("deposit_liab", -principal_paid_total)
+
+        if rev_rollover_total > 0.0:
+            # Same-household revolving credit rollover recreates deposits and loan assets.
+            self.nodes["BANK"].add("loan_assets", rev_rollover_total)
+            self.nodes["BANK"].add("deposit_liab", rev_rollover_total)
+
+        if mort_turnover_enabled and mort_principal_paid_total > 0.0 and mort_turnover_replace_share > 0.0:
+            mort_gap_total = mort_principal_paid_total * mort_turnover_replace_share
+            annual_wage_i = 4.0 * np.maximum(0.0, wages_i)
+            mort_cap_i = mort_turnover_income_mult_cap * annual_wage_i
+            headroom_income_i = np.maximum(0.0, mort_cap_i - mort)
+
+            mort_payment_rate_q = max(1e-9, float(rL) + mort_pay_rate)
+            current_mort_payment_i = mort * mort_payment_rate_q
+            current_rev_interest_i = np.maximum(0.0, rev * rL)
+            dti_room_nom = np.maximum(0.0, (mort_turnover_dti_cap * np.maximum(0.0, wages_i)) - current_rev_interest_i - current_mort_payment_i)
+            headroom_dti_i = dti_room_nom / mort_payment_rate_q
+            headroom_i = np.minimum(headroom_income_i, headroom_dti_i)
+
+            eligible = (wages_i >= mort_turnover_min_wage_q) & (headroom_i > 1e-9)
+            if np.any(eligible):
+                score_i = np.zeros_like(mort, dtype=float)
+                score_i[eligible] = headroom_i[eligible] / (1.0 + np.maximum(0.0, mort[eligible]))
+                allocation = np.zeros_like(mort, dtype=float)
+                remaining = float(mort_gap_total)
+                active = eligible.copy()
+
+                for _ in range(8):
+                    active_scores = score_i[active]
+                    score_sum = float(np.sum(active_scores))
+                    if remaining <= 1e-9 or score_sum <= 1e-12:
+                        break
+
+                    prop = np.zeros_like(mort, dtype=float)
+                    prop[active] = remaining * (score_i[active] / score_sum)
+                    room = np.maximum(0.0, headroom_i - allocation)
+                    add_i = np.minimum(prop, room)
+                    add_sum = float(np.sum(add_i))
+                    if add_sum <= 1e-12:
+                        break
+                    allocation += add_i
+                    remaining = max(0.0, remaining - add_sum)
+                    active = active & ((headroom_i - allocation) > 1e-9)
+
+                mort_turnover_total = float(np.sum(np.maximum(0.0, allocation)))
+                if mort_turnover_total > 0.0:
+                    mort[:] = mort + allocation
+                    deposits[:] = deposits + allocation
+                    self.nodes["BANK"].add("loan_assets", mort_turnover_total)
+                    self.nodes["BANK"].add("deposit_liab", mort_turnover_total)
+                    self.state["mort_turnover_total"] = float(mort_turnover_total)
+                    self.state["mort_turnover_households"] = float(np.sum(allocation > 1e-9))
 
         # 7) Household overdrafts -> revolving loans
         # -------------------------------------------------

@@ -95,12 +95,13 @@ COMPACT_NUMBER_COLUMNS = {
 DECIMAL_COLUMNS = {"price_level", "private_inv_cov"}
 
 DISPLAY_VALUE_MODES: tuple[str, str] = ("nominal", "real")
-CONTROL_DEFAULTS_VERSION = 5
+CONTROL_DEFAULTS_VERSION = 6
 UBI_PERCENTILE_PARAM_KEY = "param__ubi_target_percentile"
 UBI_PERCENTILE_UI_KEY = "ui__ubi_target_percentile"
 _TITLE_MODE_SUFFIX_RE = re.compile(r"\s+\((?:UIS|UBI|Stale)\)\s*$", re.IGNORECASE)
 RECENT_IMPROVEMENTS_TEXT = (
     "- Added a top-level Policy Switches panel for baseline and no-policy diagnostics.\n"
+    "- Added an optional mortgage-turnover mechanism to replace amortized mortgage stock with new origination.\n"
     "- Added iterative debt-aware baseline calibration for startup household consumption and liquidity targets.\n"
     "- Added an income-tax disable switch for cleaner baseline diagnostics.\n"
     "- Added a mortgage-indexing disable switch for cleaner baseline diagnostics.\n"

@@ -92,7 +92,13 @@ config = {
         "mort_neutralize_cap_mode": "None",  # "None"|"BankEquityFloor"|"PctOfMortgageInterest"|"PctOfMortgagePayment"
         "mort_neutralize_cap_value": 0.0,
         "revolving_principal_pay_rate_q": 0.05,  # 5%/q max paydown if cash available
+        "revolving_rollover_share": 1.0,        # share of revolving principal repayment immediately re-lent to the same household
         "mortgage_principal_pay_rate_q": 0.01,   # 1%/q max paydown if cash available
+        "mortgage_turnover_enabled": True,      # replace amortized mortgage stock by issuing new mortgages to eligible households
+        "mortgage_turnover_replace_share": 1.0,
+        "mortgage_turnover_dti_cap": 0.40,
+        "mortgage_turnover_income_mult_cap": 4.0,
+        "mortgage_turnover_min_wage_q": 1.0,
         "send_fund_residual_to_gov": False, # legacy compatibility toggle for a full FUND residual sweep
         "fund_residual_to_gov_share": 0.0,  # optional share of residual FUND deposits sent to GOV after debt-first treatment
         "disable_income_support": False,
