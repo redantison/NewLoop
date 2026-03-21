@@ -1285,8 +1285,9 @@ class NewLoop:
         auto_phys = float(self.state.get("automation_phys", auto_eff))
         rL = float(self.state.get("policy_rate_q", self.params["loan_rate_per_quarter"]))
 
-        ws_fh = float(self.params["wage_share_of_revenue"]["FH"])
+        ws_fh_base = float(self.params["wage_share_of_revenue"]["FH"])
         ws_fa_base = float(self.params["wage_share_of_revenue"]["FA"])
+        ws_fh = ws_fh_base * (1.0 - max(0.0, min(1.0, auto_phys)))
         ws_fa = ws_fa_base * (1.0 - max(0.0, min(1.0, auto_info)))
 
         # Price level (nominal $ per unit real consumption). Consumption rule is applied in real terms.

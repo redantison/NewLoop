@@ -113,6 +113,7 @@ RECENT_IMPROVEMENTS_TEXT = (
     "- Added mortgage recycling / turnover so amortized mortgage stock can be replaced by new origination.\n"
     "- Revised sector demand and CAPEX mechanics to reduce runaway feedback loops.\n"
     "- Separated sector household demand from sector fulfillment capacity.\n"
+    "- Sector wage shares now fall with each sector's own automation curve rather than Info alone.\n"
     "- Added firm overhead expense parameters for sector operating-cost experiments.\n"
     "- Added corporate-equity and investment-recycling charts to help explain baseline contraction dynamics.\n"
     "- Added iterative debt-aware baseline calibration for startup household consumption and liquidity targets.\n"
