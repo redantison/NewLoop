@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 from typing import Any, Dict
 
 config = {
@@ -61,18 +62,6 @@ config = {
         # Capital -> productivity feedback (A_eff = clamp(A + kappa*(K_per_h/K_scale)))
         "capital_productivity_k": 0.25,
         "capital_productivity_scale": 5000.0,
-        # CAPEX supplier split: what fraction of nominal CAPEX demand is supplied by FA vs FH.
-        # By default this now follows relative automation flow rather than automation level,
-        # so investment demand leans toward the sector where adoption is still changing.
-        "capex_supply_share_fa": 0.0,
-        "capex_supply_share_fa_dynamic_with_automation": True,
-        "capex_supply_share_fa_min": 0.0,
-        "capex_supply_share_fa_max": 0.65,
-        # Sector growth should slow when it can only be financed by excessive leverage.
-        "firm_capex_leverage_limit_enabled": True,
-        "firm_capex_max_debt_to_equity": 2.0,
-        "firm_capex_leverage_soft_start_share": 0.75,
-
         # Income tax (marginal above threshold) on wages + dividends (excludes income support)
         "income_tax_rate": 0.15,          # 15% marginal rate
         "income_tax_cutoff_pct": 31.0,    # threshold percentile (same analogue as above; can be tuned)
@@ -256,5 +245,5 @@ config = {
 
 
 def get_default_config() -> Dict[str, Any]:
-    """Return the default config object (copy before mutating for scenario runs)."""
-    return config
+    """Return a deep-copied default config safe for caller mutation."""
+    return copy.deepcopy(config)

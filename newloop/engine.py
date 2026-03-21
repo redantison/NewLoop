@@ -555,73 +555,6 @@ class NewLoop:
             "y_series_now": float(y_series_now),
         }
 
-    def _capex_supply_share_fa(self, automation_level: float | None = None) -> float:
-        if not bool(self.params.get("capex_supply_share_fa_dynamic_with_automation", True)):
-            return max(0.0, min(1.0, float(self.params.get("capex_supply_share_fa", 0.0))))
-
-        base_share = max(0.0, min(1.0, float(self.params.get("capex_supply_share_fa", 0.0))))
-        info_flow = max(0.0, float(self.state.get("automation_info_flow", 0.0)))
-        phys_flow = max(0.0, float(self.state.get("automation_phys_flow", 0.0)))
-        total_flow = info_flow + phys_flow
-        share_min = max(0.0, min(1.0, float(self.params.get("capex_supply_share_fa_min", 0.0))))
-        share_max = max(share_min, min(1.0, float(self.params.get("capex_supply_share_fa_max", share_min))))
-        if total_flow <= 1e-12:
-            return min(share_max, max(share_min, base_share))
-        info_share = info_flow / total_flow
-        return share_min + ((share_max - share_min) * info_share)
-
-    def _firm_equity_proxy(self, firm_id: str, price_level: float) -> float:
-        node = self.nodes[firm_id]
-        p_now = float(price_level) if float(price_level) > 0.0 else 1e-9
-        deposits = float(node.get("deposits", 0.0))
-        capital = max(0.0, float(node.get("K", 0.0))) * p_now
-        loans = max(0.0, float(node.get("loans", 0.0)))
-        return max(0.0, deposits + capital - loans)
-
-    def _firm_capex_limit_nom(
-        self,
-        firm_id: str,
-        planned_capex_nom: float,
-        operating_cash_before_capex: float,
-        supplier_capex_revenue_nom: float,
-        price_level: float,
-    ) -> float:
-        if planned_capex_nom <= 1e-12:
-            return 0.0
-        if not bool(self.params.get("firm_capex_leverage_limit_enabled", True)):
-            return planned_capex_nom
-
-        max_debt_to_equity = max(0.0, float(self.params.get("firm_capex_max_debt_to_equity", 2.0)))
-        if max_debt_to_equity <= 1e-12:
-            return 0.0
-        soft_start_share = max(0.0, min(1.0, float(self.params.get("firm_capex_leverage_soft_start_share", 0.75))))
-        soft_limit = soft_start_share * max_debt_to_equity
-
-        node = self.nodes[firm_id]
-        debt = max(0.0, float(node.get("loans", 0.0)))
-        retained_prev = max(0.0, float(node.memo.get("retained_prev", 0.0)))
-        equity_like = self._firm_equity_proxy(firm_id, price_level) + retained_prev
-        planned_need = max(0.0, planned_capex_nom - supplier_capex_revenue_nom)
-        if planned_need <= 1e-12:
-            return planned_capex_nom
-
-        if equity_like <= 1e-12:
-            leverage_scale = 0.0 if debt > 1e-12 else 1.0
-        else:
-            leverage = debt / equity_like if debt > 1e-12 else 0.0
-            if leverage <= soft_limit:
-                leverage_scale = 1.0
-            elif leverage >= max_debt_to_equity:
-                leverage_scale = 0.0
-            else:
-                span = max(1e-12, max_debt_to_equity - soft_limit)
-                leverage_scale = max(0.0, min(1.0, (max_debt_to_equity - leverage) / span))
-
-        debt_headroom = max(0.0, (max_debt_to_equity * max(0.0, equity_like)) - debt)
-        available_financing = max(0.0, operating_cash_before_capex) + debt_headroom
-        financing_scale = 1.0 if planned_need <= available_financing else max(0.0, available_financing / planned_need)
-        return planned_capex_nom * min(leverage_scale, financing_scale)
-
     def _sector_hh_demand_share_fa(self) -> float:
         return max(0.0, min(1.0, float(self.params.get("hh_demand_info_share", 0.5))))
 
@@ -759,6 +692,77 @@ class NewLoop:
         p_now = max(1e-9, float(price_level))
         installable_capacity_real = install_rate * max(0.0, float(capacity_real))
         return float(max(0.0, installable_capacity_real * (p_now / capacity_per_k)))
+
+    def _sector_fulfillment_step(self, hh_demand_total_real: float, price_level: float) -> Dict[str, float]:
+        p_now = max(1e-9, float(price_level))
+        hh_share_fa = self._sector_hh_demand_share_fa()
+        hh_demand_fa_real = hh_share_fa * hh_demand_total_real
+        hh_demand_fh_real = (1.0 - hh_share_fa) * hh_demand_total_real
+
+        self._ensure_sector_capacity_anchors(
+            hh_demand_fa_real,
+            hh_demand_fh_real,
+        )
+        capacity_fa_real = self._sector_capacity_real("FA")
+        capacity_fh_real = self._sector_capacity_real("FH")
+
+        capex_fa_request_nom = self._sector_capex_plan_nom("FA", p_now)
+        capex_fh_request_nom = self._sector_capex_plan_nom("FH", p_now)
+        capex_queue_info_prev = max(0.0, float(self.state.get("sector_capex_queue_info_nom", 0.0)))
+        capex_queue_phys_prev = max(0.0, float(self.state.get("sector_capex_queue_phys_nom", 0.0)))
+        supplier_share_info_for_info = self._sector_supplier_share_info("FA")
+        supplier_share_info_for_phys = self._sector_supplier_share_info("FH")
+
+        install_limit_fa_nom = self._sector_installation_limit_nom("FA", p_now, capacity_fa_real)
+        install_limit_fh_nom = self._sector_installation_limit_nom("FH", p_now, capacity_fh_real)
+        capex_fa_nom = min(capex_queue_info_prev + capex_fa_request_nom, install_limit_fa_nom)
+        capex_fh_nom = min(capex_queue_phys_prev + capex_fh_request_nom, install_limit_fh_nom)
+
+        supplier_sales_fa_nom = (
+            (supplier_share_info_for_info * capex_fa_nom)
+            + (supplier_share_info_for_phys * capex_fh_nom)
+        )
+        supplier_sales_fh_nom = (
+            ((1.0 - supplier_share_info_for_info) * capex_fa_nom)
+            + ((1.0 - supplier_share_info_for_phys) * capex_fh_nom)
+        )
+        supplier_sales_fa_real = supplier_sales_fa_nom / p_now
+        supplier_sales_fh_real = supplier_sales_fh_nom / p_now
+
+        hh_sales_fa_real = min(hh_demand_fa_real, capacity_fa_real)
+        hh_sales_fh_real = min(hh_demand_fh_real, capacity_fh_real)
+        hh_fulfilled_total_real = hh_sales_fa_real + hh_sales_fh_real
+        hh_fulfillment_ratio = (
+            min(1.0, hh_fulfilled_total_real / hh_demand_total_real)
+            if hh_demand_total_real > 1e-12 else 1.0
+        )
+
+        return {
+            "hh_demand_fa_real": float(hh_demand_fa_real),
+            "hh_demand_fh_real": float(hh_demand_fh_real),
+            "capacity_fa_real": float(capacity_fa_real),
+            "capacity_fh_real": float(capacity_fh_real),
+            "install_limit_fa_nom": float(install_limit_fa_nom),
+            "install_limit_fh_nom": float(install_limit_fh_nom),
+            "capex_fa_nom": float(capex_fa_nom),
+            "capex_fh_nom": float(capex_fh_nom),
+            "capex_total_nom": float(capex_fa_nom + capex_fh_nom),
+            "capex_fa_request_nom": float(capex_fa_request_nom),
+            "capex_fh_request_nom": float(capex_fh_request_nom),
+            "capex_queue_info_next": float(max(0.0, (capex_queue_info_prev + capex_fa_request_nom) - capex_fa_nom)),
+            "capex_queue_phys_next": float(max(0.0, (capex_queue_phys_prev + capex_fh_request_nom) - capex_fh_nom)),
+            "supplier_share_info_for_info_capex": float(supplier_share_info_for_info),
+            "supplier_share_info_for_phys_capex": float(supplier_share_info_for_phys),
+            "supplier_sales_fa_nom": float(supplier_sales_fa_nom),
+            "supplier_sales_fh_nom": float(supplier_sales_fh_nom),
+            "supplier_sales_fa_real": float(supplier_sales_fa_real),
+            "supplier_sales_fh_real": float(supplier_sales_fh_real),
+            "hh_sales_fa_real": float(hh_sales_fa_real),
+            "hh_sales_fh_real": float(hh_sales_fh_real),
+            "hh_fulfillment_ratio": float(hh_fulfillment_ratio),
+            "rev_fa": float((p_now * hh_sales_fa_real) + supplier_sales_fa_nom),
+            "rev_fh": float((p_now * hh_sales_fh_real) + supplier_sales_fh_nom),
+        }
 
     def _neutralize_stress_active(self) -> bool:
         mode = str(self.params.get("mort_neutralize_trigger_mode", "StressOnly")).strip()
@@ -1333,13 +1337,6 @@ class NewLoop:
         fa_interest = fa_loan * rL
         fh_interest = fh_loan * rL
 
-        # Lagged gap-and-cash CAPEX requests feed a bounded installation queue.
-        capex_fa_request_nom = self._sector_capex_plan_nom("FA", P)
-        capex_fh_request_nom = self._sector_capex_plan_nom("FH", P)
-        capex_queue_info_prev = max(0.0, float(self.state.get("sector_capex_queue_info_nom", 0.0)))
-        capex_queue_phys_prev = max(0.0, float(self.state.get("sector_capex_queue_phys_nom", 0.0)))
-        supplier_share_info_for_info = self._sector_supplier_share_info("FA")
-        supplier_share_info_for_phys = self._sector_supplier_share_info("FH")
         overhead_fa = self._sector_overhead_nom("FA")
         overhead_fh = self._sector_overhead_nom("FH")
         div_commit_fa = self._lagged_dividend_commit_nom("FA")
@@ -1381,49 +1378,37 @@ class NewLoop:
             # household-serving capacity. Installed CAPEX uses a separate bounded installation lane.
             c_real_budgeted = c_hh_nom_budgeted / P_cons
             hh_demand_total_real = float(np.sum(c_real_budgeted))
-            hh_share_fa = self._sector_hh_demand_share_fa()
-            hh_demand_fa_real = hh_share_fa * hh_demand_total_real
-            hh_demand_fh_real = (1.0 - hh_share_fa) * hh_demand_total_real
-
-            self._ensure_sector_capacity_anchors(
-                hh_demand_fa_real,
-                hh_demand_fh_real,
-            )
-            capacity_fa_real = self._sector_capacity_real("FA")
-            capacity_fh_real = self._sector_capacity_real("FH")
-            install_limit_fa_nom = self._sector_installation_limit_nom("FA", P, capacity_fa_real)
-            install_limit_fh_nom = self._sector_installation_limit_nom("FH", P, capacity_fh_real)
-            capex_fa_nom = min(capex_queue_info_prev + capex_fa_request_nom, install_limit_fa_nom)
-            capex_fh_nom = min(capex_queue_phys_prev + capex_fh_request_nom, install_limit_fh_nom)
-            capex_total_nom = capex_fa_nom + capex_fh_nom
-            supplier_sales_fa_nom = (
-                (supplier_share_info_for_info * capex_fa_nom)
-                + (supplier_share_info_for_phys * capex_fh_nom)
-            )
-            supplier_sales_fh_nom = (
-                ((1.0 - supplier_share_info_for_info) * capex_fa_nom)
-                + ((1.0 - supplier_share_info_for_phys) * capex_fh_nom)
-            )
-            supplier_sales_fa_real = supplier_sales_fa_nom / P
-            supplier_sales_fh_real = supplier_sales_fh_nom / P
-            capex_queue_info_next = max(0.0, (capex_queue_info_prev + capex_fa_request_nom) - capex_fa_nom)
-            capex_queue_phys_next = max(0.0, (capex_queue_phys_prev + capex_fh_request_nom) - capex_fh_nom)
-
-            hh_sales_fa_real = min(hh_demand_fa_real, capacity_fa_real)
-            hh_sales_fh_real = min(hh_demand_fh_real, capacity_fh_real)
-            hh_fulfilled_total_real = hh_sales_fa_real + hh_sales_fh_real
-            hh_fulfillment_ratio = (
-                min(1.0, hh_fulfilled_total_real / hh_demand_total_real)
-                if hh_demand_total_real > 1e-12 else 1.0
-            )
+            sector_step = self._sector_fulfillment_step(hh_demand_total_real, P)
+            hh_demand_fa_real = float(sector_step["hh_demand_fa_real"])
+            hh_demand_fh_real = float(sector_step["hh_demand_fh_real"])
+            capacity_fa_real = float(sector_step["capacity_fa_real"])
+            capacity_fh_real = float(sector_step["capacity_fh_real"])
+            install_limit_fa_nom = float(sector_step["install_limit_fa_nom"])
+            install_limit_fh_nom = float(sector_step["install_limit_fh_nom"])
+            capex_fa_nom = float(sector_step["capex_fa_nom"])
+            capex_fh_nom = float(sector_step["capex_fh_nom"])
+            capex_total_nom = float(sector_step["capex_total_nom"])
+            capex_fa_request_nom = float(sector_step["capex_fa_request_nom"])
+            capex_fh_request_nom = float(sector_step["capex_fh_request_nom"])
+            capex_queue_info_next = float(sector_step["capex_queue_info_next"])
+            capex_queue_phys_next = float(sector_step["capex_queue_phys_next"])
+            supplier_share_info_for_info = float(sector_step["supplier_share_info_for_info_capex"])
+            supplier_share_info_for_phys = float(sector_step["supplier_share_info_for_phys_capex"])
+            supplier_sales_fa_nom = float(sector_step["supplier_sales_fa_nom"])
+            supplier_sales_fh_nom = float(sector_step["supplier_sales_fh_nom"])
+            supplier_sales_fa_real = float(sector_step["supplier_sales_fa_real"])
+            supplier_sales_fh_real = float(sector_step["supplier_sales_fh_real"])
+            hh_sales_fa_real = float(sector_step["hh_sales_fa_real"])
+            hh_sales_fh_real = float(sector_step["hh_sales_fh_real"])
+            hh_fulfillment_ratio = float(sector_step["hh_fulfillment_ratio"])
 
             c_hh_nom = c_hh_nom_budgeted * hh_fulfillment_ratio
             c_real = c_hh_nom / P_cons
             c_firm_nom = P * c_real
             c_total = float(c_firm_nom.sum())
 
-            rev_fa = (P * hh_sales_fa_real) + supplier_sales_fa_nom
-            rev_fh = (P * hh_sales_fh_real) + supplier_sales_fh_nom
+            rev_fa = float(sector_step["rev_fa"])
+            rev_fh = float(sector_step["rev_fh"])
 
             w_fa = rev_fa * ws_fa
             w_fh = rev_fh * ws_fh

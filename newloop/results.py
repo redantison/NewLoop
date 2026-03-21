@@ -1,5 +1,5 @@
 # Author: Roger Ison   roger@miximum.info
-"""Reusable simulation-output helpers for CLI, plotting, and Streamlit layers."""
+"""Reusable simulation-output helpers for simulation and Streamlit layers."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ _THIS_DIR = Path(__file__).resolve().parent
 if str(_THIS_DIR) not in sys.path:
     sys.path.insert(0, str(_THIS_DIR))
 
-from config import config as default_config
+from config import get_default_config
 from engine import NewLoop
 from newloop_types import TickResult
 
@@ -678,7 +678,7 @@ def _prepare_startup_sim(sim: NewLoop) -> Dict[str, Any] | None:
 
 def run_simulation(n_quarters: int = 80, cfg: Dict[str, Any] | None = None) -> SimulationRun:
     """Run NewLoop for n_quarters and return structured outputs."""
-    base_cfg = copy.deepcopy(default_config if cfg is None else cfg)
+    base_cfg = copy.deepcopy(get_default_config() if cfg is None else cfg)
     effective_cfg, baseline_calibration = _run_baseline_calibration(base_cfg)
 
     startup_diag_sim = NewLoop(copy.deepcopy(effective_cfg))

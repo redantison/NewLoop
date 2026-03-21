@@ -44,6 +44,7 @@ from streamlit_params import (
     control_widget_key,
     controls_by_section,
     get_by_path,
+    resolve_control_default,
     set_by_path,
 )
 
@@ -314,7 +315,7 @@ def _render_metric_selector(st: Any, metric_map: Dict[str, str]) -> List[str]:
 def _apply_control_defaults(st: Any, base_params: Dict[str, Any]) -> None:
     for control in PARAMETER_CONTROLS:
         key = control_widget_key(control)
-        default_value = get_by_path(base_params, control.path, default=control.fallback_default)
+        default_value = resolve_control_default(control, base_params)
         st.session_state[key] = default_value
     st.session_state["run__quarters"] = RUN_DEFAULT_QUARTERS
     raw_mode = str(base_params.get("dashboard_value_mode", "nominal")).strip().lower()
@@ -331,7 +332,7 @@ def _ensure_control_defaults(st: Any, base_params: Dict[str, Any]) -> None:
 
     for control in PARAMETER_CONTROLS:
         key = control_widget_key(control)
-        default_value = get_by_path(base_params, control.path, default=control.fallback_default)
+        default_value = resolve_control_default(control, base_params)
         if key not in st.session_state or st.session_state.get(key) is None:
             st.session_state[key] = default_value
     if "run__quarters" not in st.session_state:
@@ -358,7 +359,7 @@ def _build_cfg_from_state(st: Any, base_cfg: Dict[str, Any]) -> Dict[str, Any]:
     params = cfg.get("parameters", {})
     for control in PARAMETER_CONTROLS:
         key = control_widget_key(control)
-        raw = st.session_state.get(key, get_by_path(params, control.path, default=control.fallback_default))
+        raw = st.session_state.get(key, resolve_control_default(control, params))
         set_by_path(params, control.path, _coerce_value(raw, control.kind))
 
     # Guardrail: a zero UBI percentile anchors to zero in this population (some households have zero market income).
@@ -493,7 +494,11 @@ def _inject_selectbox_chevron_fallback(st: Any) -> None:
     )
 
 
-def _render_parameter_controls(st: Any, grouped_controls: Dict[str, List[Any]]) -> tuple[bool, bool, int]:
+def _render_parameter_controls(
+    st: Any,
+    grouped_controls: Dict[str, List[Any]],
+    base_params: Dict[str, Any],
+) -> tuple[bool, bool, int]:
     def _request_reset_defaults() -> None:
         st.session_state["app__reset_requested"] = True
         st.session_state["app__force_stale_after_reset"] = True
@@ -574,7 +579,7 @@ def _render_parameter_controls(st: Any, grouped_controls: Dict[str, List[Any]]) 
                     last_mode_key = "app__last_income_support_mode_ui"
                     if active_mode == "UBI":
                         for control in remaining_controls:
-                            default_value = control.fallback_default
+                            default_value = resolve_control_default(control, base_params)
                             if default_value is None:
                                 continue
                             key = control_widget_key(control)
@@ -670,7 +675,7 @@ def main() -> None:
         disabled=True,
     )
 
-    base_cfg = copy.deepcopy(get_default_config())
+    base_cfg = get_default_config()
     base_params = copy.deepcopy(base_cfg.get("parameters", {}))
     grouped_controls = controls_by_section()
     _ensure_control_defaults(st, base_params)
@@ -678,7 +683,7 @@ def main() -> None:
     if bool(st.session_state.pop("app__reset_requested", False)):
         _apply_control_defaults(st, base_params)
 
-    run_clicked, _reset_clicked, quarters = _render_parameter_controls(st, grouped_controls)
+    run_clicked, _reset_clicked, quarters = _render_parameter_controls(st, grouped_controls, base_params)
 
     metric_map = metric_options()
     selected_metrics = _render_metric_selector(st, metric_map)
