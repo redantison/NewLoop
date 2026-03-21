@@ -559,6 +559,58 @@ class NewLoop:
         info_share = info_flow / total_flow
         return share_min + ((share_max - share_min) * info_share)
 
+    def _firm_equity_proxy(self, firm_id: str, price_level: float) -> float:
+        node = self.nodes[firm_id]
+        p_now = float(price_level) if float(price_level) > 0.0 else 1e-9
+        deposits = float(node.get("deposits", 0.0))
+        capital = max(0.0, float(node.get("K", 0.0))) * p_now
+        loans = max(0.0, float(node.get("loans", 0.0)))
+        return max(0.0, deposits + capital - loans)
+
+    def _firm_capex_limit_nom(
+        self,
+        firm_id: str,
+        planned_capex_nom: float,
+        operating_cash_before_capex: float,
+        supplier_capex_revenue_nom: float,
+        price_level: float,
+    ) -> float:
+        if planned_capex_nom <= 1e-12:
+            return 0.0
+        if not bool(self.params.get("firm_capex_leverage_limit_enabled", True)):
+            return planned_capex_nom
+
+        max_debt_to_equity = max(0.0, float(self.params.get("firm_capex_max_debt_to_equity", 2.0)))
+        if max_debt_to_equity <= 1e-12:
+            return 0.0
+        soft_start_share = max(0.0, min(1.0, float(self.params.get("firm_capex_leverage_soft_start_share", 0.75))))
+        soft_limit = soft_start_share * max_debt_to_equity
+
+        node = self.nodes[firm_id]
+        debt = max(0.0, float(node.get("loans", 0.0)))
+        retained_prev = max(0.0, float(node.memo.get("retained_prev", 0.0)))
+        equity_like = self._firm_equity_proxy(firm_id, price_level) + retained_prev
+        planned_need = max(0.0, planned_capex_nom - supplier_capex_revenue_nom)
+        if planned_need <= 1e-12:
+            return planned_capex_nom
+
+        if equity_like <= 1e-12:
+            leverage_scale = 0.0 if debt > 1e-12 else 1.0
+        else:
+            leverage = debt / equity_like if debt > 1e-12 else 0.0
+            if leverage <= soft_limit:
+                leverage_scale = 1.0
+            elif leverage >= max_debt_to_equity:
+                leverage_scale = 0.0
+            else:
+                span = max(1e-12, max_debt_to_equity - soft_limit)
+                leverage_scale = max(0.0, min(1.0, (max_debt_to_equity - leverage) / span))
+
+        debt_headroom = max(0.0, (max_debt_to_equity * max(0.0, equity_like)) - debt)
+        available_financing = max(0.0, operating_cash_before_capex) + debt_headroom
+        financing_scale = 1.0 if planned_need <= available_financing else max(0.0, available_financing / planned_need)
+        return planned_capex_nom * min(leverage_scale, financing_scale)
+
     def _neutralize_stress_active(self) -> bool:
         mode = str(self.params.get("mort_neutralize_trigger_mode", "StressOnly")).strip()
         if mode == "Always":
@@ -1138,8 +1190,10 @@ class NewLoop:
         retained_fa_prev = float(self.nodes["FA"].memo.get("retained_prev", 0.0))
         retained_fh_prev = float(self.nodes["FH"].memo.get("retained_prev", 0.0))
 
-        capex_fa_nom = reinvest_rate * max(0.0, retained_fa_prev)
-        capex_fh_nom = reinvest_rate * max(0.0, retained_fh_prev)
+        capex_fa_nom_base = reinvest_rate * max(0.0, retained_fa_prev)
+        capex_fh_nom_base = reinvest_rate * max(0.0, retained_fh_prev)
+        capex_fa_nom = float(capex_fa_nom_base)
+        capex_fh_nom = float(capex_fh_nom_base)
         capex_total_nom = capex_fa_nom + capex_fh_nom
         div_house_total_est = 0.0
         spend_excess_rate = float(self.params.get("hh_buffer_spend_excess_rate_q", 0.10))
@@ -1178,7 +1232,6 @@ class NewLoop:
             c_total = float(c_firm_nom.sum())
 
             # 2b) Firm revenues and wages, given fixed (lagged) CAPEX demand.
-            # Let the CAPEX supplier mix shift toward the info sector as automation matures.
             capex_supply_share_fa = self._capex_supply_share_fa(auto_eff)
             capex_supply_share_fh = 1.0 - capex_supply_share_fa
 
@@ -1188,6 +1241,36 @@ class NewLoop:
             w_fa = rev_fa * ws_fa
             w_fh = rev_fh * ws_fh
             w_total = float(w_fa + w_fh)
+
+            fa_operating_cash = float(self.nodes["FA"].get("deposits", 0.0)) + (auto_eff * c_total) - w_fa - fa_interest
+            fh_operating_cash = float(self.nodes["FH"].get("deposits", 0.0)) + ((1.0 - auto_eff) * c_total) - w_fh - fh_interest
+            capex_to_fa = capex_supply_share_fa * capex_total_nom
+            capex_to_fh = capex_supply_share_fh * capex_total_nom
+            capex_fa_nom_limited = self._firm_capex_limit_nom(
+                "FA",
+                capex_fa_nom_base,
+                fa_operating_cash,
+                capex_to_fa,
+                P,
+            )
+            capex_fh_nom_limited = self._firm_capex_limit_nom(
+                "FH",
+                capex_fh_nom_base,
+                fh_operating_cash,
+                capex_to_fh,
+                P,
+            )
+            if (abs(capex_fa_nom_limited - capex_fa_nom) > 1e-9) or (abs(capex_fh_nom_limited - capex_fh_nom) > 1e-9):
+                capex_fa_nom = float(capex_fa_nom_limited)
+                capex_fh_nom = float(capex_fh_nom_limited)
+                capex_total_nom = capex_fa_nom + capex_fh_nom
+                capex_to_fa = capex_supply_share_fa * capex_total_nom
+                capex_to_fh = capex_supply_share_fh * capex_total_nom
+                rev_fa = (auto_eff * c_total) + capex_to_fa
+                rev_fh = ((1.0 - auto_eff) * c_total) + capex_to_fh
+                w_fa = rev_fa * ws_fa
+                w_fh = rev_fh * ws_fh
+                w_total = float(w_fa + w_fh)
 
             # profits pre-tax (capex is not expensed; it's a cash outflow later)
             p_fa_pre_tax = max(0.0, rev_fa - w_fa - fa_interest)

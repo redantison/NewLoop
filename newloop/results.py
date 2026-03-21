@@ -244,6 +244,112 @@ def _startup_diagnostics(sim: NewLoop) -> Dict[str, Any] | None:
     }
 
 
+def _quarter_state_diagnostics(sim: NewLoop) -> Dict[str, Any] | None:
+    if sim.hh is None or sim.hh.n <= 0 or not sim.history:
+        return None
+
+    hh = sim.hh
+    hh.ensure_memos()
+    snapshot = _startup_solver_snapshot(sim)
+    if snapshot is None:
+        return None
+
+    row = asdict(sim.history[-1])
+    wages_i = np.asarray(hh.wages0_q, dtype=float)
+    deposits_i = np.asarray(hh.deposits, dtype=float)
+    target_buffer_i = np.asarray(snapshot["target_buffer_i"], dtype=float)
+    disposable_income_i = np.asarray(snapshot["disposable_income_i"], dtype=float)
+    debt_service_i = np.asarray(snapshot["debt_service_i"], dtype=float)
+    base_cons_gap_i = np.asarray(snapshot["base_consumption_gap_i"], dtype=float)
+    p_cons = max(float(snapshot["p_cons"]), 1e-9)
+    base_real_i = np.asarray(hh.base_real_cons_q, dtype=float)
+    mpc_i = np.asarray(hh.mpc_q, dtype=float)
+    disp_income_real_i = disposable_income_i / p_cons
+    mpc_income_real_i = mpc_i * disp_income_real_i
+    core_real_i = np.maximum(0.0, base_real_i + mpc_income_real_i)
+
+    buffer_gap_i = deposits_i - target_buffer_i
+    deposit_to_target_i = np.divide(
+        deposits_i,
+        np.maximum(target_buffer_i, 1e-9),
+        out=np.zeros_like(deposits_i, dtype=float),
+        where=np.isfinite(target_buffer_i),
+    )
+    wage_income_i = np.maximum(0.0, wages_i)
+    dti_mask = (debt_service_i > 0.0) & (wage_income_i > 0.0)
+    wage_dti_i = (debt_service_i[dti_mask] / wage_income_i[dti_mask]) if np.any(dti_mask) else np.asarray([], dtype=float)
+    sol = snapshot.get("sol") or {}
+
+    return {
+        "t": int(row.get("t", 0)),
+        "real_consumption": float(row.get("real_consumption", 0.0)),
+        "real_avg_income": float(row.get("real_avg_income", 0.0)),
+        "wages_total": float(row.get("wages_total", 0.0)),
+        "capex_per_h": float(row.get("capex_per_h", 0.0)),
+        "pop_dti_p90": float(row.get("pop_dti_p90", 0.0)),
+        "mean_deposits": float(np.mean(deposits_i)),
+        "mean_runtime_buffer_target": float(np.mean(target_buffer_i)),
+        "mean_buffer_gap": float(np.mean(buffer_gap_i)),
+        "share_below_runtime_buffer": float(np.mean(buffer_gap_i < 0.0)),
+        "mean_deposit_to_target_ratio": float(np.mean(deposit_to_target_i)),
+        "mean_base_real_consumption": float(np.mean(base_real_i)),
+        "mean_mpc_income_real": float(np.mean(mpc_income_real_i)),
+        "mean_core_real_consumption": float(np.mean(core_real_i)),
+        "mean_net_disposable_income": float(np.mean(disposable_income_i)),
+        "mean_debt_service": float(np.mean(debt_service_i)),
+        "mean_base_consumption_gap": float(np.mean(base_cons_gap_i)),
+        "share_base_consumption_uncovered": float(np.mean(base_cons_gap_i < 0.0)),
+        "wage_dti_p90": float(np.percentile(wage_dti_i, 90.0)) if wage_dti_i.size else 0.0,
+        "household_dividends_total": float(sol.get("div_house_total", 0.0)),
+    }
+
+
+def _quarter_comparison(q0_diag: Dict[str, Any] | None, qn_diag: Dict[str, Any] | None) -> Dict[str, Any] | None:
+    if not q0_diag or not qn_diag:
+        return None
+
+    metrics = [
+        ("Real Consumption", "real_consumption", False),
+        ("Real Avg Income", "real_avg_income", False),
+        ("Wages Total", "wages_total", False),
+        ("Household Dividends", "household_dividends_total", False),
+        ("Mean Deposits", "mean_deposits", False),
+        ("Mean Runtime Buffer Target", "mean_runtime_buffer_target", False),
+        ("Mean Buffer Gap", "mean_buffer_gap", False),
+        ("HH Below Buffer", "share_below_runtime_buffer", True),
+        ("Deposit / Target", "mean_deposit_to_target_ratio", False),
+        ("Mean Base Real Cons", "mean_base_real_consumption", False),
+        ("Mean MPC x Income", "mean_mpc_income_real", False),
+        ("Mean Core Real Cons", "mean_core_real_consumption", False),
+        ("Mean Net Disp Income", "mean_net_disposable_income", False),
+        ("Mean Debt Service", "mean_debt_service", False),
+        ("Mean Base Gap", "mean_base_consumption_gap", False),
+        ("Base Uncovered", "share_base_consumption_uncovered", True),
+        ("Wage DTI P90", "wage_dti_p90", True),
+        ("CAPEX per H", "capex_per_h", False),
+    ]
+
+    rows: List[Dict[str, Any]] = []
+    for label, key, is_pct in metrics:
+        q0_val = float(q0_diag.get(key, 0.0))
+        qn_val = float(qn_diag.get(key, 0.0))
+        rows.append(
+            {
+                "Metric": label,
+                "Q0": q0_val,
+                "Q10": qn_val,
+                "Delta": qn_val - q0_val,
+                "percent": is_pct,
+            }
+        )
+
+    return {
+        "q0_t": int(q0_diag.get("t", 0)),
+        "q10_t": int(qn_diag.get("t", 0)),
+        "rows": rows,
+    }
+
+
 def _quintile_boundaries(n_quintiles: int) -> List[float]:
     n = max(1, int(n_quintiles))
     step = 100.0 / float(n)
@@ -558,10 +664,14 @@ def _run_baseline_calibration(cfg: Dict[str, Any]) -> tuple[Dict[str, Any], Dict
 
 
 def _prepare_startup_sim(sim: NewLoop) -> Dict[str, Any] | None:
-    if not bool(sim.params.get("baseline_calibration_enabled", False)):
+    if not (
+        bool(sim.params.get("baseline_calibration_enabled", False))
+        or bool(sim.params.get("startup_buffer_alignment_enabled", False))
+    ):
         return None
     return _apply_startup_income_buffer_reset(
         sim,
+        max_iter=int(sim.params.get("startup_buffer_alignment_max_iters", 8)),
         reset_deposits=bool(sim.params.get("baseline_calibration_reset_deposits_to_runtime_target", True)),
     )
 
@@ -578,15 +688,26 @@ def run_simulation(n_quarters: int = 80, cfg: Dict[str, Any] | None = None) -> S
     sim = NewLoop(effective_cfg)
     _prepare_startup_sim(sim)
     before = _population_distribution_snapshot(sim)
+    quarter_diag_q0: Dict[str, Any] | None = None
+    quarter_diag_q10: Dict[str, Any] | None = None
     for _ in range(int(n_quarters)):
         sim.step()
+        visible_t = len(sim.history) - 1
+        if visible_t == 0:
+            quarter_diag_q0 = _quarter_state_diagnostics(sim)
+        elif visible_t == 10:
+            quarter_diag_q10 = _quarter_state_diagnostics(sim)
     after = _population_distribution_snapshot(sim)
     pop_dist = {"before": before, "after": after} if (before is not None and after is not None) else None
+    startup_diag_out = dict(startup_diag or {})
+    quarter_compare = _quarter_comparison(quarter_diag_q0, quarter_diag_q10)
+    if quarter_compare is not None:
+        startup_diag_out["quarter_comparison"] = quarter_compare
     return SimulationRun(
         sim=sim,
         rows=_visible_rows(sim.history),
         population_distributions=pop_dist,
-        startup_diagnostics=startup_diag,
+        startup_diagnostics=startup_diag_out,
         baseline_calibration=baseline_calibration,
     )
 

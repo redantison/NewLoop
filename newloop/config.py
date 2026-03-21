@@ -48,6 +48,10 @@ config = {
         "capex_supply_share_fa_dynamic_with_automation": True,
         "capex_supply_share_fa_min": 0.0,
         "capex_supply_share_fa_max": 0.65,
+        # Sector growth should slow when it can only be financed by excessive leverage.
+        "firm_capex_leverage_limit_enabled": True,
+        "firm_capex_max_debt_to_equity": 2.0,
+        "firm_capex_leverage_soft_start_share": 0.75,
 
         # Income tax (marginal above threshold) on wages + dividends (excludes income support)
         "income_tax_rate": 0.15,          # 15% marginal rate
