@@ -97,6 +97,9 @@ class TickResult:
     gini_disp: float
     gini_wealth: float
     private_eq_per_h: float
+    corporate_eq_info_per_h: float
+    corporate_eq_physical_per_h: float
+    corporate_eq_total_per_h: float
     private_roe_q: float
     private_inv_cov: float
 

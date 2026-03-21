@@ -95,12 +95,13 @@ COMPACT_NUMBER_COLUMNS = {
 DECIMAL_COLUMNS = {"price_level", "private_inv_cov"}
 
 DISPLAY_VALUE_MODES: tuple[str, str] = ("nominal", "real")
-CONTROL_DEFAULTS_VERSION = 6
+CONTROL_DEFAULTS_VERSION = 7
 UBI_PERCENTILE_PARAM_KEY = "param__ubi_target_percentile"
 UBI_PERCENTILE_UI_KEY = "ui__ubi_target_percentile"
 _TITLE_MODE_SUFFIX_RE = re.compile(r"\s+\((?:UIS|UBI|Stale)\)\s*$", re.IGNORECASE)
 RECENT_IMPROVEMENTS_TEXT = (
     "- Added a top-level Policy Switches panel for baseline and no-policy diagnostics.\n"
+    "- Added corporate-equity and investment-recycling charts to help explain baseline contraction dynamics.\n"
     "- Added an optional mortgage-turnover mechanism to replace amortized mortgage stock with new origination.\n"
     "- Added iterative debt-aware baseline calibration for startup household consumption and liquidity targets.\n"
     "- Added an income-tax disable switch for cleaner baseline diagnostics.\n"
@@ -239,70 +240,13 @@ def _render_startup_diagnostics(startup_diag: Dict[str, Any], baseline_calibrati
         st.caption("Visible Q0 is the calibrated startup state directly; no hidden startup burn-in is applied.")
         if not converged:
             st.caption("Baseline calibration has not fully converged yet, so some residual startup drift is still expected.")
+    elif float(startup_diag.get("mean_deposit_to_target_ratio", 0.0)) > 0.95:
+        st.caption("Startup buffer alignment appears active: visible Q0 household deposits have been re-seeded to the live runtime buffer target without changing the consumption ladder.")
     st.caption(f"Aggregate buffer shortfall to hit runtime targets: {_compact_number(float(startup_diag.get('buffer_shortfall_total', 0.0)))}.")
     st.caption(
         "Quarter-0 diagnostics compare initialized household deposits and baseline consumption needs to the solver's "
         "debt-aware disposable-income path before the first simulated quarter updates balances."
     )
-
-    rows_in = startup_diag.get("table_rows", [])
-    if not rows_in:
-        return
-
-    table_rows: List[Dict[str, Any]] = []
-    for row in rows_in:
-        is_pct = bool(row.get("percent", False))
-        table_rows.append(
-            {
-                "Metric": row.get("Metric", ""),
-                "Mean": (f"{100.0 * float(row.get('Mean', 0.0)):.1f}%" if is_pct else _compact_number(float(row.get("Mean", 0.0)))),
-                "P10": (f"{100.0 * float(row.get('P10', 0.0)):.1f}%" if is_pct else _compact_number(float(row.get("P10", 0.0)))),
-                "P50": (f"{100.0 * float(row.get('P50', 0.0)):.1f}%" if is_pct else _compact_number(float(row.get("P50", 0.0)))),
-                "P90": (f"{100.0 * float(row.get('P90', 0.0)):.1f}%" if is_pct else _compact_number(float(row.get("P90", 0.0)))),
-            }
-        )
-    st.dataframe(table_rows, use_container_width=True)
-
-    circular_flow = dict(startup_diag.get("circular_flow", {}))
-    if circular_flow:
-        st.caption("Quarter-0 circular flow decomposition")
-        flow_rows = [
-            {"Flow": "Household Consumption", "Amount": _compact_number(float(circular_flow.get("hh_consumption_nom", 0.0)))},
-            {"Flow": "Firm Revenue", "Amount": _compact_number(float(circular_flow.get("firm_revenue_nom", 0.0)))},
-            {"Flow": "Wages Returned", "Amount": _compact_number(float(circular_flow.get("wages_total", 0.0)))},
-            {"Flow": "Household Dividends", "Amount": _compact_number(float(circular_flow.get("household_dividends_total", 0.0)))},
-            {"Flow": "Disposable Income", "Amount": _compact_number(float(circular_flow.get("hh_disposable_income_total", 0.0)))},
-            {"Flow": "Debt Service", "Amount": _compact_number(float(circular_flow.get("debt_service_total", 0.0)))},
-            {"Flow": "Income Tax", "Amount": _compact_number(float(circular_flow.get("income_tax_total", 0.0)))},
-            {"Flow": "Corporate Tax", "Amount": _compact_number(float(circular_flow.get("corporate_tax_total", 0.0)))},
-            {"Flow": "VAT Receipts", "Amount": _compact_number(float(circular_flow.get("vat_receipts_total", 0.0)))},
-            {"Flow": "VAT Credit", "Amount": _compact_number(float(circular_flow.get("vat_credit_total", 0.0)))},
-            {"Flow": "Income Support", "Amount": _compact_number(float(circular_flow.get("income_support_total", 0.0)))},
-            {"Flow": "Private Retained", "Amount": _compact_number(float(circular_flow.get("private_retained_total", 0.0)))},
-            {"Flow": "CAPEX", "Amount": _compact_number(float(circular_flow.get("capex_total_nom", 0.0)))},
-        ]
-        st.dataframe(flow_rows, use_container_width=True)
-
-    decile_rows_in = startup_diag.get("decile_rows", [])
-    if decile_rows_in:
-        st.caption("Buffer-gap diagnostics by wage decile")
-        decile_rows: List[Dict[str, Any]] = []
-        for row in decile_rows_in:
-            decile_rows.append(
-                {
-                    "Decile": row.get("Decile", ""),
-                    "Mean Wage": _compact_number(float(row.get("Mean Wage", 0.0))),
-                    "Mean Net Disp": _compact_number(float(row.get("Mean Net Disp", 0.0))),
-                    "Mean Deposits": _compact_number(float(row.get("Mean Deposits", 0.0))),
-                    "Mean Target": _compact_number(float(row.get("Mean Target", 0.0))),
-                    "Mean Gap": _compact_number(float(row.get("Mean Gap", 0.0))),
-                    "Mean Base Gap": _compact_number(float(row.get("Mean Base Gap", 0.0))),
-                    "Below Buffer": f"{100.0 * float(row.get('Below Buffer', 0.0)):.1f}%",
-                    "Base Uncovered": f"{100.0 * float(row.get('Base Uncovered', 0.0)):.1f}%",
-                    "DTI P90": f"{100.0 * float(row.get('DTI P90', 0.0)):.1f}%",
-                }
-            )
-        st.dataframe(decile_rows, use_container_width=True)
 
 
 def _available_line_metric_ids() -> List[str]:
@@ -906,6 +850,37 @@ def main() -> None:
         "Cumulative public funding equals cumulative GOV funding plus cumulative issuance funding "
         "(economy totals, in the currently selected nominal/real display mode)."
     )
+
+    equity_fig, (ax_equity, ax_recycling) = plt.subplots(1, 2, figsize=(13, 4.5), constrained_layout=True)
+    plot_metric_lines(
+        rows,
+        [
+            "corporate_eq_info_per_h",
+            "corporate_eq_physical_per_h",
+            "corporate_eq_total_per_h",
+        ],
+        title="Corporate Equity",
+        primary_ylabel="Equity / Household",
+        support_mode=support_mode,
+        ax=ax_equity,
+    )
+    plot_metric_lines(
+        rows,
+        [
+            "capex_per_h",
+            "private_roe_q",
+        ],
+        title="Investment Recycling",
+        primary_ylabel="CAPEX / Household",
+        secondary_metrics=["private_roe_q"],
+        secondary_ylabel="Private ROE / Quarter",
+        support_mode=support_mode,
+        ax=ax_recycling,
+    )
+    if config_stale:
+        _mark_figure_stale(equity_fig)
+    st.pyplot(equity_fig, clear_figure=False)
+    plt.close(equity_fig)
 
     row_fig, (ax_outcomes, ax_corp_tax) = plt.subplots(1, 2, figsize=(13, 4.5), constrained_layout=True)
 

@@ -544,6 +544,21 @@ class NewLoop:
             "y_series_now": float(y_series_now),
         }
 
+    def _capex_supply_share_fa(self, automation_level: float | None = None) -> float:
+        if not bool(self.params.get("capex_supply_share_fa_dynamic_with_automation", True)):
+            return max(0.0, min(1.0, float(self.params.get("capex_supply_share_fa", 0.0))))
+
+        base_share = max(0.0, min(1.0, float(self.params.get("capex_supply_share_fa", 0.0))))
+        info_flow = max(0.0, float(self.state.get("automation_info_flow", 0.0)))
+        phys_flow = max(0.0, float(self.state.get("automation_phys_flow", 0.0)))
+        total_flow = info_flow + phys_flow
+        share_min = max(0.0, min(1.0, float(self.params.get("capex_supply_share_fa_min", 0.0))))
+        share_max = max(share_min, min(1.0, float(self.params.get("capex_supply_share_fa_max", share_min))))
+        if total_flow <= 1e-12:
+            return min(share_max, max(share_min, base_share))
+        info_share = info_flow / total_flow
+        return share_min + ((share_max - share_min) * info_share)
+
     def _neutralize_stress_active(self) -> bool:
         mode = str(self.params.get("mort_neutralize_trigger_mode", "StressOnly")).strip()
         if mode == "Always":
@@ -1162,11 +1177,9 @@ class NewLoop:
             c_firm_nom = P * c_real
             c_total = float(c_firm_nom.sum())
 
-            # 2b) Firm revenues and wages, given fixed (lagged) CAPEX demand
-            # Split consumption demand by automation share, but allow CAPEX demand to flow primarily to a supplier sector.
-            # Default: CAPEX is produced by the physical sector (FH), so capex_supply_share_fa defaults to 0.0.
-            capex_supply_share_fa = float(self.params.get("capex_supply_share_fa", 0.0))
-            capex_supply_share_fa = max(0.0, min(1.0, capex_supply_share_fa))
+            # 2b) Firm revenues and wages, given fixed (lagged) CAPEX demand.
+            # Let the CAPEX supplier mix shift toward the info sector as automation matures.
+            capex_supply_share_fa = self._capex_supply_share_fa(auto_eff)
             capex_supply_share_fh = 1.0 - capex_supply_share_fa
 
             rev_fa = (auto_eff * c_total) + (capex_supply_share_fa * capex_total_nom)
@@ -1395,6 +1408,7 @@ class NewLoop:
                     "capex_fa_nom": float(capex_fa_nom),
                     "capex_fh_nom": float(capex_fh_nom),
                     "capex_total_nom": float(capex_total_nom),
+                    "capex_supply_share_fa": float(capex_supply_share_fa),
                     "f_fa": f_fa,
                     "f_fh": f_fh,
                     "f_bk": f_bk,
@@ -1548,7 +1562,7 @@ class NewLoop:
         # Settle CAPEX cash flows: investors pay; suppliers receive (split by capex_supply_share_fa).
         # This credits firms with the investment-demand revenue base that the solver used.
         if capex_total_nom > 0:
-            capex_supply_share_fa = float(self.params.get("capex_supply_share_fa", 0.0))
+            capex_supply_share_fa = float(sol.get("capex_supply_share_fa", self._capex_supply_share_fa(float(self.state.get("automation", 0.0)))))
             capex_supply_share_fa = max(0.0, min(1.0, capex_supply_share_fa))
             capex_to_fa = capex_supply_share_fa * capex_total_nom
             capex_to_fh = (1.0 - capex_supply_share_fa) * capex_total_nom
@@ -2356,6 +2370,9 @@ class NewLoop:
                     gini_disp=float(gini_disp),
                     gini_wealth=float(gini_wealth),
                     private_eq_per_h=float(private_equity_total) / float(self.hh.n),
+                    corporate_eq_info_per_h=float(fa_equity_proxy_hist) / float(self.hh.n),
+                    corporate_eq_physical_per_h=float(fh_equity_proxy_hist) / float(self.hh.n),
+                    corporate_eq_total_per_h=float(fa_equity_proxy_hist + fh_equity_proxy_hist) / float(self.hh.n),
                     private_roe_q=float(private_roe_q),
                     private_inv_cov=float(private_inv_cov),
                     # --- Fiscal / funding diagnostics (per household) ---

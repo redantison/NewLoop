@@ -28,9 +28,11 @@ config = {
         "dividend_payout_rate_firms": 0.75,
         "dividend_payout_rate_bank": 1.0,
         "reinvest_rate_of_retained": 1.0,
-        # Startup bootstrap: seed lagged retained earnings at t=0 to avoid a one-quarter CAPEX jump.
+        # Startup bootstrap: seed lagged retained earnings at t=0 from the implied
+        # retained-earnings state so CAPEX and investment-coverage diagnostics do not
+        # show an artificial quarter-0 jump.
         "startup_bootstrap_lagged_retained": True,
-        "startup_bootstrap_retained_scale": 0.20,
+        "startup_bootstrap_retained_scale": 1.00,
         "capital_depr_rate_per_quarter": 0.02,
         # Household consumption buffer behavior: spend only a fraction of deposits above
         # the target liquid buffer, and conserve when below target.
@@ -40,8 +42,12 @@ config = {
         "capital_productivity_k": 0.25,
         "capital_productivity_scale": 5000.0,
         # CAPEX supplier split: what fraction of nominal CAPEX demand is supplied by FA vs FH.
-        # Default 0.0 means CAPEX goods/services are produced by the physical sector (FH).
+        # By default this now follows relative automation flow rather than automation level,
+        # so investment demand leans toward the sector where adoption is still changing.
         "capex_supply_share_fa": 0.0,
+        "capex_supply_share_fa_dynamic_with_automation": True,
+        "capex_supply_share_fa_min": 0.0,
+        "capex_supply_share_fa_max": 0.65,
 
         # Income tax (marginal above threshold) on wages + dividends (excludes income support)
         "income_tax_rate": 0.15,          # 15% marginal rate
@@ -128,6 +134,8 @@ config = {
         "baseline_calibration_damping": 0.30,
         "baseline_calibration_tol_pct": 0.02,
         "baseline_calibration_reset_deposits_to_runtime_target": True,
+        "startup_buffer_alignment_enabled": False,
+        "startup_buffer_alignment_max_iters": 8,
         "population_config": {
             "n_families": 20000,
             "seed": 7919,

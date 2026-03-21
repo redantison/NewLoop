@@ -21,8 +21,14 @@ METRIC_LABELS: Dict[str, str] = {
     "gini_market": "Gini (Pre-Tax/Pre-Transfer)",
     "gini_disp": "Gini (Disposable)",
     "gini_wealth": "Gini (Wealth)",
+    "private_eq_per_h": "Private Equity / Household",
+    "private_roe_q": "Private ROE / Quarter",
+    "private_inv_cov": "Investment Coverage",
     "pop_dti_p90": "Debt-Service-to-Income (DTI) P90",
     "pop_dti_w_p90": "Debt-Service-to-Income (DTI) P90 (Wages)",
+    "corporate_eq_info_per_h": "Corporate Equity (Info) / Household",
+    "corporate_eq_physical_per_h": "Corporate Equity (Physical) / Household",
+    "corporate_eq_total_per_h": "Corporate Equity (Total) / Household",
     "trust_equity_pct": "Trust Equity %",
     "uis_per_h": "Income Support / Household",
     "uis_from_fund_dep_per_h": "Income Support from FUND",
@@ -63,6 +69,11 @@ def _series(rows: Sequence[Mapping[str, Any]], metric: str) -> List[float]:
             if active:
                 trust_started = True
             values.append(value if trust_started else float("nan"))
+        return values
+    if metric == "private_roe_q":
+        values = [float(r.get(metric, 0.0)) for r in rows]
+        if values:
+            values[0] = float("nan")
         return values
     return [float(r.get(metric, 0.0)) for r in rows]
 
@@ -106,6 +117,9 @@ def _line_style(metric: str, *, secondary: bool) -> Dict[str, Any]:
     if secondary:
         style["linestyle"] = "--"
     if metric == "automation":
+        style["linewidth"] = 2.6
+        style["linestyle"] = "-"
+    elif metric == "corporate_eq_total_per_h":
         style["linewidth"] = 2.6
         style["linestyle"] = "-"
     elif metric == "automation_flow":
