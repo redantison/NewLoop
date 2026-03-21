@@ -63,6 +63,8 @@ PERCENT_COLUMNS = {
     "private_roe_q",
     "trust_equity_pct",
     "corp_tax_rate_eff",
+    "sector_util_info",
+    "sector_util_physical",
     "pop_dti_med",
     "pop_dti_p90",
     "pop_dti_w_med",
@@ -78,6 +80,10 @@ COMPACT_NUMBER_COLUMNS = {
     "gov_dep_per_h",
     "fund_dep_per_h",
     "capex_per_h",
+    "sector_capacity_info_per_h",
+    "sector_capacity_physical_per_h",
+    "unmet_demand_info_per_h",
+    "unmet_demand_physical_per_h",
     "uis_per_h",
     "uis_from_fund_dep_per_h",
     "uis_from_gov_dep_per_h",
@@ -95,7 +101,7 @@ COMPACT_NUMBER_COLUMNS = {
 DECIMAL_COLUMNS = {"price_level", "private_inv_cov"}
 
 DISPLAY_VALUE_MODES: tuple[str, str] = ("nominal", "real")
-CONTROL_DEFAULTS_VERSION = 7
+CONTROL_DEFAULTS_VERSION = 8
 UBI_PERCENTILE_PARAM_KEY = "param__ubi_target_percentile"
 UBI_PERCENTILE_UI_KEY = "ui__ubi_target_percentile"
 _TITLE_MODE_SUFFIX_RE = re.compile(r"\s+\((?:UIS|UBI|Stale)\)\s*$", re.IGNORECASE)
@@ -881,6 +887,38 @@ def main() -> None:
         _mark_figure_stale(equity_fig)
     st.pyplot(equity_fig, clear_figure=False)
     plt.close(equity_fig)
+
+    sector_fig, (ax_capacity, ax_shortfall) = plt.subplots(1, 2, figsize=(13, 4.5), constrained_layout=True)
+    plot_metric_lines(
+        rows,
+        [
+            "sector_capacity_info_per_h",
+            "sector_capacity_physical_per_h",
+            "sector_util_info",
+            "sector_util_physical",
+        ],
+        title="Sector Capacity And Utilization",
+        primary_ylabel="Capacity / Household",
+        secondary_metrics=["sector_util_info", "sector_util_physical"],
+        secondary_ylabel="Utilization",
+        support_mode=support_mode,
+        ax=ax_capacity,
+    )
+    plot_metric_lines(
+        rows,
+        [
+            "unmet_demand_info_per_h",
+            "unmet_demand_physical_per_h",
+        ],
+        title="Unmet Household Demand",
+        primary_ylabel="Real Units / Household",
+        support_mode=support_mode,
+        ax=ax_shortfall,
+    )
+    if config_stale:
+        _mark_figure_stale(sector_fig)
+    st.pyplot(sector_fig, clear_figure=False)
+    plt.close(sector_fig)
 
     row_fig, (ax_outcomes, ax_corp_tax) = plt.subplots(1, 2, figsize=(13, 4.5), constrained_layout=True)
 

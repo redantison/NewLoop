@@ -34,6 +34,24 @@ config = {
         "startup_bootstrap_lagged_retained": True,
         "startup_bootstrap_retained_scale": 1.00,
         "capital_depr_rate_per_quarter": 0.02,
+        # Sector-fulfillment pass 1: fixed household demand split plus
+        # supplier-first capacity rationing with no new firm debt.
+        "hh_demand_info_share": 0.50,
+        "sector_capacity_initial_buffer": 0.05,
+        "sector_capacity_per_k_info": 0.10,
+        "sector_capacity_per_k_phys": 0.18,
+        "sector_automation_capacity_bonus_info": 0.60,
+        "sector_automation_capacity_bonus_phys": 0.65,
+        "sector_supplier_share_info_for_info_capex": 0.55,
+        "sector_supplier_share_info_for_phys_capex": 0.15,
+        "sector_capex_share_min": 0.05,
+        "sector_capex_share_max": 0.35,
+        "sector_capex_gap_half_sat": 0.15,
+        "sector_capex_gap_close_rate": 0.25,
+        "sector_capex_growth_cap_rate_q": 0.08,
+        "sector_dividend_cash_buffer_q": 0.00,
+        "firm_overhead_rate_info": 0.00,
+        "firm_overhead_rate_phys": 0.00,
         # Household consumption buffer behavior: spend only a fraction of deposits above
         # the target liquid buffer, and conserve when below target.
         "hh_buffer_spend_excess_rate_q": 0.10,

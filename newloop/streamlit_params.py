@@ -174,6 +174,7 @@ PARAMETER_CONTROLS: tuple[ParamControl, ...] = (
     ParamControl(("ubi_anchor_income_basis",), "UBI Anchor Income Basis", INCOME_SUPPORT_SECTION, "select", options=("market_income", "wages_only"), fallback_default="market_income", support_modes=("UBI",)),
     ParamControl(("ubi_index_series",), "UBI Index Series", INCOME_SUPPORT_SECTION, "select", options=("P_producer", "C_consumer"), fallback_default="P_producer", support_modes=("UBI",)),
     ParamControl(("automation_path",), "Automation Path", "Automation", "select", options=("two_hump", "linear")),
+    ParamControl(("hh_demand_info_share",), "HH Demand Share: Info", "Automation", "float", 0.0, 1.0, 0.01, fallback_default=0.50, help_text="Fixed household demand share allocated to the Info sector before any fulfillment rationing."),
     ParamControl(("automation_horizon_quarters",), "Automation Horizon Quarters", "Automation", "float", 4.0, 240.0, 1.0),
     ParamControl(("automation_w_info",), "Automation Weight: Info", "Automation", "float", 0.0, 1.0, 0.01),
     ParamControl(("automation_info_cap",), "Automation Info Cap", "Automation", "float", 0.0, 1.0, 0.01),
@@ -183,6 +184,8 @@ PARAMETER_CONTROLS: tuple[ParamControl, ...] = (
     ParamControl(("automation_bi",), "Automation bi", "Automation", "float", 0.0, 20.0, 0.1),
     ParamControl(("automation_kp",), "Automation kp", "Automation", "float", 0.01, 1.0, 0.01),
     ParamControl(("automation_tp",), "Automation tp", "Automation", "float", 0.0, 120.0, 0.5),
+    ParamControl(("sector_automation_capacity_bonus_info",), "Capacity Bonus: Info Automation", "Automation", "float", 0.0, 2.0, 0.05, fallback_default=0.60, advanced=True, help_text="How strongly Info-sector automation raises effective fulfillment capacity."),
+    ParamControl(("sector_automation_capacity_bonus_phys",), "Capacity Bonus: Physical Automation", "Automation", "float", 0.0, 2.0, 0.05, fallback_default=0.65, advanced=True, help_text="How strongly Physical-sector automation raises effective fulfillment capacity."),
     ParamControl(("price_beta",), "Price Beta", "Price & Capital", "float", 0.0, 3.0, 0.01),
     ParamControl(("automation_markup_max",), "Automation Markup Max", "Price & Capital", "float", 0.0, 1.0, 0.01),
     ParamControl(("automation_markup_power",), "Automation Markup Power", "Price & Capital", "float", 0.1, 5.0, 0.1),
@@ -216,16 +219,23 @@ PARAMETER_CONTROLS: tuple[ParamControl, ...] = (
     ParamControl(("mort_neutralize_cap_value",), "Mortgage Neutralize Cap Value", "Price & Capital", "float", 0.0, 5.0, 0.05),
     ParamControl(("startup_bootstrap_lagged_retained",), "Startup Bootstrap Lagged Retained", "Price & Capital", "bool"),
     ParamControl(("startup_bootstrap_retained_scale",), "Startup Bootstrap Retained Scale", "Price & Capital", "float", 0.0, 2.0, 0.05, fallback_default=1.0),
+    ParamControl(("sector_capacity_initial_buffer",), "Initial Capacity Buffer", "Price & Capital", "float", 0.0, 0.50, 0.01, fallback_default=0.05, advanced=True, help_text="Extra sector capacity seeded at startup above the initial demand target."),
+    ParamControl(("sector_capacity_per_k_info",), "Capacity / K: Info", "Price & Capital", "float", 0.0, 2.0, 0.01, fallback_default=0.10, advanced=True),
+    ParamControl(("sector_capacity_per_k_phys",), "Capacity / K: Physical", "Price & Capital", "float", 0.0, 2.0, 0.01, fallback_default=0.18, advanced=True),
+    ParamControl(("sector_supplier_share_info_for_info_capex",), "Info Supplier Share for Info CAPEX", "Price & Capital", "float", 0.0, 1.0, 0.01, fallback_default=0.55, advanced=True, help_text="Share of Info-sector investment orders supplied by the Info sector."),
+    ParamControl(("sector_supplier_share_info_for_phys_capex",), "Info Supplier Share for Physical CAPEX", "Price & Capital", "float", 0.0, 1.0, 0.01, fallback_default=0.15, advanced=True, help_text="Share of Physical-sector investment orders supplied by the Info sector."),
+    ParamControl(("sector_capex_share_min",), "Sector CAPEX Share Min", "Price & Capital", "float", 0.0, 1.0, 0.01, fallback_default=0.05, advanced=True),
+    ParamControl(("sector_capex_share_max",), "Sector CAPEX Share Max", "Price & Capital", "float", 0.0, 1.0, 0.01, fallback_default=0.35, advanced=True),
+    ParamControl(("sector_capex_gap_half_sat",), "Sector CAPEX Gap Half-Sat", "Price & Capital", "float", 0.01, 2.0, 0.01, fallback_default=0.15, advanced=True),
+    ParamControl(("sector_capex_gap_close_rate",), "Sector CAPEX Gap Close Rate", "Price & Capital", "float", 0.0, 1.0, 0.01, fallback_default=0.25, advanced=True),
+    ParamControl(("sector_capex_growth_cap_rate_q",), "Sector CAPEX Growth Cap (q)", "Price & Capital", "float", 0.0, 0.50, 0.01, fallback_default=0.08, advanced=True),
+    ParamControl(("sector_dividend_cash_buffer_q",), "Sector Dividend Cash Buffer", "Price & Capital", "float", 0.0, 1.0, 0.01, fallback_default=0.0, advanced=True, help_text="Fraction of current-quarter revenue reserved before paying committed dividends."),
+    ParamControl(("firm_overhead_rate_info",), "Firm Overhead Rate: Info", "Price & Capital", "float", 0.0, 1.0, 0.01, fallback_default=0.0, advanced=True),
+    ParamControl(("firm_overhead_rate_phys",), "Firm Overhead Rate: Physical", "Price & Capital", "float", 0.0, 1.0, 0.01, fallback_default=0.0, advanced=True),
     ParamControl(("hh_buffer_spend_excess_rate_q",), "HH Spend Excess Buffer Rate (q)", "Price & Capital", "float", 0.0, 1.0, 0.01, fallback_default=0.10),
     ParamControl(("hh_buffer_shortfall_conserve_rate_q",), "HH Conserve Shortfall Buffer Rate (q)", "Price & Capital", "float", 0.0, 1.0, 0.01, fallback_default=0.05),
     ParamControl(("capital_productivity_k",), "Capital Productivity k", "Price & Capital", "float", 0.0, 2.0, 0.01),
     ParamControl(("capital_productivity_scale",), "Capital Productivity Scale", "Price & Capital", "float", 100.0, 20000.0, 100.0),
-    ParamControl(("capex_supply_share_fa_dynamic_with_automation",), "Dynamic CAPEX Split With Automation Flow", "Price & Capital", "bool", fallback_default=True, help_text="Shift CAPEX supply toward the sector whose automation is changing faster, while falling back to the baseline share when both flows are small."),
-    ParamControl(("capex_supply_share_fa_min",), "CAPEX Share To Info Min", "Price & Capital", "float", 0.0, 1.0, 0.01, fallback_default=0.0),
-    ParamControl(("capex_supply_share_fa_max",), "CAPEX Share To Info Max", "Price & Capital", "float", 0.0, 1.0, 0.01, fallback_default=0.65),
-    ParamControl(("firm_capex_leverage_limit_enabled",), "Firm CAPEX Leverage Limit", "Price & Capital", "bool", fallback_default=True, help_text="Throttle sector investment when firm debt gets too large relative to sector equity."),
-    ParamControl(("firm_capex_max_debt_to_equity",), "Firm Max Debt / Equity", "Price & Capital", "float", 0.0, 10.0, 0.1, fallback_default=2.0),
-    ParamControl(("firm_capex_leverage_soft_start_share",), "Firm Leverage Soft Start", "Price & Capital", "float", 0.0, 1.0, 0.05, fallback_default=0.75, help_text="Start tapering CAPEX once leverage reaches this share of the hard debt/equity limit."),
     ParamControl(("capital_depr_rate_per_quarter",), "Capital Depreciation / Quarter", "Price & Capital", "float", 0.0, 1.0, 0.005),
     ParamControl(("population_config", "n_families"), "Population: Families", "Population", "int", 1000, 100000, 1000),
     ParamControl(("population_config", "seed"), "Population: Seed", "Population", "int", 1, 1000000, 1),
@@ -381,7 +391,7 @@ PARAMETER_CONTROLS: tuple[ParamControl, ...] = (
 )
 
 
-RUN_DEFAULT_QUARTERS = 80
+RUN_DEFAULT_QUARTERS = 120
 RUN_MIN_QUARTERS = 20
 RUN_MAX_QUARTERS = 240
 RUN_STEP_QUARTERS = 4

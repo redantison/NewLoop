@@ -35,6 +35,12 @@ METRIC_LABELS: Dict[str, str] = {
     "uis_from_gov_dep_per_h": "Income Support from GOV",
     "uis_issued_per_h": "Income Support Issued",
     "corp_tax_rate_eff": "Effective Corporate Tax Rate",
+    "sector_capacity_info_per_h": "Sector Capacity (Info) / Household",
+    "sector_capacity_physical_per_h": "Sector Capacity (Physical) / Household",
+    "sector_util_info": "Sector Utilization (Info)",
+    "sector_util_physical": "Sector Utilization (Physical)",
+    "unmet_demand_info_per_h": "Unmet HH Demand (Info) / Household",
+    "unmet_demand_physical_per_h": "Unmet HH Demand (Physical) / Household",
     "wages_total": "Total Wage Base",
     "trust_value_per_h": "Trust Value / Household",
 }

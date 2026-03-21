@@ -111,6 +111,12 @@ class TickResult:
     gov_dep_per_h: float
     fund_dep_per_h: float
     capex_per_h: float
+    sector_capacity_info_per_h: float
+    sector_capacity_physical_per_h: float
+    sector_util_info: float
+    sector_util_physical: float
+    unmet_demand_info_per_h: float
+    unmet_demand_physical_per_h: float
 
     uis_per_h: float
     uis_from_fund_dep_per_h: float
