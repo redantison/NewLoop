@@ -126,6 +126,7 @@ RECENT_IMPROVEMENTS_TEXT = (
     "- Sector wage shares now fall with each sector's own automation curve rather than Info alone.\n"
     "- Added firm overhead expense parameters for sector operating-cost experiments.\n"
     "- Added corporate-equity and investment-recycling charts to help explain baseline contraction dynamics.\n"
+    "- Added a broad private ROE metric and annualized display to track late-run private-capital growth more clearly.\n"
     "- Added iterative debt-aware baseline calibration for startup household consumption and liquidity targets.\n"
     "- Added an income-tax disable switch for cleaner baseline diagnostics.\n"
     "- Added a mortgage-indexing disable switch for cleaner baseline diagnostics.\n"
