@@ -22,7 +22,8 @@ METRIC_LABELS: Dict[str, str] = {
     "gini_disp": "Gini (Disposable)",
     "gini_wealth": "Gini (Wealth)",
     "private_eq_per_h": "Private Equity / Household",
-    "private_roe_q": "Private ROE / Quarter",
+    "private_roe_q": "Private Payout Yield / Quarter",
+    "private_broad_roe_q": "Private Broad ROE (Annualized %)",
     "private_inv_cov": "Investment Coverage",
     "pop_dti_p90": "Debt-Service-to-Income (DTI) P90",
     "pop_dti_w_p90": "Debt-Service-to-Income (DTI) P90 (Wages)",
@@ -37,8 +38,8 @@ METRIC_LABELS: Dict[str, str] = {
     "corp_tax_rate_eff": "Effective Corporate Tax Rate",
     "sector_capacity_info_per_h": "Sector Capacity (Info) / Household",
     "sector_capacity_physical_per_h": "Sector Capacity (Physical) / Household",
-    "sector_util_info": "Sector Utilization (Info)",
-    "sector_util_physical": "Sector Utilization (Physical)",
+    "sector_util_info": "HH Utilization (Info)",
+    "sector_util_physical": "HH Utilization (Physical)",
     "sector_demand_info_per_h": "Sector Demand (Info) / Household",
     "sector_demand_physical_per_h": "Sector Demand (Physical) / Household",
     "unmet_demand_info_per_h": "Unmet HH Demand (Info) / Household",
@@ -68,6 +69,12 @@ def metric_options() -> Dict[str, str]:
 
 
 def _series(rows: Sequence[Mapping[str, Any]], metric: str) -> List[float]:
+    def _annualize_quarterly_rate(value: float) -> float:
+        q = float(value)
+        if q <= -1.0:
+            return float("nan")
+        return ((1.0 + q) ** 4 - 1.0) * 100.0
+
     if metric == "trust_equity_pct":
         values: List[float] = []
         trust_started = False
@@ -78,8 +85,10 @@ def _series(rows: Sequence[Mapping[str, Any]], metric: str) -> List[float]:
                 trust_started = True
             values.append(value if trust_started else float("nan"))
         return values
-    if metric == "private_roe_q":
+    if metric in {"private_roe_q", "private_broad_roe_q"}:
         values = [float(r.get(metric, 0.0)) for r in rows]
+        if metric == "private_broad_roe_q":
+            values = [_annualize_quarterly_rate(v) for v in values]
         if values:
             values[0] = float("nan")
         return values

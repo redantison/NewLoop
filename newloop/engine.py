@@ -2605,6 +2605,10 @@ class NewLoop:
                     + retained_fh * (1.0 - f_fh)
                     + retained_bk * (1.0 - f_bk)
                 )
+                private_broad_roe_q = (
+                    (priv_payout_total + private_retained_total) / prev_priv_eq_total
+                    if prev_priv_eq_total > 1e-9 else 0.0
+                )
 
                 capex_total_nom = float(solp.get("capex_total_nom", 0.0))
                 private_inv_cov = (private_retained_total / capex_total_nom) if capex_total_nom > 1e-9 else 0.0
@@ -2700,6 +2704,7 @@ class NewLoop:
                     corporate_eq_physical_per_h=float(fh_equity_proxy_hist) / float(self.hh.n),
                     corporate_eq_total_per_h=float(fa_equity_proxy_hist + fh_equity_proxy_hist) / float(self.hh.n),
                     private_roe_q=float(private_roe_q),
+                    private_broad_roe_q=float(private_broad_roe_q),
                     private_inv_cov=float(private_inv_cov),
                     # --- Fiscal / funding diagnostics (per household) ---
                     vat_per_h=float(self.state.get("vat_receipts_total", 0.0)) / float(self.hh.n),

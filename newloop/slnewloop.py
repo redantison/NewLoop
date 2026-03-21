@@ -62,6 +62,7 @@ PERCENT_COLUMNS = {
     "gini_disp",
     "gini_wealth",
     "private_roe_q",
+    "private_broad_roe_q",
     "trust_equity_pct",
     "corp_tax_rate_eff",
     "sector_util_info",
@@ -106,6 +107,15 @@ CONTROL_DEFAULTS_VERSION = 8
 UBI_PERCENTILE_PARAM_KEY = "param__ubi_target_percentile"
 UBI_PERCENTILE_UI_KEY = "ui__ubi_target_percentile"
 _TITLE_MODE_SUFFIX_RE = re.compile(r"\s+\((?:UIS|UBI|Stale)\)\s*$", re.IGNORECASE)
+
+
+def _annualize_quarterly_rate(value: float) -> float:
+    q = float(value)
+    if q <= -1.0:
+        return float("nan")
+    return (1.0 + q) ** 4 - 1.0
+
+
 RECENT_IMPROVEMENTS_TEXT = (
     "- Added a top-level Policy Switches panel for baseline and no-policy diagnostics.\n"
     "- Added startup calibration and buffer-alignment tools for more coherent quarter-0 household conditions.\n"
@@ -205,6 +215,8 @@ def _build_styled_rows(rows: Sequence[Dict[str, Any]]) -> Any:
             formatters[col] = "{:.0f}"
         elif col == "trust_active":
             formatters[col] = lambda v: "Yes" if bool(v) else "No"
+        elif col == "private_broad_roe_q":
+            formatters[col] = lambda v: f"{100.0 * _annualize_quarterly_rate(float(v)):.2f}%"
         elif col in PERCENT_COLUMNS:
             formatters[col] = lambda v: f"{100.0 * float(v):.2f}%"
         elif col in COMPACT_NUMBER_COLUMNS:
@@ -885,12 +897,12 @@ def main() -> None:
         rows,
         [
             "capex_per_h",
-            "private_roe_q",
+            "private_broad_roe_q",
         ],
         title="Investment Recycling",
         primary_ylabel="CAPEX / Household",
-        secondary_metrics=["private_roe_q"],
-        secondary_ylabel="Private ROE / Quarter",
+        secondary_metrics=["private_broad_roe_q"],
+        secondary_ylabel="Private Broad ROE (Annualized %)",
         support_mode=support_mode,
         ax=ax_recycling,
     )
@@ -908,10 +920,10 @@ def main() -> None:
             "sector_util_info",
             "sector_util_physical",
         ],
-        title="Sector Capacity And Utilization",
+        title="Sector Capacity And HH Utilization",
         primary_ylabel="Capacity / Household",
         secondary_metrics=["sector_util_info", "sector_util_physical"],
-        secondary_ylabel="Utilization",
+        secondary_ylabel="HH Utilization",
         support_mode=support_mode,
         ax=ax_capacity,
     )
