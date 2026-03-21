@@ -39,6 +39,8 @@ METRIC_LABELS: Dict[str, str] = {
     "sector_capacity_physical_per_h": "Sector Capacity (Physical) / Household",
     "sector_util_info": "Sector Utilization (Info)",
     "sector_util_physical": "Sector Utilization (Physical)",
+    "sector_demand_info_per_h": "Sector Demand (Info) / Household",
+    "sector_demand_physical_per_h": "Sector Demand (Physical) / Household",
     "unmet_demand_info_per_h": "Unmet HH Demand (Info) / Household",
     "unmet_demand_physical_per_h": "Unmet HH Demand (Physical) / Household",
     "wages_total": "Total Wage Base",
@@ -131,6 +133,12 @@ def _line_style(metric: str, *, secondary: bool) -> Dict[str, Any]:
     elif metric == "automation_flow":
         style["linewidth"] = 2.6
         style["linestyle"] = ":"
+    elif metric == "sector_demand_info_per_h":
+        style["linewidth"] = 2.0
+        style["linestyle"] = "--"
+    elif metric == "sector_demand_physical_per_h":
+        style["linewidth"] = 2.0
+        style["linestyle"] = "-."
     return style
 
 

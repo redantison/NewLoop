@@ -918,6 +918,8 @@ def main() -> None:
     plot_metric_lines(
         rows,
         [
+            "sector_demand_info_per_h",
+            "sector_demand_physical_per_h",
             "unmet_demand_info_per_h",
             "unmet_demand_physical_per_h",
         ],

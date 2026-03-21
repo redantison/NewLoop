@@ -2720,6 +2720,8 @@ class NewLoop:
                         float(solp.get("hh_sales_fh_real", 0.0))
                         / max(1e-9, float(solp.get("capacity_fh_real", 0.0)))
                     ),
+                    sector_demand_info_per_h=float(solp.get("hh_demand_fa_real", 0.0)) / float(self.hh.n),
+                    sector_demand_physical_per_h=float(solp.get("hh_demand_fh_real", 0.0)) / float(self.hh.n),
                     unmet_demand_info_per_h=max(
                         0.0,
                         float(solp.get("hh_demand_fa_real", 0.0)) - float(solp.get("hh_sales_fa_real", 0.0)),

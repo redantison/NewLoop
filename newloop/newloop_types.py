@@ -115,6 +115,8 @@ class TickResult:
     sector_capacity_physical_per_h: float
     sector_util_info: float
     sector_util_physical: float
+    sector_demand_info_per_h: float
+    sector_demand_physical_per_h: float
     unmet_demand_info_per_h: float
     unmet_demand_physical_per_h: float
 

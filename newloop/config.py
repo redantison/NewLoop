@@ -37,7 +37,7 @@ config = {
         "capital_depr_rate_per_quarter": 0.02,
         # Sector-fulfillment pass 1: fixed household demand split plus
         # supplier-first capacity rationing with no new firm debt.
-        "hh_demand_info_share": 0.50,
+        "hh_demand_info_share": 0.30,
         "sector_capacity_initial_buffer": 0.05,
         "sector_capacity_per_k_info": 0.10,
         "sector_capacity_per_k_phys": 0.18,
