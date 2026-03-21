@@ -181,6 +181,7 @@ PARAMETER_CONTROLS: tuple[ParamControl, ...] = (
     ParamControl(("automation_markup_max",), "Automation Markup Max", "Price & Capital", "float", 0.0, 1.0, 0.01),
     ParamControl(("automation_markup_power",), "Automation Markup Power", "Price & Capital", "float", 0.1, 5.0, 0.1),
     ParamControl(("price_adjust_speed",), "Price Adjust Speed", "Price & Capital", "float", 0.0, 1.0, 0.01),
+    ParamControl(("solver_relaxation",), "Solver Relaxation", "Price & Capital", "float", 0.05, 1.0, 0.05, advanced=True, help_text="Relaxation factor for the within-tick household fixed-point solver. Lower values add damping; 1.0 preserves the undamped update."),
     ParamControl(("policy_rate_rule_enabled",), "Policy Rate Rule Enabled", "Price & Capital", "bool"),
     ParamControl(("policy_rate_neutral_q",), "Policy Rate Neutral (q)", "Price & Capital", "float", 0.0, 0.05, 0.0005),
     ParamControl(("policy_rate_inflation_target_q",), "Policy Inflation Target (q)", "Price & Capital", "float", -0.02, 0.03, 0.0005),

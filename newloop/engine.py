@@ -1363,6 +1363,8 @@ class NewLoop:
         y_guess = hh.prev_income
         if y_guess.shape[0] != hh.n:
             y_guess = w0.copy()
+        solver_relax = float(self.params.get("solver_relaxation", 1.0))
+        solver_relax = max(1e-3, min(1.0, solver_relax))
 
         # Trust ownership fractions (same as legacy solver)
         def own_frac(issuer: str, key: str) -> float:
@@ -1745,7 +1747,7 @@ class NewLoop:
                     "solver_max_delta": float(max_delta),
                 }
 
-            y_guess = y_new
+            y_guess = ((1.0 - solver_relax) * y_guess) + (solver_relax * y_new)
 
         raise RuntimeError(
             "Population solver failed to converge "

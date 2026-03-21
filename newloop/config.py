@@ -29,6 +29,7 @@ config = {
         "dividend_payout_rate_firms": 0.75,
         "dividend_payout_rate_bank": 1.0,
         "reinvest_rate_of_retained": 1.0,
+        "solver_relaxation": 0.75,       # fixed-point relaxation for within-tick household solver (1.0 = none)
         # Startup bootstrap: seed lagged retained earnings at t=0 from the implied
         # retained-earnings state so CAPEX and investment-coverage diagnostics do not
         # show an artificial quarter-0 jump.
