@@ -117,6 +117,8 @@ def _annualize_quarterly_rate(value: float) -> float:
 
 
 RECENT_IMPROVEMENTS_TEXT = (
+    "- 2026-03-21: Added a broad private ROE metric and annualized display to track late-run private-capital growth more clearly.\n"
+    "- 2026-03-21: Set the default HH demand split to 30/70 and added sector-demand lines to the unmet-demand chart.\n"
     "- Added a top-level Policy Switches panel for baseline and no-policy diagnostics.\n"
     "- Added startup calibration and buffer-alignment tools for more coherent quarter-0 household conditions.\n"
     "- Added revolving debt recycling so principal repayment can be re-lent instead of mechanically shrinking credit.\n"
@@ -126,7 +128,6 @@ RECENT_IMPROVEMENTS_TEXT = (
     "- Sector wage shares now fall with each sector's own automation curve rather than Info alone.\n"
     "- Added firm overhead expense parameters for sector operating-cost experiments.\n"
     "- Added corporate-equity and investment-recycling charts to help explain baseline contraction dynamics.\n"
-    "- Added a broad private ROE metric and annualized display to track late-run private-capital growth more clearly.\n"
     "- Added iterative debt-aware baseline calibration for startup household consumption and liquidity targets.\n"
     "- Added an income-tax disable switch for cleaner baseline diagnostics.\n"
     "- Added a mortgage-indexing disable switch for cleaner baseline diagnostics.\n"
