@@ -6,6 +6,7 @@ from __future__ import annotations
 import csv
 import math
 import sys
+import warnings
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -18,6 +19,8 @@ if str(_THIS_DIR) not in sys.path:
 from mathutils import _as_np, _pct, _pct_np, automation_two_hump, calculate_gini_np
 from income_support import apply_income_support_payment, make_income_support_policy
 from newloop_types import HouseholdState, Node, TickResult
+
+_WARNED_MORT_CORRIDOR_LOGSPACE_FALLBACK = False
 
 class NewLoop:
     """
@@ -36,6 +39,7 @@ class NewLoop:
     """
 
     def __init__(self, config: Dict[str, Any]) -> None:
+        self._validate_config(config)
         self.params = config["parameters"]
         self.income_support_policy = make_income_support_policy(self.params)
         p0 = float(config["parameters"].get("price_level_initial", 1.0))
@@ -266,7 +270,7 @@ class NewLoop:
 
         seed_sol = self.solve_within_tick_population()
         if seed_sol is None:
-            return
+            raise RuntimeError("Startup lagged-retained bootstrap expected a population solution but received None.")
 
         scale = float(self.params.get("startup_bootstrap_retained_scale", 1.0))
         scale = max(0.0, scale)
@@ -468,7 +472,15 @@ class NewLoop:
 
         if enabled:
             if not bool(self.params.get("mort_corridor_apply_in_logspace", True)):
-                raise ValueError("mort_corridor_apply_in_logspace must be True for mortgage index module.")
+                global _WARNED_MORT_CORRIDOR_LOGSPACE_FALLBACK
+                if not _WARNED_MORT_CORRIDOR_LOGSPACE_FALLBACK:
+                    warnings.warn(
+                        "mort_corridor_apply_in_logspace=False is not currently implemented; "
+                        "continuing with log-space corridor math.",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+                    _WARNED_MORT_CORRIDOR_LOGSPACE_FALLBACK = True
             w = max(0.0, min(1.0, float(self.params.get("mort_index_weight_w", 0.40))))
             dln_raw = (w * math.log(p_series_now / p_series_prev)) + ((1.0 - w) * math.log(y_series_now / y_series_prev))
 
@@ -1305,6 +1317,36 @@ class NewLoop:
             return None
         w_weights = w0 / w0_sum
 
+        # Taxable-income and eligibility-income ranks are invariant within the
+        # fixed-point loop because both are affine transforms of baseline wages.
+        it_pct = float(self.params.get("income_tax_cutoff_pct", 100.0))
+        if it_pct < 0:
+            it_pct = 0.0
+        if it_pct > 100:
+            it_pct = 100.0
+        k_it = int(math.ceil((it_pct / 100.0) * w0.size)) - 1 if w0.size > 0 else 0
+        k_it = max(0, min(w0.size - 1, k_it)) if w0.size > 0 else 0
+
+        vc_start_pct = float(self.params.get("vat_credit_phaseout_start_pct", 25.0))
+        vc_end_pct = float(self.params.get("vat_credit_phaseout_end_pct", 45.0))
+        vc_start_pct = max(0.0, min(100.0, vc_start_pct))
+        vc_end_pct = max(vc_start_pct, min(100.0, vc_end_pct))
+        k_vc_start = int(math.ceil((vc_start_pct / 100.0) * w0.size)) - 1 if w0.size > 0 else 0
+        k_vc_start = max(0, min(w0.size - 1, k_vc_start)) if w0.size > 0 else 0
+        k_vc_end = int(math.ceil((vc_end_pct / 100.0) * w0.size)) - 1 if w0.size > 0 else 0
+        k_vc_end = max(0, min(w0.size - 1, k_vc_end)) if w0.size > 0 else 0
+
+        if w0.size > 0:
+            anchor_idx = sorted({k_it, k_vc_start, k_vc_end})
+            wage_partition = np.partition(w0.copy(), anchor_idx)
+            it_anchor_w0 = float(wage_partition[k_it])
+            vc_start_anchor_w0 = float(wage_partition[k_vc_start])
+            vc_end_anchor_w0 = float(wage_partition[k_vc_end])
+        else:
+            it_anchor_w0 = 0.0
+            vc_start_anchor_w0 = 0.0
+            vc_end_anchor_w0 = 0.0
+
         # Static household vectors
         base_real = _as_np(hh.base_real_cons_q, dtype=float)
         mpc = _as_np(hh.mpc_q, dtype=float)
@@ -1350,7 +1392,8 @@ class NewLoop:
         spend_excess_rate = max(0.0, min(1.0, spend_excess_rate))
         conserve_shortfall_rate = max(0.0, min(1.0, conserve_shortfall_rate))
 
-        for _ in range(max_iter):
+        max_delta = float("inf")
+        for iter_idx in range(1, max_iter + 1):
             # 1) Household consumption (nominal), vectorized
             # Consumption decision uses the consumer price (includes VAT wedge)
             y_real = y_guess / P_cons
@@ -1556,38 +1599,15 @@ class NewLoop:
 
             # Income tax: 15% marginal above a percentile threshold (nearest-rank)
             it_rate = self._effective_income_tax_rate()
-            it_pct = float(self.params.get("income_tax_cutoff_pct", 100.0))
-            if it_pct < 0:
-                it_pct = 0.0
-            if it_pct > 100:
-                it_pct = 100.0
-            if taxable_income.size > 0:
-                k_it = int(math.ceil((it_pct / 100.0) * taxable_income.size)) - 1
-                k_it = max(0, min(taxable_income.size - 1, k_it))
-                it_thr = float(np.partition(taxable_income, k_it)[k_it])
-            else:
-                it_thr = 0.0
+            taxable_scale = float((w_total + float(div_house_total)) / w0_sum)
+            it_thr = it_anchor_w0 * taxable_scale
             income_tax_i = it_rate * np.maximum(0.0, taxable_income - it_thr)
 
             # VAT credit ("prebate"): vat_rate * poverty-line consumption, with a linear
             # phaseout over the configured eligibility-income percentile band.
-            vc_start_pct = float(self.params.get("vat_credit_phaseout_start_pct", 25.0))
-            vc_end_pct = float(self.params.get("vat_credit_phaseout_end_pct", 45.0))
-            vc_start_pct = max(0.0, min(100.0, vc_start_pct))
-            vc_end_pct = max(vc_start_pct, min(100.0, vc_end_pct))
-
             elig_income = taxable_income + float(uis)  # user policy: eligibility uses taxable income + income support
-            if elig_income.size > 0:
-                k_vc_start = int(math.ceil((vc_start_pct / 100.0) * elig_income.size)) - 1
-                k_vc_start = max(0, min(elig_income.size - 1, k_vc_start))
-                k_vc_end = int(math.ceil((vc_end_pct / 100.0) * elig_income.size)) - 1
-                k_vc_end = max(0, min(elig_income.size - 1, k_vc_end))
-
-                vc_thr_start = float(np.partition(elig_income, k_vc_start)[k_vc_start])
-                vc_thr_end = float(np.partition(elig_income, k_vc_end)[k_vc_end])
-            else:
-                vc_thr_start = 0.0
-                vc_thr_end = 0.0
+            vc_thr_start = (vc_start_anchor_w0 * taxable_scale) + float(uis)
+            vc_thr_end = (vc_end_anchor_w0 * taxable_scale) + float(uis)
 
             if vc_thr_end <= (vc_thr_start + 1e-12):
                 vat_credit_weight_i = (elig_income <= vc_thr_start).astype(float)
@@ -1721,11 +1741,17 @@ class NewLoop:
                     "it_threshold": float(it_thr),
                     "vc_phaseout_start_threshold": float(vc_thr_start),
                     "vc_phaseout_end_threshold": float(vc_thr_end),
+                    "solver_iterations": int(iter_idx),
+                    "solver_max_delta": float(max_delta),
                 }
 
             y_guess = y_new
 
-        return None
+        raise RuntimeError(
+            "Population solver failed to converge "
+            f"at t={int(self.state.get('t', 0))} after {int(max_iter)} iterations "
+            f"(max_delta={float(max_delta):.3e}, tol={float(tol):.3e})."
+        )
 
 
     def post_tick_population(self, sol: Dict[str, Any]) -> None:
@@ -2090,18 +2116,13 @@ class NewLoop:
             if pay_gov > 0:
                 self.nodes["GOV"].add("deposits", -pay_gov)
                 vat_credit_paid_from_gov += pay_gov
-                # Distribute in proportion to the computed credits
-                denom_credit = float(np.sum(vat_credit_i))
-                if denom_credit > 0:
-                    deposits[:] = deposits + (vat_credit_i * (pay_gov / denom_credit))
+                self._distribute_household_transfer_by_weights(deposits, vat_credit_i, pay_gov)
                 vat_credit_total -= pay_gov
 
             if vat_credit_total > 0:
                 # Issuance to complete the credit
                 vat_credit_issued += vat_credit_total
-                denom_credit = float(np.sum(vat_credit_i))
-                if denom_credit > 0:
-                    deposits[:] = deposits + (vat_credit_i * (vat_credit_total / denom_credit))
+                self._distribute_household_transfer_by_weights(deposits, vat_credit_i, vat_credit_total)
                 self.nodes["BANK"].add("deposit_liab", vat_credit_total)
                 self.nodes["BANK"].add("reserves", vat_credit_total)
                 self.nodes["GOV"].add("money_issued", vat_credit_total)
@@ -2112,7 +2133,7 @@ class NewLoop:
         self.state["vat_credit_total"] = float(max(0.0, vat_credit_total_initial))
 
         # -------------------------------------------------
-        # 5) Trust amortization (before income support)
+        # 5a) Trust amortization (before income support)
         # -------------------------------------------------
         fund_loan = float(self.nodes["FUND"].get("loans", 0.0))
         if fund_loan > 0:
@@ -2200,13 +2221,17 @@ class NewLoop:
         buffer_target = self._gov_rebate_buffer_amount()
         self.state["gov_rebate_buffer_target"] = float(buffer_target if buffer_target is not None else 0.0)
         self.gov_obligation_history.append(float(max(0.0, current_gov_obligation)))
+        buffer_quarters = max(0, int(self.params.get("gov_rebate_buffer_quarters", 4)))
+        keep = max(1, buffer_quarters + 1)
+        if len(self.gov_obligation_history) > keep:
+            self.gov_obligation_history = self.gov_obligation_history[-keep:]
 
         # -------------------------------------------------
         # 6b) Household principal repayment (revolving first, then mortgage)
         # -------------------------------------------------
         rev_pay_rate = float(self.params.get("revolving_principal_pay_rate_q", 0.0))
         mort_pay_rate = float(self.params.get("mortgage_principal_pay_rate_q", 0.0))
-        rL = float(self.params.get("loan_rate_q", 0.0))
+        rL = float(self.state.get("policy_rate_q", self.params.get("loan_rate_per_quarter", 0.0)))
         rev_rollover_share = float(self.params.get("revolving_rollover_share", 0.0))
         mort_turnover_enabled = bool(self.params.get("mortgage_turnover_enabled", False))
         mort_turnover_replace_share = float(self.params.get("mortgage_turnover_replace_share", 0.0))
@@ -2522,252 +2547,287 @@ class NewLoop:
                 )
 
             solp = self.solve_within_tick_population()
-            if solp is not None:
-                self.post_tick_population(solp)
+            if solp is None:
+                raise RuntimeError("Population dynamics are enabled but solve_within_tick_population() returned None.")
+            self.post_tick_population(solp)
 
-                # Let the active income-support policy initialize any one-time baseline anchor.
-                if not self._income_support_disabled():
-                    self.income_support_policy.initialize_anchor_if_needed(
-                        state=self.state,
-                        wages_total=float(solp["w_total"]),
-                        support_per_h=float(solp["uis"]),
-                        n_households=int(self.hh.n),
-                        price_level=float(self.state.get("price_level", 1.0)),
-                        wages_i=solp.get("wages_i"),
-                        div_i=solp.get("div_i"),
-                    )
-
-                # Population inequality diagnostics (vectorized)
-                y_vec = _as_np(solp.get("y", []), dtype=float)             # disposable income
-                wages_i = _as_np(solp.get("wages_i", []), dtype=float)     # market component
-                div_i = _as_np(solp.get("div_i", []), dtype=float)         # market component
-
-                market_inc = wages_i + div_i if (wages_i.size and div_i.size and wages_i.size == div_i.size) else np.asarray([], dtype=float)
-
-                gini_market = calculate_gini_np(market_inc) if market_inc.size else 0.0
-                gini_disp = calculate_gini_np(y_vec) if y_vec.size else 0.0
-
-                # Net-wealth Gini proxy:
-                #   wealth_i = deposits_i + allocated_hh_equity_i - loans_i
-                # Household equity claims are allocated by baseline wage weights because ownership is tracked at HH aggregate.
-                dep_i = _as_np(self.hh.deposits, dtype=float)
-                loan_i = _as_np(self.hh.mortgage_loans, dtype=float) + _as_np(self.hh.revolving_loans, dtype=float)
-
-                private_equity_total = 0.0
-                if dep_i.size and (dep_i.size == loan_i.size):
-                    w0_wealth = _as_np(self.hh.wages0_q, dtype=float)
-                    w0_wealth_sum = float(w0_wealth.sum()) if w0_wealth.size == dep_i.size else 0.0
-                    if w0_wealth_sum > 0.0:
-                        wealth_weights = w0_wealth / w0_wealth_sum
-                    else:
-                        wealth_weights = np.full(dep_i.size, 1.0 / float(dep_i.size), dtype=float)
-
-                    P_wealth = float(self.state.get("price_level", 1.0))
-                    if P_wealth <= 0:
-                        P_wealth = 1e-9
-
-                    def hh_share_frac(issuer: str, key: str) -> float:
-                        so = float(self.nodes[issuer].get("shares_outstanding", 0.0))
-                        if so <= 0.0:
-                            return 0.0
-                        frac_hh = float(self.nodes["HH"].get(key, 0.0)) / so
-                        return max(0.0, min(1.0, frac_hh))
-
-                    fa_equity_proxy = max(0.0, float(self.nodes["FA"].get("deposits", 0.0)) + float(self.nodes["FA"].get("K", 0.0)) * P_wealth - float(self.nodes["FA"].get("loans", 0.0)))
-                    fh_equity_proxy = max(0.0, float(self.nodes["FH"].get("deposits", 0.0)) + float(self.nodes["FH"].get("K", 0.0)) * P_wealth - float(self.nodes["FH"].get("loans", 0.0)))
-                    bank_equity_proxy = max(0.0, float(self.nodes["BANK"].get("equity", 0.0)))
-
-                    hh_equity_total = (
-                        hh_share_frac("FA", "shares_FA") * fa_equity_proxy
-                        + hh_share_frac("FH", "shares_FH") * fh_equity_proxy
-                        + hh_share_frac("BANK", "shares_BANK") * bank_equity_proxy
-                    )
-                    private_equity_total = float(max(0.0, hh_equity_total))
-                    equity_i = wealth_weights * hh_equity_total
-                    wealth_i = dep_i + equity_i - loan_i
-                    gini_wealth = calculate_gini_np(wealth_i)
-                else:
-                    gini_wealth = 0.0
-
-                # Private-capital diagnostics (all nominal, population totals unless noted).
-                priv_payout_total = float(max(0.0, float(solp.get("div_house_total", 0.0))))
-                prev_priv_eq_total = float(self.state.get("private_equity_prev_total", 0.0))
-                private_roe_q = (priv_payout_total / prev_priv_eq_total) if prev_priv_eq_total > 1e-9 else 0.0
-
-                retained_fa = float(solp.get("retained_fa", 0.0))
-                retained_fh = float(solp.get("retained_fh", 0.0))
-                retained_bk = float(solp.get("retained_bk", 0.0))
-                f_fa = float(solp.get("f_fa", 0.0))
-                f_fh = float(solp.get("f_fh", 0.0))
-                f_bk = float(solp.get("f_bk", 0.0))
-                private_retained_total = (
-                    retained_fa * (1.0 - f_fa)
-                    + retained_fh * (1.0 - f_fh)
-                    + retained_bk * (1.0 - f_bk)
-                )
-                private_broad_roe_q = (
-                    (priv_payout_total + private_retained_total) / prev_priv_eq_total
-                    if prev_priv_eq_total > 1e-9 else 0.0
-                )
-
-                capex_total_nom = float(solp.get("capex_total_nom", 0.0))
-                private_inv_cov = (private_retained_total / capex_total_nom) if capex_total_nom > 1e-9 else 0.0
-                self.state["private_equity_prev_total"] = float(max(0.0, private_equity_total))
-
-                def frac(issuer: str, key: str) -> float:
-                    so = self.nodes[issuer].get("shares_outstanding", 1.0)
-                    return self.nodes["FUND"].get(key, 0.0) / so if so > 0 else 0.0
-
-                own_avg = (frac("FA", "shares_FA") + frac("FH", "shares_FH") + frac("BANK", "shares_BANK")) / 3.0
-
-                # Population DTI percentiles directly from solver components (vectorized)
-                interest_hh = _as_np(solp.get("interest_hh", []), dtype=float)
-                uis = float(solp.get("uis", 0.0))
-
-                if interest_hh.size and wages_i.size and interest_hh.size == wages_i.size:
-                    gross = wages_i + uis
-
-                    # Income percentiles: everyone with gross income
-                    incs = (gross - interest_hh)[gross > 0]
-
-                    # IMPORTANT: apply the mask *before* dividing to avoid divide-by-zero / invalid warnings.
-                    dti_mask = (interest_hh > 0) & (gross > 0)
-                    dtis = (interest_hh[dti_mask] / gross[dti_mask]) if np.any(dti_mask) else np.asarray([], dtype=float)
-
-                    wage_dti_mask = (interest_hh > 0) & (wages_i > 0)
-                    dtis_w = (interest_hh[wage_dti_mask] / wages_i[wage_dti_mask]) if np.any(wage_dti_mask) else np.asarray([], dtype=float)
-
-                    pop_dti_med = _pct_np(dtis, 50.0) if dtis.size else 0.0
-                    pop_dti_p90 = _pct_np(dtis, 90.0) if dtis.size else 0.0
-                    pop_dti_w_med = _pct_np(dtis_w, 50.0) if dtis_w.size else 0.0
-                    pop_dti_w_p90 = _pct_np(dtis_w, 90.0) if dtis_w.size else 0.0
-                    pop_inc_med = _pct_np(incs, 50.0) if incs.size else 0.0
-                    pop_inc_p90 = _pct_np(incs, 90.0) if incs.size else 0.0
-                else:
-                    pop_dti_med = 0.0
-                    pop_dti_p90 = 0.0
-                    pop_dti_w_med = 0.0
-                    pop_dti_w_p90 = 0.0
-                    pop_inc_med = 0.0
-                    pop_inc_p90 = 0.0
-
-                P_now = float(self.state.get("price_level", 1.0))
-                if P_now <= 0:
-                    P_now = 1e-9
-
-                # Trust value proxy (nominal): FUND deposits + FUND equity claims - FUND debt.
-                fa_equity_proxy_hist = max(
-                    0.0,
-                    float(self.nodes["FA"].get("deposits", 0.0))
-                    + float(self.nodes["FA"].get("K", 0.0)) * P_now
-                    - float(self.nodes["FA"].get("loans", 0.0)),
-                )
-                fh_equity_proxy_hist = max(
-                    0.0,
-                    float(self.nodes["FH"].get("deposits", 0.0))
-                    + float(self.nodes["FH"].get("K", 0.0)) * P_now
-                    - float(self.nodes["FH"].get("loans", 0.0)),
-                )
-                bank_equity_proxy_hist = max(0.0, float(self.nodes["BANK"].get("equity", 0.0)))
-                trust_equity_value_total = (
-                    frac("FA", "shares_FA") * fa_equity_proxy_hist
-                    + frac("FH", "shares_FH") * fh_equity_proxy_hist
-                    + frac("BANK", "shares_BANK") * bank_equity_proxy_hist
-                )
-                trust_value_total = (
-                    float(self.nodes["FUND"].get("deposits", 0.0))
-                    + float(trust_equity_value_total)
-                    - float(self.nodes["FUND"].get("loans", 0.0))
-                )
-
-                wages_total = float(solp["w_total"])
-                c_total = float(solp["c_total"])
-
-                real_avg_income = float(np.mean(y_vec) / P_now) if y_vec.size else float(((wages_total / float(self.hh.n)) + float(uis)) / P_now)
-
-                self.history.append(TickResult(
-                    t=self.state["t"],
-                    automation=float(self.state["automation"]),
-                    automation_flow=float(self.state.get("automation_flow", 0.0)),
-                    automation_info=float(self.state.get("automation_info", 0.0)),
-                    automation_info_flow=float(self.state.get("automation_info_flow", 0.0)),
-                    automation_phys=float(self.state.get("automation_phys", 0.0)),
-                    automation_phys_flow=float(self.state.get("automation_phys_flow", 0.0)),
+            # Let the active income-support policy initialize any one-time baseline anchor.
+            if not self._income_support_disabled():
+                self.income_support_policy.initialize_anchor_if_needed(
+                    state=self.state,
+                    wages_total=float(solp["w_total"]),
+                    support_per_h=float(solp["uis"]),
+                    n_households=int(self.hh.n),
                     price_level=float(self.state.get("price_level", 1.0)),
-                    inflation=float(self.state.get("inflation", 0.0)),
-                    gini=float(gini_disp),
-                    gini_market=float(gini_market),
-                    gini_disp=float(gini_disp),
-                    gini_wealth=float(gini_wealth),
-                    private_eq_per_h=float(private_equity_total) / float(self.hh.n),
-                    corporate_eq_info_per_h=float(fa_equity_proxy_hist) / float(self.hh.n),
-                    corporate_eq_physical_per_h=float(fh_equity_proxy_hist) / float(self.hh.n),
-                    corporate_eq_total_per_h=float(fa_equity_proxy_hist + fh_equity_proxy_hist) / float(self.hh.n),
-                    private_roe_q=float(private_roe_q),
-                    private_broad_roe_q=float(private_broad_roe_q),
-                    private_inv_cov=float(private_inv_cov),
-                    # --- Fiscal / funding diagnostics (per household) ---
-                    vat_per_h=float(self.state.get("vat_receipts_total", 0.0)) / float(self.hh.n),
-                    inc_tax_per_h=float(self.state.get("income_tax_total", 0.0)) / float(self.hh.n),
-                    corp_tax_per_h=float(self.state.get("corp_tax_total", 0.0)) / float(self.hh.n),
-                    corp_tax_rate_eff=float(self.state.get("corp_tax_rate_eff", self.params.get("corporate_tax_rate", 0.0))),
-                    vat_credit_per_h=float(self.state.get("vat_credit_total", 0.0)) / float(self.hh.n),
-                    gov_dep_per_h=float(self.nodes["GOV"].get("deposits", 0.0)) / float(self.hh.n),
-                    fund_dep_per_h=float(self.nodes["FUND"].get("deposits", 0.0)) / float(self.hh.n),
-                    capex_per_h=float(self.state.get("capex_total", 0.0)) / float(self.hh.n),
-                    sector_capacity_info_per_h=float(solp.get("capacity_fa_real", 0.0)) / float(self.hh.n),
-                    sector_capacity_physical_per_h=float(solp.get("capacity_fh_real", 0.0)) / float(self.hh.n),
-                    sector_util_info=(
-                        float(solp.get("hh_sales_fa_real", 0.0))
-                        / max(1e-9, float(solp.get("capacity_fa_real", 0.0)))
-                    ),
-                    sector_util_physical=(
-                        float(solp.get("hh_sales_fh_real", 0.0))
-                        / max(1e-9, float(solp.get("capacity_fh_real", 0.0)))
-                    ),
-                    sector_demand_info_per_h=float(solp.get("hh_demand_fa_real", 0.0)) / float(self.hh.n),
-                    sector_demand_physical_per_h=float(solp.get("hh_demand_fh_real", 0.0)) / float(self.hh.n),
-                    unmet_demand_info_per_h=max(
-                        0.0,
-                        float(solp.get("hh_demand_fa_real", 0.0)) - float(solp.get("hh_sales_fa_real", 0.0)),
-                    ) / float(self.hh.n),
-                    unmet_demand_physical_per_h=max(
-                        0.0,
-                        float(solp.get("hh_demand_fh_real", 0.0)) - float(solp.get("hh_sales_fh_real", 0.0)),
-                    ) / float(self.hh.n),
-                    uis_per_h=float(uis),
-                    uis_from_fund_dep_per_h=float(self.state.get("uis_from_fund_dep_total", 0.0)) / float(self.hh.n),
-                    uis_from_gov_dep_per_h=float(self.state.get("uis_from_gov_dep_total", 0.0)) / float(self.hh.n),
-                    uis_issued_per_h=float(self.state.get("uis_issued_total", 0.0)) / float(self.hh.n),
-                    trust_equity_pct=float(own_avg),
-                    trust_debt=float(self.nodes["FUND"].get("loans", 0.0)),
-                    trust_value_per_h=float(trust_value_total) / float(self.hh.n),
-                    wages_total=wages_total,
-                    total_consumption=c_total,
+                    wages_i=solp.get("wages_i"),
+                    div_i=solp.get("div_i"),
+                )
 
-                    real_avg_income=real_avg_income,
-                    real_consumption=float(c_total / P_now),
+            # Population inequality diagnostics (vectorized)
+            y_vec = _as_np(solp.get("y", []), dtype=float)             # disposable income
+            wages_i = _as_np(solp.get("wages_i", []), dtype=float)     # market component
+            div_i = _as_np(solp.get("div_i", []), dtype=float)         # market component
 
-                    pop_gini=float(gini_disp),
-                    pop_inc_med=pop_inc_med,
-                    pop_inc_p90=pop_inc_p90,
-                    pop_dti_med=pop_dti_med,
-                    pop_dti_p90=pop_dti_p90,
-                    pop_dti_w_med=pop_dti_w_med,
-                    pop_dti_w_p90=pop_dti_w_p90,
+            market_inc = wages_i + div_i if (wages_i.size and div_i.size and wages_i.size == div_i.size) else np.asarray([], dtype=float)
 
-                    trust_active=bool(self.state["trust_active"]),
-                ))
+            gini_market = calculate_gini_np(market_inc) if market_inc.size else 0.0
+            gini_disp = calculate_gini_np(y_vec) if y_vec.size else 0.0
 
-                self._record_balance_sheets(self.state["t"])
-                # Advance simulation time (quarter counter)
-                self.state["t"] = int(self.state["t"]) + 1
+            # Net-wealth Gini proxy:
+            #   wealth_i = deposits_i + allocated_hh_equity_i - loans_i
+            # Household equity claims are allocated by baseline wage weights because ownership is tracked at HH aggregate.
+            dep_i = _as_np(self.hh.deposits, dtype=float)
+            loan_i = _as_np(self.hh.mortgage_loans, dtype=float) + _as_np(self.hh.revolving_loans, dtype=float)
+
+            private_equity_total = 0.0
+            if dep_i.size and (dep_i.size == loan_i.size):
+                w0_wealth = _as_np(self.hh.wages0_q, dtype=float)
+                w0_wealth_sum = float(w0_wealth.sum()) if w0_wealth.size == dep_i.size else 0.0
+                if w0_wealth_sum > 0.0:
+                    wealth_weights = w0_wealth / w0_wealth_sum
+                else:
+                    wealth_weights = np.full(dep_i.size, 1.0 / float(dep_i.size), dtype=float)
+
+                P_wealth = float(self.state.get("price_level", 1.0))
+                if P_wealth <= 0:
+                    P_wealth = 1e-9
+
+                def hh_share_frac(issuer: str, key: str) -> float:
+                    so = float(self.nodes[issuer].get("shares_outstanding", 0.0))
+                    if so <= 0.0:
+                        return 0.0
+                    frac_hh = float(self.nodes["HH"].get(key, 0.0)) / so
+                    return max(0.0, min(1.0, frac_hh))
+
+                fa_equity_proxy = max(0.0, float(self.nodes["FA"].get("deposits", 0.0)) + float(self.nodes["FA"].get("K", 0.0)) * P_wealth - float(self.nodes["FA"].get("loans", 0.0)))
+                fh_equity_proxy = max(0.0, float(self.nodes["FH"].get("deposits", 0.0)) + float(self.nodes["FH"].get("K", 0.0)) * P_wealth - float(self.nodes["FH"].get("loans", 0.0)))
+                bank_equity_proxy = max(0.0, float(self.nodes["BANK"].get("equity", 0.0)))
+
+                hh_equity_total = (
+                    hh_share_frac("FA", "shares_FA") * fa_equity_proxy
+                    + hh_share_frac("FH", "shares_FH") * fh_equity_proxy
+                    + hh_share_frac("BANK", "shares_BANK") * bank_equity_proxy
+                )
+                private_equity_total = float(max(0.0, hh_equity_total))
+                equity_i = wealth_weights * hh_equity_total
+                wealth_i = dep_i + equity_i - loan_i
+                gini_wealth = calculate_gini_np(wealth_i)
+            else:
+                gini_wealth = 0.0
+
+            # Private-capital diagnostics (all nominal, population totals unless noted).
+            priv_payout_total = float(max(0.0, float(solp.get("div_house_total", 0.0))))
+            prev_priv_eq_total = float(self.state.get("private_equity_prev_total", 0.0))
+            private_roe_q = (priv_payout_total / prev_priv_eq_total) if prev_priv_eq_total > 1e-9 else 0.0
+
+            retained_fa = float(solp.get("retained_fa", 0.0))
+            retained_fh = float(solp.get("retained_fh", 0.0))
+            retained_bk = float(solp.get("retained_bk", 0.0))
+            f_fa = float(solp.get("f_fa", 0.0))
+            f_fh = float(solp.get("f_fh", 0.0))
+            f_bk = float(solp.get("f_bk", 0.0))
+            private_retained_total = (
+                retained_fa * (1.0 - f_fa)
+                + retained_fh * (1.0 - f_fh)
+                + retained_bk * (1.0 - f_bk)
+            )
+            private_broad_roe_q = (
+                (priv_payout_total + private_retained_total) / prev_priv_eq_total
+                if prev_priv_eq_total > 1e-9 else 0.0
+            )
+
+            capex_total_nom = float(solp.get("capex_total_nom", 0.0))
+            private_inv_cov = (private_retained_total / capex_total_nom) if capex_total_nom > 1e-9 else 0.0
+            self.state["private_equity_prev_total"] = float(max(0.0, private_equity_total))
+
+            def frac(issuer: str, key: str) -> float:
+                so = self.nodes[issuer].get("shares_outstanding", 1.0)
+                return self.nodes["FUND"].get(key, 0.0) / so if so > 0 else 0.0
+
+            own_avg = (frac("FA", "shares_FA") + frac("FH", "shares_FH") + frac("BANK", "shares_BANK")) / 3.0
+
+            # Population DTI percentiles directly from solver components (vectorized)
+            interest_hh = _as_np(solp.get("interest_hh", []), dtype=float)
+            uis = float(solp.get("uis", 0.0))
+
+            if interest_hh.size and wages_i.size and interest_hh.size == wages_i.size:
+                gross = wages_i + uis
+
+                # Income percentiles: everyone with gross income
+                incs = (gross - interest_hh)[gross > 0]
+
+                # IMPORTANT: apply the mask *before* dividing to avoid divide-by-zero / invalid warnings.
+                dti_mask = (interest_hh > 0) & (gross > 0)
+                dtis = (interest_hh[dti_mask] / gross[dti_mask]) if np.any(dti_mask) else np.asarray([], dtype=float)
+
+                wage_dti_mask = (interest_hh > 0) & (wages_i > 0)
+                dtis_w = (interest_hh[wage_dti_mask] / wages_i[wage_dti_mask]) if np.any(wage_dti_mask) else np.asarray([], dtype=float)
+
+                pop_dti_med = _pct_np(dtis, 50.0) if dtis.size else 0.0
+                pop_dti_p90 = _pct_np(dtis, 90.0) if dtis.size else 0.0
+                pop_dti_w_med = _pct_np(dtis_w, 50.0) if dtis_w.size else 0.0
+                pop_dti_w_p90 = _pct_np(dtis_w, 90.0) if dtis_w.size else 0.0
+                pop_inc_med = _pct_np(incs, 50.0) if incs.size else 0.0
+                pop_inc_p90 = _pct_np(incs, 90.0) if incs.size else 0.0
+            else:
+                pop_dti_med = 0.0
+                pop_dti_p90 = 0.0
+                pop_dti_w_med = 0.0
+                pop_dti_w_p90 = 0.0
+                pop_inc_med = 0.0
+                pop_inc_p90 = 0.0
+
+            P_now = float(self.state.get("price_level", 1.0))
+            if P_now <= 0:
+                P_now = 1e-9
+
+            # Trust value proxy (nominal): FUND deposits + FUND equity claims - FUND debt.
+            fa_equity_proxy_hist = max(
+                0.0,
+                float(self.nodes["FA"].get("deposits", 0.0))
+                + float(self.nodes["FA"].get("K", 0.0)) * P_now
+                - float(self.nodes["FA"].get("loans", 0.0)),
+            )
+            fh_equity_proxy_hist = max(
+                0.0,
+                float(self.nodes["FH"].get("deposits", 0.0))
+                + float(self.nodes["FH"].get("K", 0.0)) * P_now
+                - float(self.nodes["FH"].get("loans", 0.0)),
+            )
+            bank_equity_proxy_hist = max(0.0, float(self.nodes["BANK"].get("equity", 0.0)))
+            trust_equity_value_total = (
+                frac("FA", "shares_FA") * fa_equity_proxy_hist
+                + frac("FH", "shares_FH") * fh_equity_proxy_hist
+                + frac("BANK", "shares_BANK") * bank_equity_proxy_hist
+            )
+            trust_value_total = (
+                float(self.nodes["FUND"].get("deposits", 0.0))
+                + float(trust_equity_value_total)
+                - float(self.nodes["FUND"].get("loans", 0.0))
+            )
+
+            wages_total = float(solp["w_total"])
+            c_total = float(solp["c_total"])
+
+            real_avg_income = float(np.mean(y_vec) / P_now) if y_vec.size else float(((wages_total / float(self.hh.n)) + float(uis)) / P_now)
+
+            self.history.append(TickResult(
+                t=self.state["t"],
+                automation=float(self.state["automation"]),
+                automation_flow=float(self.state.get("automation_flow", 0.0)),
+                automation_info=float(self.state.get("automation_info", 0.0)),
+                automation_info_flow=float(self.state.get("automation_info_flow", 0.0)),
+                automation_phys=float(self.state.get("automation_phys", 0.0)),
+                automation_phys_flow=float(self.state.get("automation_phys_flow", 0.0)),
+                price_level=float(self.state.get("price_level", 1.0)),
+                inflation=float(self.state.get("inflation", 0.0)),
+                gini=float(gini_disp),
+                gini_market=float(gini_market),
+                gini_disp=float(gini_disp),
+                gini_wealth=float(gini_wealth),
+                private_eq_per_h=float(private_equity_total) / float(self.hh.n),
+                corporate_eq_info_per_h=float(fa_equity_proxy_hist) / float(self.hh.n),
+                corporate_eq_physical_per_h=float(fh_equity_proxy_hist) / float(self.hh.n),
+                corporate_eq_total_per_h=float(fa_equity_proxy_hist + fh_equity_proxy_hist) / float(self.hh.n),
+                private_roe_q=float(private_roe_q),
+                private_broad_roe_q=float(private_broad_roe_q),
+                private_inv_cov=float(private_inv_cov),
+                # --- Fiscal / funding diagnostics (per household) ---
+                vat_per_h=float(self.state.get("vat_receipts_total", 0.0)) / float(self.hh.n),
+                inc_tax_per_h=float(self.state.get("income_tax_total", 0.0)) / float(self.hh.n),
+                corp_tax_per_h=float(self.state.get("corp_tax_total", 0.0)) / float(self.hh.n),
+                corp_tax_rate_eff=float(self.state.get("corp_tax_rate_eff", self.params.get("corporate_tax_rate", 0.0))),
+                vat_credit_per_h=float(self.state.get("vat_credit_total", 0.0)) / float(self.hh.n),
+                gov_dep_per_h=float(self.nodes["GOV"].get("deposits", 0.0)) / float(self.hh.n),
+                fund_dep_per_h=float(self.nodes["FUND"].get("deposits", 0.0)) / float(self.hh.n),
+                capex_per_h=float(self.state.get("capex_total", 0.0)) / float(self.hh.n),
+                sector_capacity_info_per_h=float(solp.get("capacity_fa_real", 0.0)) / float(self.hh.n),
+                sector_capacity_physical_per_h=float(solp.get("capacity_fh_real", 0.0)) / float(self.hh.n),
+                sector_util_info=(
+                    float(solp.get("hh_sales_fa_real", 0.0))
+                    / max(1e-9, float(solp.get("capacity_fa_real", 0.0)))
+                ),
+                sector_util_physical=(
+                    float(solp.get("hh_sales_fh_real", 0.0))
+                    / max(1e-9, float(solp.get("capacity_fh_real", 0.0)))
+                ),
+                sector_demand_info_per_h=float(solp.get("hh_demand_fa_real", 0.0)) / float(self.hh.n),
+                sector_demand_physical_per_h=float(solp.get("hh_demand_fh_real", 0.0)) / float(self.hh.n),
+                unmet_demand_info_per_h=max(
+                    0.0,
+                    float(solp.get("hh_demand_fa_real", 0.0)) - float(solp.get("hh_sales_fa_real", 0.0)),
+                ) / float(self.hh.n),
+                unmet_demand_physical_per_h=max(
+                    0.0,
+                    float(solp.get("hh_demand_fh_real", 0.0)) - float(solp.get("hh_sales_fh_real", 0.0)),
+                ) / float(self.hh.n),
+                uis_per_h=float(uis),
+                uis_from_fund_dep_per_h=float(self.state.get("uis_from_fund_dep_total", 0.0)) / float(self.hh.n),
+                uis_from_gov_dep_per_h=float(self.state.get("uis_from_gov_dep_total", 0.0)) / float(self.hh.n),
+                uis_issued_per_h=float(self.state.get("uis_issued_total", 0.0)) / float(self.hh.n),
+                trust_equity_pct=float(own_avg),
+                trust_debt=float(self.nodes["FUND"].get("loans", 0.0)),
+                trust_value_per_h=float(trust_value_total) / float(self.hh.n),
+                wages_total=wages_total,
+                total_consumption=c_total,
+
+                real_avg_income=real_avg_income,
+                real_consumption=float(c_total / P_now),
+
+                pop_gini=float(gini_disp),
+                pop_inc_med=pop_inc_med,
+                pop_inc_p90=pop_inc_p90,
+                pop_dti_med=pop_dti_med,
+                pop_dti_p90=pop_dti_p90,
+                pop_dti_w_med=pop_dti_w_med,
+                pop_dti_w_p90=pop_dti_w_p90,
+
+                trust_active=bool(self.state["trust_active"]),
+            ))
+
+            self._record_balance_sheets(self.state["t"])
+            # Advance simulation time (quarter counter)
+            self.state["t"] = int(self.state["t"]) + 1
 
         else:
             raise ValueError(
                 "Population-dynamics execution is disabled. "
                 "Enable parameters['use_population']=True and parameters['population_dynamics']=True."
             )
+
+    def _distribute_household_transfer_by_weights(
+        self,
+        deposits: np.ndarray,
+        weights: np.ndarray,
+        total_amount: float,
+    ) -> None:
+        amount = float(total_amount)
+        if amount <= 0.0:
+            return
+        denom = float(np.sum(weights))
+        if denom <= 0.0:
+            return
+        deposits[:] = deposits + (weights * (amount / denom))
+
+    @staticmethod
+    def _validate_config(config: Dict[str, Any]) -> None:
+        if not isinstance(config, dict):
+            raise TypeError("config must be a dict")
+        params = config.get("parameters")
+        nodes = config.get("nodes")
+        if not isinstance(params, dict):
+            raise TypeError("config['parameters'] must be a dict")
+        if not isinstance(nodes, dict):
+            raise TypeError("config['nodes'] must be a dict")
+        if not bool(params.get("use_population", False)):
+            raise ValueError("This build requires parameters['use_population']=True.")
+        if not bool(params.get("population_dynamics", False)):
+            raise ValueError("This build requires parameters['population_dynamics']=True.")
+        automation_path = params.get("automation_path", "two_hump")
+        if not isinstance(automation_path, str):
+            raise TypeError("parameters['automation_path'] must be a string.")
+        if automation_path.lower() not in {"two_hump", "linear"}:
+            raise ValueError("parameters['automation_path'] must be 'two_hump' or 'linear'.")
 
     # ---------------------------------------------------------
     # Output

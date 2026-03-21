@@ -52,6 +52,49 @@ def clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
 
 
+def _rescale_probabilities_to_target(
+    probs: "NP.ndarray",
+    active_mask: "NP.ndarray",
+    target_share: float,
+) -> "NP.ndarray":
+    """Shift probabilities in logit space so the active-group mean matches target_share."""
+    np = NP
+    if np is None:
+        return probs
+    out = np.asarray(probs, dtype=float).copy()
+    if out.size == 0:
+        return out
+    mask = np.asarray(active_mask, dtype=bool)
+    if not np.any(mask):
+        return np.zeros_like(out)
+    target = clamp(float(target_share), 0.0, 1.0)
+    if target <= 0.0:
+        out[mask] = 0.0
+        return out
+    if target >= 1.0:
+        out[mask] = 1.0
+        return out
+    eps = 1e-9
+    base = np.clip(out[mask], eps, 1.0 - eps)
+    logits = np.log(base / (1.0 - base))
+
+    lo = -40.0
+    hi = 40.0
+    for _ in range(80):
+        mid = 0.5 * (lo + hi)
+        shifted = 1.0 / (1.0 + np.exp(-(logits + mid)))
+        mean_mid = float(np.mean(shifted))
+        if mean_mid < target:
+            lo = mid
+        else:
+            hi = mid
+
+    shift = 0.5 * (lo + hi)
+    out[mask] = 1.0 / (1.0 + np.exp(-(logits + shift)))
+    out[~mask] = 0.0
+    return out
+
+
 def percentile(sorted_vals: List[float], p: float) -> float:
     """Percentile with linear interpolation. sorted_vals must be sorted ascending."""
     if not sorted_vals:
@@ -450,13 +493,15 @@ def generate_population(cfg: PopulationConfig) -> Population:
 
     p = pct_rank
 
-    # Mortgage probability (piecewise), matching the original mortgage_prob()
+    # Mortgage probability schedule by deposits percentile. The config share
+    # then rescales this schedule so the active-group mean matches the target.
     mort_p = np.zeros(n, dtype=float)
     mort_p = np.where((p > 10.0) & (p <= 70.0), 0.65 * (p - 10.0) / 60.0, mort_p)
     mort_p = np.where((p > 70.0) & (p <= 95.0), 0.65 + (0.45 - 0.65) * (p - 70.0) / 25.0, mort_p)
     mort_p = np.where(p > 95.0, 0.45 + (0.25 - 0.45) * (p - 95.0) / 5.0, mort_p)
 
-    # Revolving probability (piecewise), matching the original revolving_prob()
+    # Revolving probability schedule by deposits percentile. The config share
+    # then rescales this schedule so the active-group mean matches the target.
     rev_p = np.empty(n, dtype=float)
     rev_p = np.where(p <= 20.0, 0.50, np.nan)
     rev_p = np.where((p > 20.0) & (p <= 50.0), 0.50 + (0.40 - 0.50) * (p - 20.0) / 30.0, rev_p)
@@ -465,6 +510,8 @@ def generate_population(cfg: PopulationConfig) -> Population:
     rev_p = np.where(p > 95.0, 0.15 + (0.10 - 0.15) * (p - 95.0) / 5.0, rev_p)
 
     has_wage = wages_annual > 0.0
+    mort_p = _rescale_probabilities_to_target(mort_p, has_wage, float(cfg.mortgage_share))
+    rev_p = _rescale_probabilities_to_target(rev_p, has_wage, float(cfg.revolving_share))
 
     mortgage_loans = np.zeros(n, dtype=float)
     revolving_loans = np.zeros(n, dtype=float)
@@ -609,7 +656,6 @@ def baseline_report(pop: Population, cfg: PopulationConfig) -> None:
             f"p10 {_fmt(float(s['p10']))} | "
             f"p25 {_fmt(float(s['p25']))} | "
             f"median {_fmt(float(s['p50']))} | "
-            f"p50 {_fmt(float(s['p50']))} | "
             f"p75 {_fmt(float(s['p75']))} | "
             f"p90 {_fmt(float(s['p90']))} | "
             f"p99 {_fmt(float(s['p99']))} | "
