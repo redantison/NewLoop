@@ -13,7 +13,6 @@ if str(_THIS_DIR) not in sys.path:
 from config import config, get_default_config
 from engine import NewLoop
 from results import SimulationRun, history_to_rows, run_simulation, summarize_rows
-from table_of_data import TableOfData
 from newloop_types import HouseholdState, Node, TickResult
 
 __all__ = [
@@ -29,7 +28,6 @@ __all__ = [
     "PopulationConfig",
     "generate_population",
     "baseline_report",
-    "TableOfData",
     "config",
     "get_default_config",
 ]

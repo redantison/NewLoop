@@ -19,4 +19,4 @@ streamlit run slnewloop.py
 
 - `slnewloop.py`: Streamlit entrypoint
 - `requirements.txt`: Python dependencies
-- Core model modules: `engine.py`, `results.py`, `newloop_core.py`, and related files
+- Core model modules: `engine.py`, `results.py`, and related files
