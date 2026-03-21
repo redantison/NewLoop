@@ -4,20 +4,14 @@
 from __future__ import annotations
 
 import copy
-import sys
 from dataclasses import asdict, dataclass
-from pathlib import Path
 from typing import Any, Dict, List, Sequence
 
 import numpy as np
 
-_THIS_DIR = Path(__file__).resolve().parent
-if str(_THIS_DIR) not in sys.path:
-    sys.path.insert(0, str(_THIS_DIR))
-
-from config import get_default_config
-from engine import NewLoop
-from newloop_types import TickResult
+from .config import get_default_config
+from .engine import NewLoop
+from .newloop_types import TickResult
 
 
 @dataclass
@@ -467,7 +461,7 @@ def _apply_startup_income_buffer_reset(
     hh.ensure_memos()
 
     try:
-        import population as pop_mod
+        from . import population as pop_mod
     except Exception:
         pop_mod = None
 

@@ -5,20 +5,14 @@ from __future__ import annotations
 
 import csv
 import math
-import sys
 import warnings
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-_THIS_DIR = Path(__file__).resolve().parent
-if str(_THIS_DIR) not in sys.path:
-    sys.path.insert(0, str(_THIS_DIR))
-
-from mathutils import _as_np, _pct, _pct_np, automation_two_hump, calculate_gini_np
-from income_support import apply_income_support_payment, make_income_support_policy
-from newloop_types import HouseholdState, Node, TickResult
+from .mathutils import _as_np, _pct, _pct_np, automation_two_hump, calculate_gini_np
+from .income_support import apply_income_support_payment, make_income_support_policy
+from .newloop_types import HouseholdState, Node, TickResult
 
 _WARNED_MORT_CORRIDOR_LOGSPACE_FALLBACK = False
 
@@ -119,7 +113,7 @@ class NewLoop:
         self.hh: Optional[HouseholdState] = None
 
         if bool(self.params.get("use_population", False)):
-            import population as pop_mod
+            from . import population as pop_mod
             # Allow config overrides via parameters["population_config"]
             overrides = self.params.get("population_config", {})
             if overrides is None:

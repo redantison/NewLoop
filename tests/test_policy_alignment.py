@@ -4,10 +4,10 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "newloop"))
+sys.path.insert(0, str(ROOT))
 
-from config import get_default_config
-from engine import NewLoop
+from newloop.config import get_default_config
+from newloop.engine import NewLoop
 
 
 def make_cfg():

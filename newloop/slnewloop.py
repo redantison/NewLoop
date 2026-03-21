@@ -2,7 +2,7 @@
 """Streamlit app entrypoint for NewLoop.
 
 Run with:
-  streamlit run newloop/slnewloop.py
+  streamlit run streamlit_app.py
 """
 
 from __future__ import annotations
@@ -12,15 +12,9 @@ import csv
 import io
 import json
 import re
-import sys
-from pathlib import Path
 from typing import Any, Dict, List, Sequence
 
-_THIS_DIR = Path(__file__).resolve().parent
-if str(_THIS_DIR) not in sys.path:
-    sys.path.insert(0, str(_THIS_DIR))
-
-from plotting import (
+from .plotting import (
     DEFAULT_LINE_METRICS,
     metric_options,
     plot_default_dashboard,
@@ -28,9 +22,9 @@ from plotting import (
     plot_metric_lines,
     plot_wealth_distributions_full_zoom,
 )
-from config import get_default_config
-from results import run_simulation, summarize_rows
-from streamlit_params import (
+from .config import get_default_config
+from .results import run_simulation, summarize_rows
+from .streamlit_params import (
     INCOME_SUPPORT_MODE_PATH,
     INCOME_SUPPORT_MODE_WIDGET_KEY,
     INCOME_SUPPORT_SECTION,

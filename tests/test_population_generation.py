@@ -5,9 +5,9 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "newloop"))
+sys.path.insert(0, str(ROOT))
 
-from population import PopulationConfig, generate_population
+from newloop.population import PopulationConfig, generate_population
 
 
 class PopulationGenerationTests(unittest.TestCase):
