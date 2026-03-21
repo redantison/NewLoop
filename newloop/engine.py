@@ -1311,7 +1311,7 @@ class NewLoop:
         P_cons = P * (1.0 + vat_rate)  # tax-exclusive VAT treated as higher consumer price
 
         # Baseline wage weights used to distribute wages and (temporarily) dividends.
-        w0 = _as_np(hh.wages0_q, dtype=float)
+        w0 = hh.wages0_q
         w0_sum = float(w0.sum())
         if w0_sum <= 0:
             return None
@@ -1347,20 +1347,20 @@ class NewLoop:
             vc_start_anchor_w0 = 0.0
             vc_end_anchor_w0 = 0.0
 
-        # Static household vectors
-        base_real = _as_np(hh.base_real_cons_q, dtype=float)
-        mpc = _as_np(hh.mpc_q, dtype=float)
-        mort = _as_np(hh.mortgage_loans, dtype=float)
-        rev = _as_np(hh.revolving_loans, dtype=float)
-        liquid_buffer_months_target = _as_np(hh.liquid_buffer_months_target, dtype=float)
+        # Static household vectors are already float NumPy arrays on HouseholdState.
+        base_real = hh.base_real_cons_q
+        mpc = hh.mpc_q
+        mort = hh.mortgage_loans
+        rev = hh.revolving_loans
+        liquid_buffer_months_target = hh.liquid_buffer_months_target
         if liquid_buffer_months_target.shape[0] != hh.n:
             liquid_buffer_months_target = np.zeros(hh.n, dtype=float)
 
         # Beginning-of-tick deposits (nominal). Use a copy so the solver is not affected by post-tick mutations.
-        dep0 = _as_np(hh.deposits, dtype=float).copy()
+        dep0 = hh.deposits.copy()
 
         # Initial income guess: previous-quarter income memo.
-        y_guess = _as_np(hh.prev_income, dtype=float)
+        y_guess = hh.prev_income
         if y_guess.shape[0] != hh.n:
             y_guess = w0.copy()
 
