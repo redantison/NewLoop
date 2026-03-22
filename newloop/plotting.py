@@ -601,14 +601,14 @@ def plot_income_distribution_dual(
     plot_distribution_compare(
         income_before,
         income_after,
-        title=_title_with_mode("Income Distribution (Cumulative)", support_mode),
+        title=_title_with_mode("Disposable Income Distribution (Cumulative)", support_mode),
         x_label=value_label,
         ax=axs[0],
     )
     plot_distribution_share(
         income_before,
         income_after,
-        title=_title_with_mode("Income Distribution (% per Bin)", support_mode),
+        title=_title_with_mode("Disposable Income Distribution (% per Bin)", support_mode),
         x_label=value_label,
         ax=axs[1],
     )
