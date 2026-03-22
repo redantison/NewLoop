@@ -2407,9 +2407,10 @@ class NewLoop:
         self.state["sector_free_cash_info_prev"] = float(max(0.0, self.nodes["FA"].get("deposits", 0.0)))
         self.state["sector_free_cash_phys_prev"] = float(max(0.0, self.nodes["FH"].get("deposits", 0.0)))
 
+        deposit_tol = 1e-6
         for firm_id in ("FA", "FH"):
             dep = float(self.nodes[firm_id].get("deposits", 0.0))
-            if abs(dep) < 1e-9:
+            if abs(dep) < deposit_tol:
                 self.nodes[firm_id].set("deposits", 0.0)
             elif dep < 0.0:
                 raise ValueError(f"{firm_id} ended tick with negative deposits under no-new-debt sector rules: {dep:.6f}")

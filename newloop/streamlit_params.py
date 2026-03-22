@@ -231,7 +231,6 @@ PARAMETER_CONTROLS: tuple[ParamControl, ...] = (
     ParamControl(("capital_productivity_k",), "Capital Productivity k", "Price & Capital", "float", 0.0, 2.0, 0.01),
     ParamControl(("capital_productivity_scale",), "Capital Productivity Scale", "Price & Capital", "float", 100.0, 20000.0, 100.0),
     ParamControl(("capital_depr_rate_per_quarter",), "Capital Depreciation / Quarter", "Price & Capital", "float", 0.0, 1.0, 0.005),
-    ParamControl(("population_config", "n_families"), "Population: Families", "Population", "int", 1000, 100000, 1000),
     ParamControl(("population_config", "seed"), "Population: Seed", "Population", "int", 1, 1000000, 1),
     ParamControl(
         ("population_config", "median_wage_q"),
