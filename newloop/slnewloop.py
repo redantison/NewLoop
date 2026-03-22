@@ -23,7 +23,7 @@ from .plotting import (
     plot_wealth_distributions_full_zoom,
 )
 from .config import get_default_config
-from .results import run_simulation, summarize_rows
+from .results import run_simulation
 from .streamlit_params import (
     INCOME_SUPPORT_MODE_PATH,
     INCOME_SUPPORT_MODE_WIDGET_KEY,
@@ -35,6 +35,7 @@ from .streamlit_params import (
     RUN_MIN_QUARTERS,
     RUN_STEP_QUARTERS,
     SECTION_ORDER,
+    STARTUP_SECTION,
     control_widget_key,
     controls_by_section,
     get_by_path,
@@ -97,10 +98,11 @@ COMPACT_NUMBER_COLUMNS = {
 DECIMAL_COLUMNS = {"price_level", "private_inv_cov"}
 
 DISPLAY_VALUE_MODES: tuple[str, str] = ("nominal", "real")
-CONTROL_DEFAULTS_VERSION = 8
+CONTROL_DEFAULTS_VERSION = 9
 UBI_PERCENTILE_PARAM_KEY = "param__ubi_target_percentile"
 UBI_PERCENTILE_UI_KEY = "ui__ubi_target_percentile"
 _TITLE_MODE_SUFFIX_RE = re.compile(r"\s+\((?:UIS|UBI|Stale)\)\s*$", re.IGNORECASE)
+STARTUP_ALIGNMENT_PATH: tuple[str, ...] = ("startup_buffer_alignment_enabled",)
 
 
 def _annualize_quarterly_rate(value: float) -> float:
@@ -242,7 +244,6 @@ def _render_startup_diagnostics(startup_diag: Dict[str, Any], baseline_calibrati
     if not startup_diag:
         return
 
-    st.subheader("Startup Diagnostics")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("HH Below Buffer", f"{100.0 * float(startup_diag.get('share_below_runtime_buffer', 0.0)):.1f}%")
     c2.metric("Deposit / Target", f"{float(startup_diag.get('mean_deposit_to_target_ratio', 0.0)):.2f}x")
@@ -268,6 +269,14 @@ def _render_startup_diagnostics(startup_diag: Dict[str, Any], baseline_calibrati
         "Quarter-0 diagnostics compare initialized household deposits and baseline consumption needs to the solver's "
         "debt-aware disposable-income path before the first simulated quarter updates balances."
     )
+
+
+def _render_startup_diagnostics_panel(startup_diag: Dict[str, Any], baseline_calibration: Dict[str, Any], st: Any) -> None:
+    if not startup_diag:
+        return
+
+    with st.expander("Startup Diagnostics", expanded=False):
+        _render_startup_diagnostics(startup_diag, baseline_calibration, st)
 
 
 def _available_line_metric_ids() -> List[str]:
@@ -567,8 +576,19 @@ def _render_parameter_controls(
             help="Controls how monetary values are displayed in charts/tables. Simulation mechanics are unchanged.",
         )
 
+        startup_controls = grouped_controls.get(STARTUP_SECTION, [])
+        startup_alignment_control = next(
+            (c for c in startup_controls if tuple(c.path) == STARTUP_ALIGNMENT_PATH),
+            None,
+        )
+        if startup_alignment_control is not None:
+            _render_control(startup_alignment_control)
+            st.caption("Applies before visible Q0 so the first shown quarter starts from the live buffer rule.")
+
         for section in SECTION_ORDER:
             controls = grouped_controls.get(section, [])
+            if section == STARTUP_SECTION:
+                controls = [c for c in controls if tuple(c.path) != STARTUP_ALIGNMENT_PATH]
             if not controls:
                 continue
             with st.expander(section, expanded=False):
@@ -694,9 +714,6 @@ def main() -> None:
 
     run_clicked, _reset_clicked, quarters = _render_parameter_controls(st, grouped_controls, base_params)
 
-    metric_map = metric_options()
-    selected_metrics = _render_metric_selector(st, metric_map)
-
     if "rows" not in st.session_state:
         st.session_state["rows"] = []
     if "population_distributions" not in st.session_state:
@@ -743,13 +760,6 @@ def main() -> None:
         float(current_cfg.get("parameters", {}).get("price_level_initial", 1.0)),
     )
 
-    summary = summarize_rows(rows)
-    _render_summary(summary, st)
-    _render_startup_diagnostics(
-        dict(st.session_state.get("startup_diagnostics", {})),
-        dict(st.session_state.get("baseline_calibration", {})),
-        st,
-    )
     support_debug = dict(st.session_state.get("support_debug", {}))
     support_mode_cfg = str(current_cfg.get("parameters", {}).get("income_support_mode", "UIS")).strip().upper()
     if support_mode_cfg not in {"UIS", "UBI"}:
@@ -757,53 +767,14 @@ def main() -> None:
     support_mode = str(support_debug.get("mode", support_mode_cfg)).strip().upper()
     if support_mode not in {"UIS", "UBI"}:
         support_mode = support_mode_cfg
-    support_label = "Universal Income Stabilizer (UIS)" if support_mode == "UIS" else "Universal Basic Income (UBI)"
-    support_disabled = bool(support_debug.get("disabled", False))
-    if support_disabled:
-        st.caption("Income support disabled for this run.")
-    else:
-        st.caption(f"Income support mode (last run): {support_label}.")
-        if config_stale and support_mode_cfg != support_mode:
-            pending_label = "Universal Income Stabilizer (UIS)" if support_mode_cfg == "UIS" else "Universal Basic Income (UBI)"
-            st.caption(f"Pending mode in controls: {pending_label}.")
 
-        issuance_share = float(support_debug.get("income_support_issuance_share", 0.0))
-        st.caption(
-            "Income-support funding order (all modes): "
-            f"{issuance_share:.0%} issuance share first, then FUND deposits, then GOV deposits, then residual issuance."
-        )
-
-        if support_mode == "UBI":
-            anchor_real = support_debug.get("ubi_anchor_real_per_h", None)
-            anchor_nom = support_debug.get("ubi_anchor_nominal_per_h_base", None)
-            anchor_pct = support_debug.get("ubi_anchor_percentile", None)
-            anchor_basis = support_debug.get("ubi_anchor_basis", None)
-            index_series = support_debug.get("ubi_index_series", None)
-            if anchor_real is not None:
-                pct_txt = f"{float(anchor_pct):.1f}" if anchor_pct is not None else "?"
-                basis_txt = str(anchor_basis) if anchor_basis is not None else "?"
-                idx_txt = str(index_series) if index_series is not None else "?"
-                nom_txt = f"{float(anchor_nom):.3g}" if anchor_nom is not None else "?"
-                st.caption(
-                    "UBI anchor: "
-                    f"P{pct_txt} of {basis_txt} at baseline; "
-                    f"base nominal/HH={nom_txt}; "
-                    f"real anchor/HH={float(anchor_real):.3g}; "
-                    f"index={idx_txt}."
-                )
-                if float(anchor_real) <= 0.0:
-                    st.warning(
-                        "UBI anchor resolved to zero at baseline. This usually means "
-                        "`UBI Target Percentile` is at or near 0 in a population with zero market-income households."
-                    )
-        else:
-            target_pool = support_debug.get("income_target_pool_real_pop", None)
-            if target_pool is not None:
-                st.caption(f"UIS real target pool (population): {float(target_pool):.6g}.")
-    st.caption(
-        "Displayed monetary values are "
-        + ("price-normalized (real, base-period dollars)." if display_value_mode == "real" else "nominal.")
+    _render_startup_diagnostics_panel(
+        dict(st.session_state.get("startup_diagnostics", {})),
+        dict(st.session_state.get("baseline_calibration", {})),
+        st,
     )
+    metric_map = metric_options()
+    selected_metrics = _render_metric_selector(st, metric_map)
 
     if not rows:
         return
