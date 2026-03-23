@@ -106,12 +106,14 @@ class MortgageScheduleTests(unittest.TestCase):
         self.assertIsNotNone(hh)
         assert hh is not None
 
+        had_no_mortgage = np.asarray(hh.mortgage_loans, dtype=float) <= 1e-12
         sim.step()
         sim.step()
 
         new_mask = (np.asarray(hh.mortgage_loans, dtype=float) > 1e-12) & (np.asarray(hh.mort_t0, dtype=int) < 0)
         self.assertGreater(float(sim.state.get("mort_turnover_total", 0.0)), 0.0)
         self.assertTrue(bool(np.any(new_mask)))
+        self.assertTrue(bool(np.any(new_mask & had_no_mortgage)))
         self.assertTrue(np.all(np.asarray(hh.mort_age_q, dtype=float)[new_mask] == 0.0))
         self.assertTrue(np.all(np.asarray(hh.mort_term_q, dtype=float)[new_mask] == 60.0))
         self.assertTrue(

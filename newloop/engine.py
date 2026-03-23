@@ -2742,6 +2742,7 @@ class NewLoop:
             annual_wage_i = 4.0 * np.maximum(0.0, wages_i)
             mort_cap_i = mort_turnover_income_mult_cap * annual_wage_i
             headroom_income_i = np.maximum(0.0, mort_cap_i - mort)
+            active_mort_i = mort > 1e-9
 
             current_mort_payment_i = np.maximum(0.0, hh.mort_payment_sched_q)
             current_rev_interest_i = np.maximum(0.0, rev * rL)
@@ -2753,19 +2754,58 @@ class NewLoop:
             )
             headroom_dti_i = dti_room_nom / np.maximum(1e-9, new_unit_payment_q)
             headroom_i = np.minimum(headroom_income_i, headroom_dti_i)
+            pop_cfg = self.params.get("population_config", {}) if isinstance(self.params.get("population_config", {}), dict) else {}
+            if "mortgage_turnover_target_share" not in self.state:
+                self.state["mortgage_turnover_target_share"] = float(np.mean(active_mort_i)) if active_mort_i.size else 0.0
+            target_share = float(pop_cfg.get("mortgage_share", self.state.get("mortgage_turnover_target_share", 0.0)))
+            target_share = max(0.0, min(1.0, target_share))
+            desired_mult = float(pop_cfg.get("mortgage_income_mult_median", mort_turnover_income_mult_cap))
+            desired_mult = max(0.0, desired_mult)
+            desired_principal_i = np.minimum(headroom_i, desired_mult * annual_wage_i)
+            min_desired_principal_i = 0.25 * np.maximum(0.0, annual_wage_i)
 
-            eligible = (wages_i >= mort_turnover_min_wage_q) & (headroom_i > 1e-9)
-            if np.any(eligible):
+            allocation = np.zeros_like(mort, dtype=float)
+            remaining = float(mort_gap_total)
+            target_active_count = int(round(target_share * float(n)))
+            current_active_count = int(np.sum(active_mort_i))
+            needed_new_count = max(0, target_active_count - current_active_count)
+
+            new_eligible = (
+                (~active_mort_i)
+                & (wages_i >= mort_turnover_min_wage_q)
+                & (desired_principal_i > 1e-9)
+            )
+            if needed_new_count > 0 and np.any(new_eligible):
+                candidate_idx = np.where(new_eligible)[0]
+                # Favor lower-income households that can support a mortgage, so
+                # stronger income support broadens access rather than concentrating
+                # credit only in the upper tail.
+                ranked_new_idx = candidate_idx[np.argsort(annual_wage_i[candidate_idx], kind="stable")]
+                new_count = 0
+                for idx in ranked_new_idx.tolist():
+                    if remaining <= 1e-9 or new_count >= needed_new_count:
+                        break
+                    desired = float(desired_principal_i[idx])
+                    min_desired = float(min_desired_principal_i[idx])
+                    if desired <= 1e-9 or remaining < max(1e-9, min_desired):
+                        continue
+                    add = min(desired, remaining)
+                    allocation[idx] = add
+                    remaining = max(0.0, remaining - add)
+                    new_count += 1
+
+            # If there is still recycled principal left after filling the
+            # target-incidence gap, allow limited refinancing/top-up for
+            # existing mortgagors with the strongest room.
+            existing_eligible = active_mort_i & (headroom_i > 1e-9)
+            if remaining > 1e-9 and np.any(existing_eligible):
                 score_i = np.zeros_like(mort, dtype=float)
-                score_i[eligible] = headroom_i[eligible] / (1.0 + np.maximum(0.0, mort[eligible]))
-                allocation = np.zeros_like(mort, dtype=float)
-                remaining = float(mort_gap_total)
-                ranked_idx = np.argsort(-score_i)
-
-                for idx in ranked_idx.tolist():
+                score_i[existing_eligible] = headroom_i[existing_eligible] / (1.0 + np.maximum(0.0, mort[existing_eligible]))
+                ranked_existing_idx = np.argsort(-score_i)
+                for idx in ranked_existing_idx.tolist():
                     if remaining <= 1e-9:
                         break
-                    if not bool(eligible[idx]):
+                    if not bool(existing_eligible[idx]):
                         continue
                     room = float(max(0.0, headroom_i[idx] - allocation[idx]))
                     if room <= 1e-9:
@@ -2774,25 +2814,25 @@ class NewLoop:
                     allocation[idx] += add
                     remaining = max(0.0, remaining - add)
 
-                mort_turnover_total = float(np.sum(np.maximum(0.0, allocation)))
-                if mort_turnover_total > 0.0:
-                    new_rate_q = self._mortgage_fixed_rate_q()
-                    new_term_q = float(self._mortgage_term_quarters())
-                    new_mask = allocation > 1e-9
-                    mort[:] = mort + allocation
-                    hh.mort_rate_q[new_mask] = new_rate_q
-                    hh.mort_term_q[new_mask] = new_term_q
-                    hh.mort_age_q[new_mask] = 0.0
-                    # Treat recycled mortgages as fresh 15-year refinancings of the
-                    # full post-allocation balance, not just the incremental top-up.
-                    hh.mort_payment_sched_q[new_mask] = payment_from_orig_principal(mort[new_mask], new_rate_q, new_term_q)
-                    hh.mort_orig_principal[new_mask] = mort[new_mask]
-                    hh.mort_t0[new_mask] = -1
-                    deposits[:] = deposits + allocation
-                    self.nodes["BANK"].add("loan_assets", mort_turnover_total)
-                    self.nodes["BANK"].add("deposit_liab", mort_turnover_total)
-                    self.state["mort_turnover_total"] = float(mort_turnover_total)
-                    self.state["mort_turnover_households"] = float(np.sum(allocation > 1e-9))
+            mort_turnover_total = float(np.sum(np.maximum(0.0, allocation)))
+            if mort_turnover_total > 0.0:
+                new_rate_q = self._mortgage_fixed_rate_q()
+                new_term_q = float(self._mortgage_term_quarters())
+                new_mask = allocation > 1e-9
+                mort[:] = mort + allocation
+                hh.mort_rate_q[new_mask] = new_rate_q
+                hh.mort_term_q[new_mask] = new_term_q
+                hh.mort_age_q[new_mask] = 0.0
+                # Treat recycled mortgages as fresh 15-year loans on the full
+                # post-allocation balance.
+                hh.mort_payment_sched_q[new_mask] = payment_from_orig_principal(mort[new_mask], new_rate_q, new_term_q)
+                hh.mort_orig_principal[new_mask] = mort[new_mask]
+                hh.mort_t0[new_mask] = -1
+                deposits[:] = deposits + allocation
+                self.nodes["BANK"].add("loan_assets", mort_turnover_total)
+                self.nodes["BANK"].add("deposit_liab", mort_turnover_total)
+                self.state["mort_turnover_total"] = float(mort_turnover_total)
+                self.state["mort_turnover_households"] = float(np.sum(allocation > 1e-9))
 
         # 7) Household overdrafts -> revolving loans
         # -------------------------------------------------
