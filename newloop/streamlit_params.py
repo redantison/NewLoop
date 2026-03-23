@@ -49,8 +49,7 @@ SECTION_ORDER: tuple[str, ...] = (
 
 PARAMETER_CONTROLS: tuple[ParamControl, ...] = (
     ParamControl(("disable_trust",), "Disable Trust", POLICY_SWITCHES_SECTION, "bool", help_text="Prevent trust activation, launch, and dilution."),
-    ParamControl(("disable_mortgage_index",), "Disable Mortgage Indexing", POLICY_SWITCHES_SECTION, "bool", help_text="Force mortgage required payments back to the non-indexed contractual path while leaving mortgage balances in place."),
-    ParamControl(("disable_mortgage_policy",), "Disable Mortgage Policy", POLICY_SWITCHES_SECTION, "bool", help_text="Turn off mortgage-gap neutralization transfers while leaving mortgage balances and required payments in place."),
+    ParamControl(("disable_mortgage_relief",), "Disable Mortgage Relief", POLICY_SWITCHES_SECTION, "bool", help_text="Turn off the mortgage-relief regime so households follow the plain contractual mortgage path without indexed relief or bank neutralization support."),
     ParamControl(("mortgage_turnover_enabled",), "Enable Mortgage Turnover", POLICY_SWITCHES_SECTION, "bool", help_text="Re-originate mortgage credit to plausible households so amortized mortgage stock can turn over instead of shrinking away."),
     ParamControl(("disable_income_tax",), "Disable Income Tax", POLICY_SWITCHES_SECTION, "bool", help_text="Force household income taxes to zero while leaving other taxes and fiscal settings unchanged."),
     ParamControl(("disable_vat",), "Disable VAT", POLICY_SWITCHES_SECTION, "bool", help_text="Turn off VAT and VAT-credit effects while leaving other tax settings unchanged."),
@@ -194,7 +193,6 @@ PARAMETER_CONTROLS: tuple[ParamControl, ...] = (
     ParamControl(("policy_rate_max_q",), "Policy Rate Max (q)", "Price & Capital", "float", 0.0, 0.10, 0.0005),
     ParamControl(("policy_rate_max_step_up_q",), "Policy Max Step Up (q)", "Price & Capital", "float", 0.0, 0.02, 0.0005),
     ParamControl(("policy_rate_max_step_down_q",), "Policy Max Step Down (q)", "Price & Capital", "float", 0.0, 0.02, 0.0005),
-    ParamControl(("mort_index_enable",), "Mortgage Indexing Enabled", "Price & Capital", "bool"),
     ParamControl(("mort_index_weight_w",), "Mortgage Index Weight w", "Price & Capital", "float", 0.0, 1.0, 0.01),
     ParamControl(("mort_index_price_series",), "Mortgage Price Series", "Price & Capital", "select", options=("P_producer", "C_consumer")),
     ParamControl(("mort_index_income_series",), "Mortgage Income Series", "Price & Capital", "select", options=("NominalHHIncome", "NominalWages", "NominalMarketIncome")),
@@ -203,7 +201,6 @@ PARAMETER_CONTROLS: tuple[ParamControl, ...] = (
     ParamControl(("mort_corridor_qtr_up",), "Mortgage Corridor Up (q)", "Price & Capital", "float", 0.0, 0.10, 0.005),
     ParamControl(("mort_corridor_qtr_dn",), "Mortgage Corridor Down (q)", "Price & Capital", "float", -0.50, 0.0, 0.005),
     ParamControl(("mort_index_ewma_lambda",), "Mortgage Index EWMA Lambda", "Price & Capital", "float", 0.0, 1.0, 0.01),
-    ParamControl(("mort_bank_neutralize_enable",), "Mortgage Bank Neutralization", "Price & Capital", "bool"),
     ParamControl(("mort_neutralize_trigger_mode",), "Mortgage Neutralize Trigger", "Price & Capital", "select", options=("StressOnly", "Always")),
     ParamControl(("mort_neutralize_trigger_threshold",), "Mortgage Neutralize Threshold", "Price & Capital", "float", 0.0, 1.0, 0.01),
     ParamControl(("mort_neutralize_fund_allowed_if_debt_outstanding",), "Neutralize Use FUND While Debt", "Price & Capital", "bool"),
@@ -224,8 +221,8 @@ PARAMETER_CONTROLS: tuple[ParamControl, ...] = (
     ParamControl(("sector_install_rate_q",), "Sector Install Rate (q)", "Price & Capital", "float", 0.0, 0.50, 0.01, advanced=True, help_text="Maximum share of current sector capacity that can be converted into installed new capital each quarter."),
     ParamControl(("sector_dividend_cash_buffer_q",), "Sector Dividend Cash Buffer", "Price & Capital", "float", 0.0, 1.0, 0.01, advanced=True, help_text="Fraction of current-quarter revenue reserved before paying committed dividends."),
     ParamControl(("sector_dividend_service_floor",), "Sector Dividend Service Floor", "Price & Capital", "float", 0.0, 1.0, 0.01, advanced=True, help_text="When household service falls below this share of desired sector demand, lagged dividend commitments are automatically reduced."),
-    ParamControl(("firm_overhead_rate_info",), "Firm Overhead Rate: Info", "Price & Capital", "float", 0.0, 1.0, 0.01, advanced=True),
-    ParamControl(("firm_overhead_rate_phys",), "Firm Overhead Rate: Physical", "Price & Capital", "float", 0.0, 1.0, 0.01, advanced=True),
+    ParamControl(("firm_overhead_rate_info",), "Firm Overhead Rate: Info", "Price & Capital", "float", 0.0, 1.0, 0.01, help_text="Broad non-wage operating-cost share for the Info sector, standing in for overhead, R&D, compliance, and other residual uses of revenue."),
+    ParamControl(("firm_overhead_rate_phys",), "Firm Overhead Rate: Physical", "Price & Capital", "float", 0.0, 1.0, 0.01, help_text="Broad non-wage operating-cost share for the Physical sector, standing in for overhead, logistics, maintenance friction, R&D, and other residual uses of revenue."),
     ParamControl(("hh_buffer_spend_excess_rate_q",), "HH Spend Excess Buffer Rate (q)", "Price & Capital", "float", 0.0, 1.0, 0.01),
     ParamControl(("hh_buffer_shortfall_conserve_rate_q",), "HH Conserve Shortfall Buffer Rate (q)", "Price & Capital", "float", 0.0, 1.0, 0.01),
     ParamControl(("capital_productivity_k",), "Capital Productivity k", "Price & Capital", "float", 0.0, 2.0, 0.01),
@@ -377,7 +374,7 @@ RUN_STEP_QUARTERS = 4
 
 
 NON_GINI_METRIC_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("Core", ("inflation", "trust_equity_pct", "trust_value_per_h")),
+    ("Core", ("inflation", "price_level_deflated", "trust_equity_pct", "trust_value_per_h")),
     (
         "Households",
         (
@@ -389,7 +386,19 @@ NON_GINI_METRIC_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "uis_issued_per_h",
         ),
     ),
-    ("Stress", ("pop_dti_p90", "pop_dti_w_p90")),
+    (
+        "Capital",
+        (
+            "corporate_nonbank_broad_roe_q",
+            "bank_broad_roe_q",
+            "corporate_info_broad_roe_q",
+            "corporate_physical_broad_roe_q",
+            "corporate_broad_roe_q",
+            "private_broad_roe_q",
+            "private_inv_cov",
+        ),
+    ),
+    ("Stress", ("pop_dti_med", "pop_dti_p90", "pop_dti_w_med", "pop_dti_w_p90")),
 )
 
 

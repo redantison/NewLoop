@@ -70,34 +70,36 @@ def _population_distribution_snapshot(sim: NewLoop) -> Dict[str, Any] | None:
     if p_now <= 0.0:
         p_now = 1e-9
 
-    def _hh_share_frac(issuer: str, key: str) -> float:
+    def _node_share_frac(holder: str, issuer: str, key: str) -> float:
         shares_out = float(sim.nodes[issuer].get("shares_outstanding", 0.0))
         if shares_out <= 0.0:
             return 0.0
-        frac = float(sim.nodes["HH"].get(key, 0.0)) / shares_out
+        frac = float(sim.nodes[holder].get(key, 0.0)) / shares_out
         return max(0.0, min(1.0, frac))
 
-    fa_eq = max(
-        0.0,
-        float(sim.nodes["FA"].get("deposits", 0.0))
-        + float(sim.nodes["FA"].get("K", 0.0)) * p_now
-        - float(sim.nodes["FA"].get("loans", 0.0)),
-    )
-    fh_eq = max(
-        0.0,
-        float(sim.nodes["FH"].get("deposits", 0.0))
-        + float(sim.nodes["FH"].get("K", 0.0)) * p_now
-        - float(sim.nodes["FH"].get("loans", 0.0)),
-    )
-    bk_eq = max(0.0, float(sim.nodes["BANK"].get("equity", 0.0)))
+    fa_eq = float(sim._firm_balance_sheet_equity_proxy("FA", p_now))
+    fh_eq = float(sim._firm_balance_sheet_equity_proxy("FH", p_now))
+    bk_eq = float(sim._firm_balance_sheet_equity_proxy("BANK", p_now))
 
     hh_equity_total = (
-        _hh_share_frac("FA", "shares_FA") * fa_eq
-        + _hh_share_frac("FH", "shares_FH") * fh_eq
-        + _hh_share_frac("BANK", "shares_BANK") * bk_eq
+        _node_share_frac("HH", "FA", "shares_FA") * fa_eq
+        + _node_share_frac("HH", "FH", "shares_FH") * fh_eq
+        + _node_share_frac("HH", "BANK", "shares_BANK") * bk_eq
+    )
+    fund = sim.nodes["FUND"]
+    trust_equity_value_total = (
+        _node_share_frac("FUND", "FA", "shares_FA") * fa_eq
+        + _node_share_frac("FUND", "FH", "shares_FH") * fh_eq
+        + _node_share_frac("FUND", "BANK", "shares_BANK") * bk_eq
+    )
+    trust_value_total = (
+        float(fund.get("deposits", 0.0))
+        + trust_equity_value_total
+        - float(fund.get("loans", 0.0))
     )
     equity_i = weights * hh_equity_total
-    wealth_i = dep_i + equity_i - loan_i
+    trust_i = np.full(n, trust_value_total / float(n), dtype=float)
+    wealth_i = dep_i + equity_i + trust_i - loan_i
 
     return {
         "price_level": float(p_now),
@@ -407,7 +409,7 @@ def _startup_solver_snapshot(sim: NewLoop) -> Dict[str, Any] | None:
     rate_q = max(0.0, float(sim.state.get("policy_rate_q", sim.params.get("loan_rate_per_quarter", 0.0))))
     raw_interest_i = np.maximum(0.0, mort_i * rate_q) + np.maximum(0.0, rev_i * rate_q)
 
-    if mort_index_enable and rev_interest_i.shape == wages_i.shape and mort_pay_req_i.shape == wages_i.shape:
+    if rev_interest_i.shape == wages_i.shape and mort_pay_req_i.shape == wages_i.shape:
         debt_service_i = np.maximum(0.0, rev_interest_i) + np.maximum(0.0, mort_pay_req_i)
     else:
         debt_service_i = np.maximum(0.0, interest_hh_i) if interest_hh_i.shape == wages_i.shape else raw_interest_i
@@ -530,7 +532,7 @@ def _baseline_calibration_regime_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
     params["baseline_calibration_enabled"] = False
     params["automation_disabled"] = True
     params["disable_trust"] = True
-    params["disable_mortgage_policy"] = True
+    params["disable_mortgage_relief"] = True
     params["disable_income_support"] = True
     return regime_cfg
 
@@ -658,16 +660,18 @@ def _run_baseline_calibration(cfg: Dict[str, Any]) -> tuple[Dict[str, Any], Dict
 
 
 def _prepare_startup_sim(sim: NewLoop) -> Dict[str, Any] | None:
-    if not (
+    reset_stats = None
+    if (
         bool(sim.params.get("baseline_calibration_enabled", False))
         or bool(sim.params.get("startup_buffer_alignment_enabled", False))
     ):
-        return None
-    return _apply_startup_income_buffer_reset(
-        sim,
-        max_iter=int(sim.params.get("startup_buffer_alignment_max_iters", 8)),
-        reset_deposits=bool(sim.params.get("baseline_calibration_reset_deposits_to_runtime_target", True)),
-    )
+        reset_stats = _apply_startup_income_buffer_reset(
+            sim,
+            max_iter=int(sim.params.get("startup_buffer_alignment_max_iters", 8)),
+            reset_deposits=bool(sim.params.get("baseline_calibration_reset_deposits_to_runtime_target", True)),
+        )
+    sim._bootstrap_startup_lagged_retained()
+    return reset_stats
 
 
 def run_simulation(n_quarters: int = 80, cfg: Dict[str, Any] | None = None) -> SimulationRun:

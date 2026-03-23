@@ -159,7 +159,26 @@ class UISPolicy:
         baseline_wages_i: Any,
         price_level: float,
     ) -> None:
-        del state, baseline_wages_i, price_level  # UIS baseline comes from first solved tick
+        if state.get("income_target_pool_real_pop", None) is not None:
+            return
+        if baseline_wages_i is None:
+            return
+
+        try:
+            wages_seq = [float(v) for v in baseline_wages_i]
+        except Exception:
+            return
+        if not wages_seq:
+            return
+
+        p_base = float(price_level)
+        if p_base <= 0.0:
+            p_base = 1e-9
+
+        wages_total = float(sum(wages_seq))
+        state["income_target_pool_real_pop"] = wages_total / float(p_base)
+        state["baseline_price_level_pop"] = float(p_base)
+        state["baseline_wages_total_pop"] = wages_total
 
 
 class UBIPolicy:

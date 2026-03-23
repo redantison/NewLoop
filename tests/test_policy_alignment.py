@@ -3,11 +3,14 @@ import sys
 import unittest
 from pathlib import Path
 
+import numpy as np
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from newloop.config import get_default_config
 from newloop.engine import NewLoop
+from newloop.results import _population_distribution_snapshot
 
 
 def make_cfg():
@@ -71,6 +74,7 @@ class PolicyAlignmentTests(unittest.TestCase):
         cfg = make_cfg()
         params = cfg["parameters"]
         params["trust_trigger_dti"] = 1.0
+        params["disable_income_support"] = True
         params["loan_rate_per_quarter"] = 0.0
         params["vat_rate"] = 0.0
         params["income_tax_rate"] = 0.0
@@ -92,6 +96,7 @@ class PolicyAlignmentTests(unittest.TestCase):
         cfg = make_cfg()
         params = cfg["parameters"]
         params["trust_trigger_dti"] = 1.0
+        params["disable_income_support"] = True
         params["loan_rate_per_quarter"] = 0.0
         params["vat_rate"] = 0.0
         params["income_tax_rate"] = 0.0
@@ -116,6 +121,7 @@ class PolicyAlignmentTests(unittest.TestCase):
         cfg = make_cfg()
         params = cfg["parameters"]
         params["trust_trigger_dti"] = 1.0
+        params["disable_income_support"] = True
         params["loan_rate_per_quarter"] = 0.0
         params["vat_rate"] = 0.0
         params["income_tax_rate"] = 0.0
@@ -139,6 +145,7 @@ class PolicyAlignmentTests(unittest.TestCase):
         cfg = make_cfg()
         params = cfg["parameters"]
         params["trust_trigger_dti"] = 1.0
+        params["disable_income_support"] = True
         params["loan_rate_per_quarter"] = 0.0
         params["vat_rate"] = 0.0
         params["income_tax_rate"] = 0.0
@@ -179,6 +186,189 @@ class PolicyAlignmentTests(unittest.TestCase):
 
         self.assertGreater(float(sim_tight.state.get("hh_buffer_gap_shortfall_total", 0.0)), 0.0)
         self.assertLess(float(sim_tight.history[0].total_consumption), float(sim_loose.history[0].total_consumption))
+
+    def test_indexed_mortgage_payment_is_capped_at_origination_real_burden(self):
+        cfg = make_cfg()
+        sim = NewLoop(cfg)
+        hh = sim.hh
+        self.assertIsNotNone(hh)
+        assert hh is not None
+        hh.ensure_memos()
+
+        active = np.asarray(hh.mortgage_loans, dtype=float) > 1e-12
+        self.assertTrue(bool(np.any(active)))
+
+        p_now = float(sim._mort_price_series_value(float(sim.state.get("price_level", 1.0))))
+        sim.state["mort_price_series_prev"] = p_now
+        sim.state["mort_income_series_prev"] = 1.0
+
+        wages_total = 1e9
+        terms = sim._compute_mortgage_index_terms(
+            mort=np.asarray(hh.mortgage_loans, dtype=float),
+            rL=float(sim.state.get("policy_rate_q", sim.params.get("loan_rate_per_quarter", 0.0))),
+            wages_total=wages_total,
+            div_house_total=0.0,
+            uis_per_h=0.0,
+            commit_state=False,
+        )
+
+        mort_pay_req_i = np.asarray(terms["mort_pay_req_i"], dtype=float)
+        base_vec = np.maximum(0.0, np.asarray(hh.mort_pay_base, dtype=float))
+        p0_vec = np.maximum(1e-9, np.asarray(hh.mort_P0, dtype=float))
+        cap_i = base_vec * (p_now / p0_vec)
+
+        self.assertTrue(np.all(mort_pay_req_i[active] <= (cap_i[active] + 1e-9)))
+
+    def test_mortgage_neutralization_splits_interest_from_principal(self):
+        cfg = make_cfg()
+        cfg["parameters"]["mort_neutralize_trigger_mode"] = "Always"
+        sim = NewLoop(cfg)
+        n = sim.hh.n if sim.hh is not None else 0
+        self.assertGreater(n, 0)
+        interest_gap_i = np.zeros(n, dtype=float)
+        principal_gap_i = np.zeros(n, dtype=float)
+        interest_gap_i[0] = 10.0
+        principal_gap_i[0] = 20.0
+
+        sim.nodes["GOV"].set("deposits", 30.0)
+        sim.nodes["BANK"].add("deposit_liab", 30.0)
+        sim.nodes["BANK"].add("reserves", 30.0)
+        loan_assets_before = float(sim.nodes["BANK"].get("loan_assets", 0.0))
+        equity_before = float(sim.nodes["BANK"].get("equity", 0.0))
+
+        neutral = sim._apply_mortgage_gap_neutralization(
+            interest_gap_i=interest_gap_i,
+            principal_gap_i=principal_gap_i,
+            mort_interest_due_total=10.0,
+            mort_pay_ctr_total=30.0,
+        )
+
+        self.assertAlmostEqual(float(neutral["paid_interest_total"]), 10.0, places=6)
+        self.assertAlmostEqual(float(neutral["paid_principal_total"]), 20.0, places=6)
+        self.assertAlmostEqual(float(np.sum(neutral["paid_principal_i"])), 20.0, places=6)
+        self.assertAlmostEqual(float(sim.nodes["BANK"].get("equity", 0.0)), equity_before + 10.0, places=6)
+        self.assertAlmostEqual(float(sim.nodes["BANK"].get("loan_assets", 0.0)), loan_assets_before - 20.0, places=6)
+        self.assertAlmostEqual(float(sim.nodes["GOV"].get("deposits", 0.0)), 0.0, places=6)
+
+    def test_corporate_roe_split_metrics_recompose_to_totals(self):
+        cfg = make_cfg()
+        sim = NewLoop(cfg)
+
+        sim.step()
+        p_prev = float(sim.state.get("price_level", 1.0))
+        bank_eq_prev = float(sim._firm_balance_sheet_equity_proxy("BANK", p_prev))
+        fa_eq_prev = float(sim._firm_broad_equity_proxy("FA", p_prev))
+        fh_eq_prev = float(sim._firm_broad_equity_proxy("FH", p_prev))
+
+        sim.step()
+        row = sim.history[-1]
+
+        total_eq_prev = bank_eq_prev + fa_eq_prev + fh_eq_prev
+        nonbank_eq_prev = fa_eq_prev + fh_eq_prev
+        self.assertGreater(total_eq_prev, 0.0)
+        self.assertGreater(nonbank_eq_prev, 0.0)
+
+        total_recomposed = (
+            (float(row.bank_broad_roe_q) * bank_eq_prev)
+            + (float(row.corporate_info_broad_roe_q) * fa_eq_prev)
+            + (float(row.corporate_physical_broad_roe_q) * fh_eq_prev)
+        ) / total_eq_prev
+        nonbank_recomposed = (
+            (float(row.corporate_info_broad_roe_q) * fa_eq_prev)
+            + (float(row.corporate_physical_broad_roe_q) * fh_eq_prev)
+        ) / nonbank_eq_prev
+
+        self.assertAlmostEqual(float(row.corporate_broad_roe_q), total_recomposed, places=9)
+        self.assertAlmostEqual(float(row.corporate_nonbank_broad_roe_q), nonbank_recomposed, places=9)
+
+    def test_startup_bootstrap_seeds_positive_broad_equity_denominator_by_default(self):
+        cfg = make_cfg()
+        sim = NewLoop(cfg)
+
+        sim._bootstrap_startup_lagged_retained()
+
+        self.assertGreater(float(sim.state.get("corporate_info_equity_prev_total", 0.0)), 0.0)
+        self.assertGreater(float(sim.state.get("corporate_physical_equity_prev_total", 0.0)), 0.0)
+        self.assertAlmostEqual(float(sim.nodes["FA"].get("K", 0.0)), 0.0, places=9)
+        self.assertAlmostEqual(float(sim.nodes["FH"].get("K", 0.0)), 0.0, places=9)
+
+    def test_startup_bootstrap_respects_explicit_initial_firm_capital(self):
+        cfg = make_cfg()
+        cfg["nodes"]["FA"]["stocks"]["K"] = 123.0
+        cfg["nodes"]["FH"]["stocks"]["K"] = 456.0
+        sim = NewLoop(cfg)
+
+        sim._bootstrap_startup_lagged_retained()
+
+        self.assertAlmostEqual(float(sim.nodes["FA"].get("K", 0.0)), 123.0, places=9)
+        self.assertAlmostEqual(float(sim.nodes["FH"].get("K", 0.0)), 456.0, places=9)
+
+    def test_startup_bootstrap_can_opt_in_to_firm_capital_seed(self):
+        cfg = make_cfg()
+        cfg["parameters"]["startup_bootstrap_firm_capital"] = True
+        sim = NewLoop(cfg)
+
+        sim._bootstrap_startup_lagged_retained()
+
+        self.assertGreater(float(sim.nodes["FA"].get("K", 0.0)), 0.0)
+        self.assertGreater(float(sim.nodes["FH"].get("K", 0.0)), 0.0)
+
+    def test_population_wealth_snapshot_splits_trust_value_equally(self):
+        cfg = make_cfg()
+        sim = NewLoop(cfg)
+        assert sim.hh is not None
+
+        baseline = _population_distribution_snapshot(sim)
+        self.assertIsNotNone(baseline)
+        assert baseline is not None
+
+        sim.nodes["FUND"].set("deposits", 200.0)
+        sim.nodes["BANK"].add("deposit_liab", 200.0)
+        sim.nodes["BANK"].add("reserves", 200.0)
+
+        with_trust = _population_distribution_snapshot(sim)
+        self.assertIsNotNone(with_trust)
+        assert with_trust is not None
+
+        delta = np.asarray(with_trust["wealth"], dtype=float) - np.asarray(baseline["wealth"], dtype=float)
+        np.testing.assert_allclose(delta, np.full(delta.shape, 200.0 / float(sim.hh.n)), rtol=0.0, atol=1e-9)
+
+    def test_sector_target_payout_rate_rises_when_unmet_demand_is_low(self):
+        cfg = make_cfg()
+        sim = NewLoop(cfg)
+
+        sim.state["sector_capacity_info_real_prev"] = 100.0
+        sim.state["sector_unmet_info_real_prev"] = 0.0
+        low_gap_rate = sim._sector_target_payout_rate("FA")
+
+        sim.state["sector_unmet_info_real_prev"] = 10.0
+        high_gap_rate = sim._sector_target_payout_rate("FA")
+
+        self.assertGreater(low_gap_rate, high_gap_rate)
+        self.assertAlmostEqual(
+            low_gap_rate,
+            float(cfg["parameters"]["dividend_payout_rate_firms_mature_max"]),
+            places=9,
+        )
+
+    def test_sector_surplus_distribution_requires_cash_above_reserves(self):
+        cfg = make_cfg()
+        sim = NewLoop(cfg)
+
+        sim.state["sector_capacity_info_real_prev"] = 100.0
+        sim.state["sector_unmet_info_real_prev"] = 0.0
+        sim.state["sector_base_capacity_info_real"] = 50.0
+        sim.nodes["FA"].memo["revenue_prev"] = 200.0
+        sim.nodes["FA"].set("deposits", 300.0)
+
+        dist_nom = sim._sector_surplus_distribution_nom("FA", 1.0)
+        reserve_nom = sim._sector_maintenance_capex_nom("FA", 1.0) + (0.10 * 200.0)
+        expected = 0.50 * max(0.0, 300.0 - reserve_nom)
+
+        self.assertAlmostEqual(dist_nom, expected, places=6)
+
+        sim.nodes["FA"].set("deposits", reserve_nom - 1.0)
+        self.assertAlmostEqual(sim._sector_surplus_distribution_nom("FA", 1.0), 0.0, places=9)
 
 
 if __name__ == "__main__":

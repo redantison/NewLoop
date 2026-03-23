@@ -102,6 +102,11 @@ class TickResult:
     corporate_eq_total_per_h: float
     private_roe_q: float
     private_broad_roe_q: float
+    bank_broad_roe_q: float
+    corporate_info_broad_roe_q: float
+    corporate_physical_broad_roe_q: float
+    corporate_nonbank_broad_roe_q: float
+    corporate_broad_roe_q: float
     private_inv_cov: float
 
     vat_per_h: float

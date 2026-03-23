@@ -38,6 +38,7 @@ class NewLoop:
         self.income_support_policy = make_income_support_policy(self.params)
         p0 = float(config["parameters"].get("price_level_initial", 1.0))
         base_rate_q = max(0.0, float(config["parameters"].get("loan_rate_per_quarter", 0.0)))
+        payout_firms_base = max(0.0, min(1.0, float(config["parameters"].get("dividend_payout_rate_firms", 1.0))))
         self.state = {
             "t": 0,
             "automation": 0.0,
@@ -54,6 +55,11 @@ class NewLoop:
             "tax_rebate_total": 0.0,
             # Lagged private equity stock used for private payout-yield proxy.
             "private_equity_prev_total": 0.0,
+            "corporate_equity_prev_total": 0.0,
+            "corporate_bank_equity_prev_total": 0.0,
+            "corporate_info_equity_prev_total": 0.0,
+            "corporate_physical_equity_prev_total": 0.0,
+            "corporate_nonbank_equity_prev_total": 0.0,
             # One-time guard for startup lag bootstrap.
             "startup_bootstrap_done": False,
             # Sector-fulfillment diagnostics and lagged CAPEX planner inputs.
@@ -67,6 +73,8 @@ class NewLoop:
             "sector_capex_queue_phys_nom": 0.0,
             "sector_service_ratio_info_prev": 1.0,
             "sector_service_ratio_phys_prev": 1.0,
+            "sector_payout_rate_info_prev": payout_firms_base,
+            "sector_payout_rate_phys_prev": payout_firms_base,
             # Central-bank policy-rate diagnostics (quarterly rate).
             "policy_rate_q": base_rate_q,
             "policy_rate_target_q": base_rate_q,
@@ -82,6 +90,8 @@ class NewLoop:
             "mort_gap_paid_by_fund": 0.0,
             "mort_gap_paid_by_issuance": 0.0,
             "bank_mort_neutralize_inflow": 0.0,
+            "bank_mort_neutralize_interest_inflow": 0.0,
+            "bank_mort_neutralize_principal_inflow": 0.0,
             "mort_index_mean": 1.0,
             "mort_index_min": 1.0,
             "mort_index_max": 1.0,
@@ -235,43 +245,165 @@ class NewLoop:
         self._assert_sfc_ok(context="init")
 
     def _bootstrap_startup_lagged_retained(self) -> None:
-        """Seed lagged retained earnings at startup to avoid a one-quarter CAPEX jump."""
+        """Seed startup lagged diagnostics before visible Q0."""
         if bool(self.state.get("startup_bootstrap_done", False)):
             return
-        self.state["startup_bootstrap_done"] = True
 
         if int(self.state.get("t", 0)) != 0:
+            self.state["startup_bootstrap_done"] = True
             return
         if not bool(self.params.get("startup_bootstrap_lagged_retained", True)):
+            self.state["startup_bootstrap_done"] = True
             return
         if not bool(self.params.get("use_population", False)):
+            self.state["startup_bootstrap_done"] = True
             return
         if not bool(self.params.get("population_dynamics", False)):
+            self.state["startup_bootstrap_done"] = True
             return
         if self.hh is None or self.hh.n <= 0:
+            self.state["startup_bootstrap_done"] = True
             return
 
         reinvest_rate = float(self.params.get("reinvest_rate_of_retained", 0.0))
         if reinvest_rate <= 0.0:
-            return
-
-        # Respect explicit initial lagged retained settings if provided by scenario config.
-        if any(
-            abs(float(self.nodes[node_id].memo.get("retained_prev", 0.0))) > 1e-12
-            for node_id in ("FA", "FH", "BANK")
-        ):
+            self.state["startup_bootstrap_done"] = True
             return
 
         seed_sol = self.solve_within_tick_population()
         if seed_sol is None:
             raise RuntimeError("Startup lagged-retained bootstrap expected a population solution but received None.")
 
+        self._bootstrap_startup_prev_equity(seed_sol)
+        if bool(self.params.get("startup_bootstrap_firm_capital", False)):
+            self._bootstrap_startup_firm_capital(seed_sol)
+            # Re-solve after any true capital bootstrap so lagged retained earnings line
+            # up with the visible quarter-0 balance sheet and price/productivity state.
+            seed_sol = self.solve_within_tick_population()
+            if seed_sol is None:
+                raise RuntimeError("Startup retained bootstrap expected a population solution after capital seed.")
+
         scale = float(self.params.get("startup_bootstrap_retained_scale", 1.0))
         scale = max(0.0, scale)
 
-        self.nodes["FA"].memo["retained_prev"] = scale * max(0.0, float(seed_sol.get("retained_fa", 0.0)))
-        self.nodes["FH"].memo["retained_prev"] = scale * max(0.0, float(seed_sol.get("retained_fh", 0.0)))
-        self.nodes["BANK"].memo["retained_prev"] = scale * max(0.0, float(seed_sol.get("retained_bk", 0.0)))
+        explicit_retained = any(
+            abs(float(self.nodes[node_id].memo.get("retained_prev", 0.0))) > 1e-12
+            for node_id in ("FA", "FH", "BANK")
+        )
+        if not explicit_retained:
+            self.nodes["FA"].memo["retained_prev"] = scale * max(0.0, float(seed_sol.get("retained_fa", 0.0)))
+            self.nodes["FH"].memo["retained_prev"] = scale * max(0.0, float(seed_sol.get("retained_fh", 0.0)))
+            self.nodes["BANK"].memo["retained_prev"] = scale * max(0.0, float(seed_sol.get("retained_bk", 0.0)))
+
+        self.state["startup_bootstrap_done"] = True
+
+    def _bootstrap_startup_prev_equity(self, seed_sol: Dict[str, Any]) -> None:
+        """Seed the initial broad-ROE denominator without changing the economy state."""
+        if any(
+            abs(float(self.state.get(key, 0.0))) > 1e-12
+            for key in (
+                "corporate_equity_prev_total",
+                "corporate_bank_equity_prev_total",
+                "corporate_info_equity_prev_total",
+                "corporate_physical_equity_prev_total",
+                "corporate_nonbank_equity_prev_total",
+            )
+        ):
+            return
+
+        p_now = max(1e-9, float(self.state.get("price_level", self.params.get("price_level_initial", 1.0))))
+        fa_broad_eq = self._firm_broad_equity_proxy("FA", p_now)
+        fh_broad_eq = self._firm_broad_equity_proxy("FH", p_now)
+        bank_eq = self._firm_balance_sheet_equity_proxy("BANK", p_now)
+
+        self.state["corporate_info_equity_prev_total"] = float(fa_broad_eq)
+        self.state["corporate_physical_equity_prev_total"] = float(fh_broad_eq)
+        self.state["corporate_nonbank_equity_prev_total"] = float(fa_broad_eq + fh_broad_eq)
+        self.state["corporate_bank_equity_prev_total"] = float(bank_eq)
+        self.state["corporate_equity_prev_total"] = float(fa_broad_eq + fh_broad_eq + bank_eq)
+
+    def _bootstrap_startup_firm_capital(self, seed_sol: Dict[str, Any]) -> None:
+        """Seed a startup firm capital stock implied by retained-earnings capacity.
+
+        The model starts firms with zero K and zero deposits, which makes visible Q0
+        sector ROE explode because firms earn revenue immediately against a near-zero
+        lagged equity base. We convert part of the existing startup sector capacity into
+        installed capital, capped so total initial capacity stays unchanged.
+        """
+        if not bool(self.params.get("startup_bootstrap_firm_capital", True)):
+            return
+
+        # Respect explicit scenario-provided capital stocks.
+        if any(abs(float(self.nodes[node_id].get("K", 0.0))) > 1e-12 for node_id in ("FA", "FH")):
+            return
+
+        p_now = max(1e-9, float(self.state.get("price_level", self.params.get("price_level_initial", 1.0))))
+        depr_q = max(0.0, min(1.0, float(self.params.get("capital_depr_rate_per_quarter", 0.0))))
+        reinvest_rate = max(0.0, float(self.params.get("reinvest_rate_of_retained", 0.0)))
+        capital_scale = max(0.0, float(self.params.get("startup_bootstrap_capital_scale", 1.0)))
+        if depr_q <= 1e-12 or reinvest_rate <= 0.0 or capital_scale <= 0.0:
+            return
+
+        for firm_id, retained_key, base_key in (
+            ("FA", "retained_fa", "sector_base_capacity_info_real"),
+            ("FH", "retained_fh", "sector_base_capacity_phys_real"),
+        ):
+            capacity_per_k = self._sector_capacity_per_k(firm_id)
+            if capacity_per_k <= 1e-12:
+                continue
+
+            base_capacity = max(0.0, float(self.state.get(base_key, 0.0)))
+            current_k = max(0.0, float(self.nodes[firm_id].get("K", 0.0)))
+            embodied_capacity = base_capacity + (capacity_per_k * current_k)
+            if embodied_capacity <= 1e-12:
+                continue
+
+            retained_nom = max(0.0, float(seed_sol.get(retained_key, 0.0)))
+            if retained_nom <= 1e-12:
+                continue
+
+            k_target_by_retained = (capital_scale * reinvest_rate * retained_nom) / (depr_q * p_now)
+            max_k_without_changing_capacity = embodied_capacity / capacity_per_k
+            k_target = min(max_k_without_changing_capacity, k_target_by_retained)
+            if k_target <= (current_k + 1e-12):
+                continue
+
+            self.nodes[firm_id].set("K", float(k_target))
+            self.state[base_key] = float(
+                max(0.0, embodied_capacity - (capacity_per_k * k_target))
+            )
+
+    def _firm_balance_sheet_equity_proxy(self, firm_id: str, price_level: float | None = None) -> float:
+        p_now = float(self.state.get("price_level", 1.0) if price_level is None else price_level)
+        if p_now <= 0.0:
+            p_now = 1e-9
+        if firm_id == "BANK":
+            return float(max(0.0, float(self.nodes["BANK"].get("equity", 0.0))))
+        return float(max(
+            0.0,
+            float(self.nodes[firm_id].get("deposits", 0.0))
+            + (float(self.nodes[firm_id].get("K", 0.0)) * p_now)
+            - float(self.nodes[firm_id].get("loans", 0.0)),
+        ))
+
+    def _firm_legacy_capacity_equity_proxy(self, firm_id: str, price_level: float | None = None) -> float:
+        if firm_id not in ("FA", "FH"):
+            return 0.0
+        capacity_per_k = self._sector_capacity_per_k(firm_id)
+        if capacity_per_k <= 1e-12:
+            return 0.0
+        p_now = float(self.state.get("price_level", 1.0) if price_level is None else price_level)
+        if p_now <= 0.0:
+            p_now = 1e-9
+        base_key = "sector_base_capacity_info_real" if firm_id == "FA" else "sector_base_capacity_phys_real"
+        base_capacity = max(0.0, float(self.state.get(base_key, 0.0)))
+        return float(base_capacity * (p_now / capacity_per_k))
+
+    def _firm_broad_equity_proxy(self, firm_id: str, price_level: float | None = None) -> float:
+        return float(
+            self._firm_balance_sheet_equity_proxy(firm_id, price_level)
+            + self._firm_legacy_capacity_equity_proxy(firm_id, price_level)
+        )
 
     def _update_policy_rate(self) -> None:
         """Update the quarterly policy rate using lagged observables (no same-tick circularity)."""
@@ -342,11 +474,20 @@ class NewLoop:
     def _trust_disabled(self) -> bool:
         return bool(self.params.get("disable_trust", False))
 
+    def _mortgage_relief_disabled(self) -> bool:
+        # Keep honoring the legacy split flags so older saved configs still work,
+        # but treat either one as disabling the unified mortgage-relief regime.
+        return (
+            bool(self.params.get("disable_mortgage_relief", False))
+            or bool(self.params.get("disable_mortgage_index", False))
+            or bool(self.params.get("disable_mortgage_policy", False))
+        )
+
     def _mortgage_index_disabled(self) -> bool:
-        return bool(self.params.get("disable_mortgage_index", False))
+        return self._mortgage_relief_disabled()
 
     def _mortgage_policy_disabled(self) -> bool:
-        return bool(self.params.get("disable_mortgage_policy", False))
+        return self._mortgage_relief_disabled()
 
     def _income_tax_disabled(self) -> bool:
         return bool(self.params.get("disable_income_tax", False))
@@ -518,11 +659,27 @@ class NewLoop:
             # Indexing the current contractual flow preserves "deflation relief" semantics.
             mort_pay_req_i = mort_pay_ctr_i * i_curr
 
+        if enabled:
+            # Borrower-protection ceiling: the indexed nominal payment may move down with the
+            # index, but it cannot exceed the original contractual burden in real terms.
+            # Convert the origination real burden back into current nominal terms using the
+            # configured mortgage price series so inflation never raises required payments above
+            # the origination real burden.
+            base_vec = np.maximum(0.0, _as_np(hh.mort_pay_base, dtype=float))
+            p0_vec = np.maximum(1e-9, _as_np(hh.mort_P0, dtype=float))
+            real_burden_cap_i = base_vec * (float(p_series_now) / p0_vec)
+            mort_pay_req_i = np.minimum(mort_pay_req_i, real_burden_cap_i)
+            # The indexed path is strictly a relief mechanism. It must never require more
+            # than the contemporaneous non-indexed contractual payment.
+            mort_pay_req_i = np.minimum(mort_pay_req_i, mort_pay_ctr_i)
+
         mort_pay_req_i = np.minimum(np.maximum(0.0, mort_pay_req_i), max_pay_i)
         mort_interest_paid_i = np.minimum(mort_interest_due_i, mort_pay_req_i)
         mort_interest_paid_i = np.maximum(0.0, mort_interest_paid_i)
         mort_principal_paid_i = np.maximum(0.0, mort_pay_req_i - mort_interest_paid_i)
         mort_principal_paid_i = np.minimum(mort_principal_paid_i, np.maximum(0.0, mort_vec))
+        mort_interest_gap_i = np.maximum(0.0, mort_interest_due_i - mort_interest_paid_i)
+        mort_principal_gap_i = np.maximum(0.0, mort_principal_ctr_i - mort_principal_paid_i)
 
         mort_gap_i = np.maximum(0.0, mort_pay_ctr_i - mort_pay_req_i) if enabled else np.zeros(n, dtype=float)
 
@@ -547,7 +704,11 @@ class NewLoop:
             "mort_interest_due_i": mort_interest_due_i,
             "mort_interest_paid_i": mort_interest_paid_i,
             "mort_principal_paid_i": mort_principal_paid_i,
+            "mort_interest_gap_i": mort_interest_gap_i,
+            "mort_principal_gap_i": mort_principal_gap_i,
             "mort_gap_i": mort_gap_i,
+            "mort_interest_gap_total": float(np.sum(mort_interest_gap_i)),
+            "mort_principal_gap_total": float(np.sum(mort_principal_gap_i)),
             "mort_gap_total": float(np.sum(mort_gap_i)),
             "mort_pay_req_total": float(np.sum(mort_pay_req_i)),
             "mort_pay_ctr_total": float(np.sum(mort_pay_ctr_i)),
@@ -641,21 +802,80 @@ class NewLoop:
             return commit
         if issuer == "BANK":
             payout_rate = max(0.0, min(1.0, float(self.params.get("dividend_payout_rate_bank", 1.0))))
+        elif issuer == "FA":
+            payout_rate = max(0.0, min(1.0, float(self.state.get("sector_payout_rate_info_prev", self.params.get("dividend_payout_rate_firms", 1.0)))))
+        elif issuer == "FH":
+            payout_rate = max(0.0, min(1.0, float(self.state.get("sector_payout_rate_phys_prev", self.params.get("dividend_payout_rate_firms", 1.0)))))
         else:
             payout_rate = max(0.0, min(1.0, float(self.params.get("dividend_payout_rate_firms", 1.0))))
         retained_prev = max(0.0, float(self.nodes[issuer].memo.get("retained_prev", 0.0)))
         return payout_rate * retained_prev
 
-    def _sector_capex_plan_nom(self, firm_id: str, price_level: float) -> float:
+    def _sector_maintenance_capex_nom(self, firm_id: str, price_level: float) -> float:
         p_now = max(1e-9, float(price_level))
         depr_q = max(0.0, min(1.0, float(self.params.get("capital_depr_rate_per_quarter", 0.0))))
+        capacity_per_k = self._sector_capacity_per_k(firm_id)
+        capital = max(0.0, float(self.nodes[firm_id].get("K", 0.0)))
+        if firm_id == "FA":
+            base_capacity = max(0.0, float(self.state.get("sector_base_capacity_info_real", 0.0)))
+        else:
+            base_capacity = max(0.0, float(self.state.get("sector_base_capacity_phys_real", 0.0)))
+        if capacity_per_k > 1e-12:
+            maintenance_stock = capital + (base_capacity / capacity_per_k)
+        else:
+            maintenance_stock = capital
+        return float(depr_q * maintenance_stock * p_now)
+
+    def _sector_maturity_signal(self, firm_id: str) -> float:
+        half_sat = max(1e-9, float(self.params.get("sector_dividend_maturity_gap_half_sat", 0.02)))
+        if firm_id == "FA":
+            prev_capacity = max(0.0, float(self.state.get("sector_capacity_info_real_prev", 0.0)))
+            prev_unmet = max(0.0, float(self.state.get("sector_unmet_info_real_prev", 0.0)))
+        else:
+            prev_capacity = max(0.0, float(self.state.get("sector_capacity_phys_real_prev", 0.0)))
+            prev_unmet = max(0.0, float(self.state.get("sector_unmet_phys_real_prev", 0.0)))
+        gap_ratio = (prev_unmet / max(prev_capacity, 1e-9)) if prev_capacity > 1e-12 else 0.0
+        return float(half_sat / (gap_ratio + half_sat))
+
+    def _sector_target_payout_rate(self, firm_id: str) -> float:
+        payout_base = max(0.0, min(1.0, float(self.params.get("dividend_payout_rate_firms", 1.0))))
+        payout_max = max(payout_base, min(1.0, float(self.params.get("dividend_payout_rate_firms_mature_max", payout_base))))
+        maturity_signal = self._sector_maturity_signal(firm_id)
+        return float(payout_base + ((payout_max - payout_base) * maturity_signal))
+
+    def _update_sector_payout_rate(self, firm_id: str) -> float:
+        adjust_speed = max(0.0, min(1.0, float(self.params.get("sector_dividend_adjust_speed", 0.50))))
+        target_rate = self._sector_target_payout_rate(firm_id)
+        if firm_id == "FA":
+            key = "sector_payout_rate_info_prev"
+        else:
+            key = "sector_payout_rate_phys_prev"
+        prev_rate = max(0.0, min(1.0, float(self.state.get(key, self.params.get("dividend_payout_rate_firms", 1.0)))))
+        next_rate = prev_rate + (adjust_speed * (target_rate - prev_rate))
+        next_rate = max(0.0, min(1.0, next_rate))
+        self.state[key] = float(next_rate)
+        return float(next_rate)
+
+    def _sector_surplus_distribution_nom(self, firm_id: str, price_level: float) -> float:
+        sweep_share = max(0.0, min(1.0, float(self.params.get("sector_surplus_distribution_share", 0.0))))
+        if sweep_share <= 0.0:
+            return 0.0
+        revenue_buffer_share = max(0.0, float(self.params.get("sector_surplus_cash_buffer_revenue_share", 0.0)))
+        maturity_signal = self._sector_maturity_signal(firm_id)
+        deposits = max(0.0, float(self.nodes[firm_id].get("deposits", 0.0)))
+        revenue_prev = max(0.0, float(self.nodes[firm_id].memo.get("revenue_prev", 0.0)))
+        reserve_nom = self._sector_maintenance_capex_nom(firm_id, price_level) + (revenue_buffer_share * revenue_prev)
+        surplus_cash = max(0.0, deposits - reserve_nom)
+        return float(sweep_share * maturity_signal * surplus_cash)
+
+    def _sector_capex_plan_nom(self, firm_id: str, price_level: float) -> float:
+        p_now = max(1e-9, float(price_level))
         half_sat = max(1e-9, float(self.params.get("sector_capex_gap_half_sat", 0.15)))
         share_min = max(0.0, min(1.0, float(self.params.get("sector_capex_share_min", 0.0))))
         share_max = max(share_min, min(1.0, float(self.params.get("sector_capex_share_max", share_min))))
         gap_close = max(0.0, min(1.0, float(self.params.get("sector_capex_gap_close_rate", 0.25))))
         growth_cap_rate = max(0.0, float(self.params.get("sector_capex_growth_cap_rate_q", 0.08)))
         capacity_per_k = self._sector_capacity_per_k(firm_id)
-        capital = max(0.0, float(self.nodes[firm_id].get("K", 0.0)))
 
         if firm_id == "FA":
             prev_capacity = max(0.0, float(self.state.get("sector_capacity_info_real_prev", 0.0)))
@@ -666,15 +886,7 @@ class NewLoop:
             prev_unmet = max(0.0, float(self.state.get("sector_unmet_phys_real_prev", 0.0)))
             prev_free_cash = max(0.0, float(self.state.get("sector_free_cash_phys_prev", 0.0)))
 
-        if firm_id == "FA":
-            base_capacity = max(0.0, float(self.state.get("sector_base_capacity_info_real", 0.0)))
-        else:
-            base_capacity = max(0.0, float(self.state.get("sector_base_capacity_phys_real", 0.0)))
-        if capacity_per_k > 1e-12:
-            maintenance_stock = capital + (base_capacity / capacity_per_k)
-        else:
-            maintenance_stock = capital
-        maintenance_nom = depr_q * maintenance_stock * p_now
+        maintenance_nom = self._sector_maintenance_capex_nom(firm_id, p_now)
         gap_ratio = prev_unmet / max(prev_capacity, 1e-9) if prev_capacity > 1e-12 else 0.0
         gap_signal = gap_ratio / (gap_ratio + half_sat) if gap_ratio > 0.0 else 0.0
         capex_share = share_min + ((share_max - share_min) * gap_signal)
@@ -797,23 +1009,80 @@ class NewLoop:
         bank.add("equity", +pay)
         return float(pay)
 
+    def _pay_bank_principal_from_payer(self, payer: str, amount: float) -> float:
+        amt = max(0.0, float(amount))
+        if amt <= 0.0:
+            return 0.0
+        avail = max(0.0, float(self.nodes[payer].get("deposits", 0.0)))
+        pay = min(amt, avail)
+        if pay <= 0.0:
+            return 0.0
+        self.nodes[payer].add("deposits", -pay)
+        bank = self.nodes["BANK"]
+        bank.add("deposit_liab", -pay)
+        bank.add("loan_assets", -pay)
+        return float(pay)
+
     def _apply_mortgage_gap_neutralization(
         self,
         *,
-        gap_i: np.ndarray,
+        interest_gap_i: np.ndarray,
+        principal_gap_i: np.ndarray,
         mort_interest_due_total: float,
         mort_pay_ctr_total: float,
     ) -> Dict[str, float]:
-        gap_total_raw = float(np.sum(np.maximum(0.0, gap_i)))
+        interest_gap_vec = np.maximum(0.0, _as_np(interest_gap_i, dtype=float))
+        principal_gap_vec = np.maximum(0.0, _as_np(principal_gap_i, dtype=float))
+        gap_total_raw = float(np.sum(interest_gap_vec) + np.sum(principal_gap_vec))
         if gap_total_raw <= 0.0:
-            return {"gap_total": 0.0, "paid_gov": 0.0, "paid_fund": 0.0, "paid_issuance": 0.0, "paid_total": 0.0}
+            zeros = np.zeros_like(principal_gap_vec, dtype=float)
+            return {
+                "gap_total": 0.0,
+                "paid_gov": 0.0,
+                "paid_fund": 0.0,
+                "paid_issuance": 0.0,
+                "paid_total": 0.0,
+                "paid_interest_total": 0.0,
+                "paid_principal_total": 0.0,
+                "paid_principal_i": zeros,
+            }
 
         if self._mortgage_policy_disabled():
-            return {"gap_total": gap_total_raw, "paid_gov": 0.0, "paid_fund": 0.0, "paid_issuance": 0.0, "paid_total": 0.0}
+            zeros = np.zeros_like(principal_gap_vec, dtype=float)
+            return {
+                "gap_total": gap_total_raw,
+                "paid_gov": 0.0,
+                "paid_fund": 0.0,
+                "paid_issuance": 0.0,
+                "paid_total": 0.0,
+                "paid_interest_total": 0.0,
+                "paid_principal_total": 0.0,
+                "paid_principal_i": zeros,
+            }
         if not bool(self.params.get("mort_bank_neutralize_enable", True)):
-            return {"gap_total": gap_total_raw, "paid_gov": 0.0, "paid_fund": 0.0, "paid_issuance": 0.0, "paid_total": 0.0}
+            zeros = np.zeros_like(principal_gap_vec, dtype=float)
+            return {
+                "gap_total": gap_total_raw,
+                "paid_gov": 0.0,
+                "paid_fund": 0.0,
+                "paid_issuance": 0.0,
+                "paid_total": 0.0,
+                "paid_interest_total": 0.0,
+                "paid_principal_total": 0.0,
+                "paid_principal_i": zeros,
+            }
         if not self._neutralize_stress_active():
-            return {"gap_total": gap_total_raw, "paid_gov": 0.0, "paid_fund": 0.0, "paid_issuance": 0.0, "paid_total": 0.0}
+            zeros = np.zeros_like(principal_gap_vec, dtype=float)
+            return {
+                "gap_total": gap_total_raw,
+                "paid_gov": 0.0,
+                "paid_fund": 0.0,
+                "paid_issuance": 0.0,
+                "paid_total": 0.0,
+                "paid_interest_total": 0.0,
+                "paid_principal_total": 0.0,
+                "paid_principal_i": zeros,
+            }
 
         cap_mode = str(self.params.get("mort_neutralize_cap_mode", "None")).strip()
         cap_val = float(self.params.get("mort_neutralize_cap_value", 0.0))
@@ -827,7 +1096,17 @@ class NewLoop:
             cap_total = max(0.0, float(cap_val)) * max(0.0, float(mort_pay_ctr_total))
         gap_total = min(gap_total_raw, cap_total)
         if gap_total <= 0.0:
-            return {"gap_total": gap_total, "paid_gov": 0.0, "paid_fund": 0.0, "paid_issuance": 0.0, "paid_total": 0.0}
+            zeros = np.zeros_like(principal_gap_vec, dtype=float)
+            return {
+                "gap_total": gap_total,
+                "paid_gov": 0.0,
+                "paid_fund": 0.0,
+                "paid_issuance": 0.0,
+                "paid_total": 0.0,
+                "paid_interest_total": 0.0,
+                "paid_principal_total": 0.0,
+                "paid_principal_i": zeros,
+            }
 
         stack_raw = self.params.get("mort_neutralize_funding_stack", ["GOV", "FUND", "ISSUANCE"])
         if isinstance(stack_raw, (list, tuple)):
@@ -839,39 +1118,102 @@ class NewLoop:
         paid_gov = 0.0
         paid_fund = 0.0
         paid_iss = 0.0
+        paid_interest_total = 0.0
+        paid_principal_total = 0.0
+
+        def _pay_from_source(src: str, amount: float) -> float:
+            amt = max(0.0, float(amount))
+            if amt <= 0.0:
+                return 0.0
+            if src == "GOV":
+                return self._pay_bank_income_from_payer("GOV", amt)
+            if src == "FUND":
+                return self._pay_bank_income_from_payer("FUND", amt)
+            if src == "ISSUANCE":
+                self.nodes["BANK"].add("deposit_liab", +amt)
+                self.nodes["BANK"].add("reserves", +amt)
+                self.nodes["GOV"].add("deposits", +amt)
+                self.nodes["GOV"].add("money_issued", +amt)
+                return self._pay_bank_income_from_payer("GOV", amt)
+            return 0.0
+
+        def _pay_principal_from_source(src: str, amount: float) -> float:
+            amt = max(0.0, float(amount))
+            if amt <= 0.0:
+                return 0.0
+            if src == "GOV":
+                return self._pay_bank_principal_from_payer("GOV", amt)
+            if src == "FUND":
+                return self._pay_bank_principal_from_payer("FUND", amt)
+            if src == "ISSUANCE":
+                self.nodes["BANK"].add("deposit_liab", +amt)
+                self.nodes["BANK"].add("reserves", +amt)
+                self.nodes["GOV"].add("deposits", +amt)
+                self.nodes["GOV"].add("money_issued", +amt)
+                return self._pay_bank_principal_from_payer("GOV", amt)
+            return 0.0
 
         for src in stack:
             if remaining <= 0.0:
                 break
             if src == "GOV":
-                paid = self._pay_bank_income_from_payer("GOV", remaining)
-                paid_gov += paid
+                source_paid = 0.0
+                interest_need = max(0.0, float(np.sum(interest_gap_vec)) - paid_interest_total)
+                paid = _pay_from_source("GOV", min(remaining, interest_need))
+                paid_interest_total += paid
+                source_paid += paid
                 remaining -= paid
+                principal_need = max(0.0, float(np.sum(principal_gap_vec)) - paid_principal_total)
+                paid = _pay_principal_from_source("GOV", min(remaining, principal_need))
+                paid_principal_total += paid
+                source_paid += paid
+                remaining -= paid
+                paid_gov += source_paid
             elif src == "FUND":
                 allow_if_debt = bool(self.params.get("mort_neutralize_fund_allowed_if_debt_outstanding", False))
                 fund_debt = float(self.nodes["FUND"].get("loans", 0.0))
                 if (fund_debt <= 1e-12) or allow_if_debt:
-                    paid = self._pay_bank_income_from_payer("FUND", remaining)
-                    paid_fund += paid
+                    source_paid = 0.0
+                    interest_need = max(0.0, float(np.sum(interest_gap_vec)) - paid_interest_total)
+                    paid = _pay_from_source("FUND", min(remaining, interest_need))
+                    paid_interest_total += paid
+                    source_paid += paid
                     remaining -= paid
+                    principal_need = max(0.0, float(np.sum(principal_gap_vec)) - paid_principal_total)
+                    paid = _pay_principal_from_source("FUND", min(remaining, principal_need))
+                    paid_principal_total += paid
+                    source_paid += paid
+                    remaining -= paid
+                    paid_fund += source_paid
             elif src == "ISSUANCE":
-                pay = max(0.0, remaining)
-                if pay > 0.0:
-                    self.nodes["BANK"].add("deposit_liab", +pay)
-                    self.nodes["BANK"].add("reserves", +pay)
-                    self.nodes["GOV"].add("deposits", +pay)
-                    self.nodes["GOV"].add("money_issued", +pay)
-                    paid = self._pay_bank_income_from_payer("GOV", pay)
-                    paid_iss += paid
-                    remaining -= paid
+                source_paid = 0.0
+                interest_need = max(0.0, float(np.sum(interest_gap_vec)) - paid_interest_total)
+                paid = _pay_from_source("ISSUANCE", min(remaining, interest_need))
+                paid_interest_total += paid
+                source_paid += paid
+                remaining -= paid
+                principal_need = max(0.0, float(np.sum(principal_gap_vec)) - paid_principal_total)
+                paid = _pay_principal_from_source("ISSUANCE", min(remaining, principal_need))
+                paid_principal_total += paid
+                source_paid += paid
+                remaining -= paid
+                paid_iss += source_paid
 
         paid_total = float(paid_gov + paid_fund + paid_iss)
+        principal_gap_total = float(np.sum(principal_gap_vec))
+        if paid_principal_total > 0.0 and principal_gap_total > 1e-12:
+            paid_principal_i = principal_gap_vec * (paid_principal_total / principal_gap_total)
+        else:
+            paid_principal_i = np.zeros_like(principal_gap_vec, dtype=float)
         return {
             "gap_total": float(gap_total),
             "paid_gov": float(paid_gov),
             "paid_fund": float(paid_fund),
             "paid_issuance": float(paid_iss),
             "paid_total": float(paid_total),
+            "paid_interest_total": float(paid_interest_total),
+            "paid_principal_total": float(paid_principal_total),
+            "paid_principal_i": paid_principal_i.astype(float, copy=True),
         }
 
     # ------------------------
@@ -1157,10 +1499,10 @@ class NewLoop:
         if int(self.state["t"]) == 0:
             return
 
-        # Trigger metric: use last-quarter debt-service stress.
+        # Trigger metric: use last-quarter mortgage-payment stress.
         # We take the maximum of:
-        #   - pop_dti_w_p90: interest / wage among employed debtors (wage-only)
-        #   - pop_dti_p90:   interest / (wage + income support) among debtors (inclusive)
+        #   - pop_dti_w_p90: required mortgage payment / wage among mortgagors
+        #   - pop_dti_p90:   required mortgage payment / disposable income among mortgagors
         # This prevents “never trigger” behavior if one of the two sub-metrics is empty or near-zero.
         dti_ratio = 0.0
         dti_w_p90 = 0.0
@@ -1632,12 +1974,10 @@ class NewLoop:
             vat_credit_i = vat_credit_per_h * vat_credit_weight_i
 
             # Disposable income used by the consumption rule.
-            # When mortgage indexing is enabled, households service mortgage-required payment
-            # plus revolving interest (contractual); otherwise retain legacy interest-only burden.
-            if mort_index_enable:
-                y_new = wages_i + float(uis) + div_i + vat_credit_i - rev_interest - mort_pay_req_i - income_tax_i
-            else:
-                y_new = wages_i + float(uis) + div_i + vat_credit_i - interest_hh - income_tax_i
+            # Households service the full required mortgage payment plus revolving interest
+            # in both indexed and non-indexed mortgage regimes so solver income matches
+            # the actual cash-settlement path.
+            y_new = wages_i + float(uis) + div_i + vat_credit_i - rev_interest - mort_pay_req_i - income_tax_i
             max_delta = float(np.max(np.abs(y_new - y_guess)))
 
             if max_delta < tol:
@@ -1778,6 +2118,8 @@ class NewLoop:
         mort_interest_due_i = _as_np(sol.get("mort_interest_due_i", []), dtype=float)
         mort_interest_paid_i = _as_np(sol.get("mort_interest_paid_i", []), dtype=float)
         mort_principal_paid_i = _as_np(sol.get("mort_principal_paid_i", []), dtype=float)
+        mort_interest_gap_i = _as_np(sol.get("mort_interest_gap_i", []), dtype=float)
+        mort_principal_gap_i = _as_np(sol.get("mort_principal_gap_i", []), dtype=float)
         mort_gap_i = _as_np(sol.get("mort_gap_i", []), dtype=float)
         mort_index_i = _as_np(sol.get("mort_index_i", []), dtype=float)
         mort_dln_i = _as_np(sol.get("mort_dln_i", []), dtype=float)
@@ -1811,6 +2153,10 @@ class NewLoop:
             mort_interest_paid_i = np.zeros(n, dtype=float)
         if mort_principal_paid_i.shape[0] != n:
             mort_principal_paid_i = np.zeros(n, dtype=float)
+        if mort_interest_gap_i.shape[0] != n:
+            mort_interest_gap_i = np.zeros(n, dtype=float)
+        if mort_principal_gap_i.shape[0] != n:
+            mort_principal_gap_i = np.zeros(n, dtype=float)
         if mort_gap_i.shape[0] != n:
             mort_gap_i = np.zeros(n, dtype=float)
         if mort_index_i.shape[0] != n:
@@ -2004,11 +2350,14 @@ class NewLoop:
         self.state["mort_gap_paid_by_fund"] = 0.0
         self.state["mort_gap_paid_by_issuance"] = 0.0
         self.state["bank_mort_neutralize_inflow"] = 0.0
+        self.state["bank_mort_neutralize_interest_inflow"] = 0.0
+        self.state["bank_mort_neutralize_principal_inflow"] = 0.0
         self.state["mort_index_mean"] = 1.0
         self.state["mort_index_min"] = 1.0
         self.state["mort_index_max"] = 1.0
         self.state["mort_overdraft_due_to_payment_total"] = 0.0
         self.state["mort_overdraft_due_to_payment_count"] = 0.0
+        self.state["mort_principal_paid_total"] = 0.0
 
         if mort_index_enable:
             # Commit mortgage index recursion state for this tick using converged solver outputs.
@@ -2031,34 +2380,47 @@ class NewLoop:
                 self.state["mort_index_min"] = float(np.min(curr_i[active_mort]))
                 self.state["mort_index_max"] = float(np.max(curr_i[active_mort]))
 
-            # Revolving interest remains contractual and is always paid (fallback via overdraft later).
-            deposits[:] = deposits - rev_interest_i
-            rev_int_total = float(np.sum(np.maximum(0.0, rev_interest_i)))
-            if rev_int_total > 0.0:
-                bank.add("deposit_liab", -rev_int_total)
-                bank.add("equity", +rev_int_total)
+        self.state["mort_pay_req_total"] = float(np.sum(np.maximum(0.0, mort_pay_req_i)))
+        self.state["mort_pay_ctr_total"] = float(np.sum(np.maximum(0.0, mort_pay_ctr_i)))
+        self.state["mort_gap_total"] = float(np.sum(np.maximum(0.0, mort_gap_i)))
 
-            # Mortgage required payment (indexed).
-            dep_before_mort = deposits.copy()
-            deposits[:] = deposits - mort_pay_req_i
-            mort_overdraft_need = np.maximum(0.0, mort_pay_req_i - np.maximum(0.0, dep_before_mort))
-            self.state["mort_overdraft_due_to_payment_total"] = float(np.sum(mort_overdraft_need))
-            self.state["mort_overdraft_due_to_payment_count"] = float(np.sum(mort_overdraft_need > 1e-12))
+        if mort_index_enable:
+            if np.any(active_mort):
+                self.state["mort_index_mean"] = float(np.mean(curr_i[active_mort]))
+                self.state["mort_index_min"] = float(np.min(curr_i[active_mort]))
+                self.state["mort_index_max"] = float(np.max(curr_i[active_mort]))
 
-            mort_int_paid_total = float(np.sum(np.maximum(0.0, mort_interest_paid_i)))
-            mort_prin_paid_total = float(np.sum(np.maximum(0.0, mort_principal_paid_i)))
+        # Revolving interest remains contractual in all mortgage regimes.
+        deposits[:] = deposits - rev_interest_i
+        rev_int_total = float(np.sum(np.maximum(0.0, rev_interest_i)))
+        if rev_int_total > 0.0:
+            bank.add("deposit_liab", -rev_int_total)
+            bank.add("equity", +rev_int_total)
 
-            if mort_int_paid_total > 0.0:
-                bank.add("deposit_liab", -mort_int_paid_total)
-                bank.add("equity", +mort_int_paid_total)
-            if mort_prin_paid_total > 0.0:
-                mort[:] = np.maximum(0.0, mort - mort_principal_paid_i)
-                bank.add("loan_assets", -mort_prin_paid_total)
-                bank.add("deposit_liab", -mort_prin_paid_total)
+        # Mortgage required payment is the single household mortgage cash-flow path.
+        dep_before_mort = deposits.copy()
+        deposits[:] = deposits - mort_pay_req_i
+        mort_overdraft_need = np.maximum(0.0, mort_pay_req_i - np.maximum(0.0, dep_before_mort))
+        self.state["mort_overdraft_due_to_payment_total"] = float(np.sum(mort_overdraft_need))
+        self.state["mort_overdraft_due_to_payment_count"] = float(np.sum(mort_overdraft_need > 1e-12))
 
+        mort_int_paid_total = float(np.sum(np.maximum(0.0, mort_interest_paid_i)))
+        mort_prin_paid_total = float(np.sum(np.maximum(0.0, mort_principal_paid_i)))
+        self.state["mort_principal_paid_total"] = float(mort_prin_paid_total)
+
+        if mort_int_paid_total > 0.0:
+            bank.add("deposit_liab", -mort_int_paid_total)
+            bank.add("equity", +mort_int_paid_total)
+        if mort_prin_paid_total > 0.0:
+            mort[:] = np.maximum(0.0, mort - mort_principal_paid_i)
+            bank.add("loan_assets", -mort_prin_paid_total)
+            bank.add("deposit_liab", -mort_prin_paid_total)
+
+        if mort_index_enable:
             # Optional bank neutralization transfer for reduced mortgage cashflow.
             neutral = self._apply_mortgage_gap_neutralization(
-                gap_i=np.maximum(0.0, mort_gap_i),
+                interest_gap_i=np.maximum(0.0, mort_interest_gap_i),
+                principal_gap_i=np.maximum(0.0, mort_principal_gap_i),
                 mort_interest_due_total=float(np.sum(np.maximum(0.0, mort_interest_due_i))),
                 mort_pay_ctr_total=float(np.sum(np.maximum(0.0, mort_pay_ctr_i))),
             )
@@ -2067,12 +2429,15 @@ class NewLoop:
             self.state["mort_gap_paid_by_fund"] = float(neutral["paid_fund"])
             self.state["mort_gap_paid_by_issuance"] = float(neutral["paid_issuance"])
             self.state["bank_mort_neutralize_inflow"] = float(neutral["paid_total"])
-        else:
-            deposits[:] = deposits - interest_hh
-            tot_int_hh = float(interest_hh.sum())
-            if tot_int_hh > 0.0:
-                bank.add("deposit_liab", -tot_int_hh)
-                bank.add("equity", +tot_int_hh)
+            self.state["bank_mort_neutralize_interest_inflow"] = float(neutral["paid_interest_total"])
+            self.state["bank_mort_neutralize_principal_inflow"] = float(neutral["paid_principal_total"])
+            neutral_principal_i = _as_np(neutral.get("paid_principal_i", np.zeros(n, dtype=float)), dtype=float)
+            neutral_principal_total = float(np.sum(np.maximum(0.0, neutral_principal_i)))
+            if neutral_principal_total > 0.0:
+                mort[:] = np.maximum(0.0, mort - neutral_principal_i)
+                self.state["mort_principal_paid_total"] = float(
+                    float(self.state.get("mort_principal_paid_total", 0.0)) + neutral_principal_total
+                )
 
         trust_interest = float(sol.get("trust_interest", 0.0))
         if trust_interest > 0:
@@ -2244,11 +2609,10 @@ class NewLoop:
 
         principal_paid_total = 0.0
         rev_rollover_total = 0.0
-        mort_principal_paid_total = 0.0
+        mort_principal_paid_total = float(self.state.get("mort_principal_paid_total", 0.0))
         mort_turnover_total = 0.0
         self.state["rev_principal_paid_total"] = 0.0
         self.state["rev_rollover_total"] = 0.0
-        self.state["mort_principal_paid_total"] = 0.0
         self.state["mort_turnover_total"] = 0.0
         self.state["mort_turnover_households"] = 0.0
 
@@ -2274,19 +2638,6 @@ class NewLoop:
                         rev[:] = rev + reissue
                         rev_rollover_total += reissue_sum
                         self.state["rev_rollover_total"] = float(reissue_sum)
-
-        if (not mort_index_enable) and mort_pay_rate > 0.0:
-            desired_mort_pay = mort * mort_pay_rate
-            mort_pay = np.minimum(desired_mort_pay, deposits)
-            mort_pay = np.maximum(0.0, mort_pay)
-
-            pay_sum = float(mort_pay.sum())
-            if pay_sum > 0.0:
-                deposits[:] = deposits - mort_pay
-                mort[:] = mort - mort_pay
-                principal_paid_total += pay_sum
-                mort_principal_paid_total = pay_sum
-                self.state["mort_principal_paid_total"] = float(pay_sum)
 
         if principal_paid_total > 0.0:
             # Principal repayment destroys deposits and loans (double-entry)
@@ -2382,18 +2733,24 @@ class NewLoop:
         # 8b) Store lagged firm/bank earnings, installation queues, and next-quarter dividend commitments.
         self.nodes["FA"].memo["retained_prev"] = float(sol.get("retained_fa", 0.0))
         self.nodes["FH"].memo["retained_prev"] = float(sol.get("retained_fh", 0.0))
-        self.nodes["BANK"].memo["retained_prev"] = float(sol.get("retained_bk", 0.0))
+        bank_neutralize_interest_inflow = float(max(0.0, self.state.get("bank_mort_neutralize_interest_inflow", 0.0)))
+        bank_retained_total = float(sol.get("retained_bk", 0.0)) + bank_neutralize_interest_inflow
+        self.nodes["BANK"].memo["retained_prev"] = float(bank_retained_total)
         self.state["sector_capex_queue_info_nom"] = float(sol.get("capex_queue_info_next", 0.0))
         self.state["sector_capex_queue_phys_nom"] = float(sol.get("capex_queue_phys_next", 0.0))
-        payout_firms = max(0.0, min(1.0, float(self.params.get("dividend_payout_rate_firms", 1.0))))
+        p_now = max(1e-9, float(self.state.get("price_level", 1.0)))
+        payout_firms_info = self._update_sector_payout_rate("FA")
+        payout_firms_phys = self._update_sector_payout_rate("FH")
+        surplus_dist_info = self._sector_surplus_distribution_nom("FA", p_now)
+        surplus_dist_phys = self._sector_surplus_distribution_nom("FH", p_now)
         payout_bank = max(0.0, min(1.0, float(self.params.get("dividend_payout_rate_bank", 1.0))))
         service_floor = max(1e-9, float(self.params.get("sector_dividend_service_floor", 0.95)))
         service_ratio_info = min(1.0, float(sol.get("hh_sales_fa_real", 0.0)) / max(1e-9, float(sol.get("hh_demand_fa_real", 0.0)))) if float(sol.get("hh_demand_fa_real", 0.0)) > 1e-12 else 1.0
         service_ratio_phys = min(1.0, float(sol.get("hh_sales_fh_real", 0.0)) / max(1e-9, float(sol.get("hh_demand_fh_real", 0.0)))) if float(sol.get("hh_demand_fh_real", 0.0)) > 1e-12 else 1.0
         stress_scale_info = max(0.0, min(1.0, service_ratio_info / service_floor))
         stress_scale_phys = max(0.0, min(1.0, service_ratio_phys / service_floor))
-        self.nodes["FA"].memo["dividend_commit_prev"] = payout_firms * float(sol.get("p_fa", 0.0)) * stress_scale_info
-        self.nodes["FH"].memo["dividend_commit_prev"] = payout_firms * float(sol.get("p_fh", 0.0)) * stress_scale_phys
+        self.nodes["FA"].memo["dividend_commit_prev"] = (payout_firms_info * float(sol.get("p_fa", 0.0)) * stress_scale_info) + surplus_dist_info
+        self.nodes["FH"].memo["dividend_commit_prev"] = (payout_firms_phys * float(sol.get("p_fh", 0.0)) * stress_scale_phys) + surplus_dist_phys
         self.nodes["BANK"].memo["dividend_commit_prev"] = payout_bank * float(sol.get("bank_profit", 0.0))
         self.nodes["FA"].memo["revenue_prev"] = float(sol.get("rev_fa", 0.0))
         self.nodes["FH"].memo["revenue_prev"] = float(sol.get("rev_fh", 0.0))
@@ -2571,8 +2928,9 @@ class NewLoop:
             gini_disp = calculate_gini_np(y_vec) if y_vec.size else 0.0
 
             # Net-wealth Gini proxy:
-            #   wealth_i = deposits_i + allocated_hh_equity_i - loans_i
-            # Household equity claims are allocated by baseline wage weights because ownership is tracked at HH aggregate.
+            #   wealth_i = deposits_i + allocated_hh_equity_i + allocated_trust_value_i - loans_i
+            # Direct household equity claims are allocated by baseline wage weights because
+            # ownership is tracked at HH aggregate. Trust value is split equally per household.
             dep_i = _as_np(self.hh.deposits, dtype=float)
             loan_i = _as_np(self.hh.mortgage_loans, dtype=float) + _as_np(self.hh.revolving_loans, dtype=float)
 
@@ -2589,25 +2947,36 @@ class NewLoop:
                 if P_wealth <= 0:
                     P_wealth = 1e-9
 
-                def hh_share_frac(issuer: str, key: str) -> float:
+                def node_share_frac(holder: str, issuer: str, key: str) -> float:
                     so = float(self.nodes[issuer].get("shares_outstanding", 0.0))
                     if so <= 0.0:
                         return 0.0
-                    frac_hh = float(self.nodes["HH"].get(key, 0.0)) / so
-                    return max(0.0, min(1.0, frac_hh))
+                    frac = float(self.nodes[holder].get(key, 0.0)) / so
+                    return max(0.0, min(1.0, frac))
 
-                fa_equity_proxy = max(0.0, float(self.nodes["FA"].get("deposits", 0.0)) + float(self.nodes["FA"].get("K", 0.0)) * P_wealth - float(self.nodes["FA"].get("loans", 0.0)))
-                fh_equity_proxy = max(0.0, float(self.nodes["FH"].get("deposits", 0.0)) + float(self.nodes["FH"].get("K", 0.0)) * P_wealth - float(self.nodes["FH"].get("loans", 0.0)))
-                bank_equity_proxy = max(0.0, float(self.nodes["BANK"].get("equity", 0.0)))
+                fa_equity_proxy = self._firm_balance_sheet_equity_proxy("FA", P_wealth)
+                fh_equity_proxy = self._firm_balance_sheet_equity_proxy("FH", P_wealth)
+                bank_equity_proxy = self._firm_balance_sheet_equity_proxy("BANK", P_wealth)
 
                 hh_equity_total = (
-                    hh_share_frac("FA", "shares_FA") * fa_equity_proxy
-                    + hh_share_frac("FH", "shares_FH") * fh_equity_proxy
-                    + hh_share_frac("BANK", "shares_BANK") * bank_equity_proxy
+                    node_share_frac("HH", "FA", "shares_FA") * fa_equity_proxy
+                    + node_share_frac("HH", "FH", "shares_FH") * fh_equity_proxy
+                    + node_share_frac("HH", "BANK", "shares_BANK") * bank_equity_proxy
+                )
+                trust_equity_total = (
+                    node_share_frac("FUND", "FA", "shares_FA") * fa_equity_proxy
+                    + node_share_frac("FUND", "FH", "shares_FH") * fh_equity_proxy
+                    + node_share_frac("FUND", "BANK", "shares_BANK") * bank_equity_proxy
+                )
+                trust_value_total = (
+                    float(self.nodes["FUND"].get("deposits", 0.0))
+                    + trust_equity_total
+                    - float(self.nodes["FUND"].get("loans", 0.0))
                 )
                 private_equity_total = float(max(0.0, hh_equity_total))
                 equity_i = wealth_weights * hh_equity_total
-                wealth_i = dep_i + equity_i - loan_i
+                trust_i = np.full(dep_i.size, trust_value_total / float(dep_i.size), dtype=float)
+                wealth_i = dep_i + equity_i + trust_i - loan_i
                 gini_wealth = calculate_gini_np(wealth_i)
             else:
                 gini_wealth = 0.0
@@ -2619,7 +2988,8 @@ class NewLoop:
 
             retained_fa = float(solp.get("retained_fa", 0.0))
             retained_fh = float(solp.get("retained_fh", 0.0))
-            retained_bk = float(solp.get("retained_bk", 0.0))
+            bank_neutralize_interest_inflow = float(max(0.0, self.state.get("bank_mort_neutralize_interest_inflow", 0.0)))
+            retained_bk = float(solp.get("retained_bk", 0.0)) + bank_neutralize_interest_inflow
             f_fa = float(solp.get("f_fa", 0.0))
             f_fh = float(solp.get("f_fh", 0.0))
             f_bk = float(solp.get("f_bk", 0.0))
@@ -2643,22 +3013,50 @@ class NewLoop:
 
             own_avg = (frac("FA", "shares_FA") + frac("FH", "shares_FH") + frac("BANK", "shares_BANK")) / 3.0
 
-            # Population DTI percentiles directly from solver components (vectorized)
-            interest_hh = _as_np(solp.get("interest_hh", []), dtype=float)
+            # Population mortgage-burden percentiles directly from solver components (vectorized)
             uis = float(solp.get("uis", 0.0))
+            dti_sol = solp
+            if int(self.state.get("t", 0)) == 0:
+                sol_diag = self.solve_within_tick_population()
+                if sol_diag is not None:
+                    dti_sol = sol_diag
 
-            if interest_hh.size and wages_i.size and interest_hh.size == wages_i.size:
-                gross = wages_i + uis
+            dti_wages_i = _as_np(dti_sol.get("wages_i", []), dtype=float)
+            dti_div_i = _as_np(dti_sol.get("div_i", []), dtype=float)
+            interest_hh = _as_np(dti_sol.get("interest_hh", []), dtype=float)
+            mort_pay_req_i = _as_np(dti_sol.get("mort_pay_req_i", []), dtype=float)
+            income_tax_i = _as_np(dti_sol.get("income_tax_i", []), dtype=float)
+            vat_credit_i = _as_np(dti_sol.get("vat_credit_i", []), dtype=float)
+            dti_uis = float(dti_sol.get("uis", 0.0))
+
+            if interest_hh.size and dti_wages_i.size and interest_hh.size == dti_wages_i.size:
+                gross = dti_wages_i + dti_uis
 
                 # Income percentiles: everyone with gross income
                 incs = (gross - interest_hh)[gross > 0]
 
-                # IMPORTANT: apply the mask *before* dividing to avoid divide-by-zero / invalid warnings.
-                dti_mask = (interest_hh > 0) & (gross > 0)
-                dtis = (interest_hh[dti_mask] / gross[dti_mask]) if np.any(dti_mask) else np.asarray([], dtype=float)
+                if (
+                    mort_pay_req_i.size
+                    and mort_pay_req_i.size == dti_wages_i.size
+                    and income_tax_i.size
+                    and income_tax_i.size == dti_wages_i.size
+                    and vat_credit_i.size
+                    and vat_credit_i.size == dti_wages_i.size
+                ):
+                    disp_pre_debt_i = dti_wages_i + float(dti_uis) + dti_div_i + vat_credit_i - income_tax_i
+                    # IMPORTANT: apply the mask *before* dividing to avoid divide-by-zero / invalid warnings.
+                    dti_mask = (mort_pay_req_i > 0) & (disp_pre_debt_i > 0)
+                    dtis = (
+                        mort_pay_req_i[dti_mask] / disp_pre_debt_i[dti_mask]
+                    ) if np.any(dti_mask) else np.asarray([], dtype=float)
 
-                wage_dti_mask = (interest_hh > 0) & (wages_i > 0)
-                dtis_w = (interest_hh[wage_dti_mask] / wages_i[wage_dti_mask]) if np.any(wage_dti_mask) else np.asarray([], dtype=float)
+                    wage_dti_mask = (mort_pay_req_i > 0) & (dti_wages_i > 0)
+                    dtis_w = (
+                        mort_pay_req_i[wage_dti_mask] / dti_wages_i[wage_dti_mask]
+                    ) if np.any(wage_dti_mask) else np.asarray([], dtype=float)
+                else:
+                    dtis = np.asarray([], dtype=float)
+                    dtis_w = np.asarray([], dtype=float)
 
                 pop_dti_med = _pct_np(dtis, 50.0) if dtis.size else 0.0
                 pop_dti_p90 = _pct_np(dtis, 90.0) if dtis.size else 0.0
@@ -2679,19 +3077,11 @@ class NewLoop:
                 P_now = 1e-9
 
             # Trust value proxy (nominal): FUND deposits + FUND equity claims - FUND debt.
-            fa_equity_proxy_hist = max(
-                0.0,
-                float(self.nodes["FA"].get("deposits", 0.0))
-                + float(self.nodes["FA"].get("K", 0.0)) * P_now
-                - float(self.nodes["FA"].get("loans", 0.0)),
-            )
-            fh_equity_proxy_hist = max(
-                0.0,
-                float(self.nodes["FH"].get("deposits", 0.0))
-                + float(self.nodes["FH"].get("K", 0.0)) * P_now
-                - float(self.nodes["FH"].get("loans", 0.0)),
-            )
-            bank_equity_proxy_hist = max(0.0, float(self.nodes["BANK"].get("equity", 0.0)))
+            fa_equity_proxy_hist = self._firm_balance_sheet_equity_proxy("FA", P_now)
+            fh_equity_proxy_hist = self._firm_balance_sheet_equity_proxy("FH", P_now)
+            bank_equity_proxy_hist = self._firm_balance_sheet_equity_proxy("BANK", P_now)
+            fa_broad_equity_proxy_hist = self._firm_broad_equity_proxy("FA", P_now)
+            fh_broad_equity_proxy_hist = self._firm_broad_equity_proxy("FH", P_now)
             trust_equity_value_total = (
                 frac("FA", "shares_FA") * fa_equity_proxy_hist
                 + frac("FH", "shares_FH") * fh_equity_proxy_hist
@@ -2702,6 +3092,52 @@ class NewLoop:
                 + float(trust_equity_value_total)
                 - float(self.nodes["FUND"].get("loans", 0.0))
             )
+
+            total_corporate_equity_total = float(fa_broad_equity_proxy_hist + fh_broad_equity_proxy_hist + bank_equity_proxy_hist)
+            prev_corporate_eq_total = float(self.state.get("corporate_equity_prev_total", 0.0))
+            prev_bank_eq_total = float(self.state.get("corporate_bank_equity_prev_total", 0.0))
+            prev_info_eq_total = float(self.state.get("corporate_info_equity_prev_total", 0.0))
+            prev_physical_eq_total = float(self.state.get("corporate_physical_equity_prev_total", 0.0))
+            prev_nonbank_eq_total = float(self.state.get("corporate_nonbank_equity_prev_total", 0.0))
+            total_corporate_payout_total = (
+                float(solp.get("div_fa_total", 0.0))
+                + float(solp.get("div_fh_total", 0.0))
+                + float(solp.get("div_bk_total", 0.0))
+            )
+            info_corporate_payout_total = float(solp.get("div_fa_total", 0.0))
+            physical_corporate_payout_total = float(solp.get("div_fh_total", 0.0))
+            bank_corporate_payout_total = float(solp.get("div_bk_total", 0.0))
+            nonbank_corporate_payout_total = info_corporate_payout_total + physical_corporate_payout_total
+            total_corporate_retained_total = retained_fa + retained_fh + retained_bk
+            info_corporate_retained_total = retained_fa
+            physical_corporate_retained_total = retained_fh
+            bank_corporate_retained_total = retained_bk
+            nonbank_corporate_retained_total = info_corporate_retained_total + physical_corporate_retained_total
+            bank_broad_roe_q = (
+                (bank_corporate_payout_total + bank_corporate_retained_total) / prev_bank_eq_total
+                if prev_bank_eq_total > 1e-9 else 0.0
+            )
+            corporate_info_broad_roe_q = (
+                (info_corporate_payout_total + info_corporate_retained_total) / prev_info_eq_total
+                if prev_info_eq_total > 1e-9 else 0.0
+            )
+            corporate_physical_broad_roe_q = (
+                (physical_corporate_payout_total + physical_corporate_retained_total) / prev_physical_eq_total
+                if prev_physical_eq_total > 1e-9 else 0.0
+            )
+            corporate_nonbank_broad_roe_q = (
+                (nonbank_corporate_payout_total + nonbank_corporate_retained_total) / prev_nonbank_eq_total
+                if prev_nonbank_eq_total > 1e-9 else 0.0
+            )
+            corporate_broad_roe_q = (
+                (total_corporate_payout_total + total_corporate_retained_total) / prev_corporate_eq_total
+                if prev_corporate_eq_total > 1e-9 else 0.0
+            )
+            self.state["corporate_equity_prev_total"] = float(max(0.0, total_corporate_equity_total))
+            self.state["corporate_bank_equity_prev_total"] = float(max(0.0, bank_equity_proxy_hist))
+            self.state["corporate_info_equity_prev_total"] = float(max(0.0, fa_broad_equity_proxy_hist))
+            self.state["corporate_physical_equity_prev_total"] = float(max(0.0, fh_broad_equity_proxy_hist))
+            self.state["corporate_nonbank_equity_prev_total"] = float(max(0.0, fa_broad_equity_proxy_hist + fh_broad_equity_proxy_hist))
 
             wages_total = float(solp["w_total"])
             c_total = float(solp["c_total"])
@@ -2723,11 +3159,16 @@ class NewLoop:
                 gini_disp=float(gini_disp),
                 gini_wealth=float(gini_wealth),
                 private_eq_per_h=float(private_equity_total) / float(self.hh.n),
-                corporate_eq_info_per_h=float(fa_equity_proxy_hist) / float(self.hh.n),
-                corporate_eq_physical_per_h=float(fh_equity_proxy_hist) / float(self.hh.n),
-                corporate_eq_total_per_h=float(fa_equity_proxy_hist + fh_equity_proxy_hist) / float(self.hh.n),
+                corporate_eq_info_per_h=float(fa_broad_equity_proxy_hist) / float(self.hh.n),
+                corporate_eq_physical_per_h=float(fh_broad_equity_proxy_hist) / float(self.hh.n),
+                corporate_eq_total_per_h=float(fa_broad_equity_proxy_hist + fh_broad_equity_proxy_hist) / float(self.hh.n),
                 private_roe_q=float(private_roe_q),
                 private_broad_roe_q=float(private_broad_roe_q),
+                bank_broad_roe_q=float(bank_broad_roe_q),
+                corporate_info_broad_roe_q=float(corporate_info_broad_roe_q),
+                corporate_physical_broad_roe_q=float(corporate_physical_broad_roe_q),
+                corporate_nonbank_broad_roe_q=float(corporate_nonbank_broad_roe_q),
+                corporate_broad_roe_q=float(corporate_broad_roe_q),
                 private_inv_cov=float(private_inv_cov),
                 # --- Fiscal / funding diagnostics (per household) ---
                 vat_per_h=float(self.state.get("vat_receipts_total", 0.0)) / float(self.hh.n),

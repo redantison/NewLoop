@@ -58,6 +58,7 @@ PERCENT_COLUMNS = {
     "gini_wealth",
     "private_roe_q",
     "private_broad_roe_q",
+    "corporate_broad_roe_q",
     "trust_equity_pct",
     "corp_tax_rate_eff",
     "sector_util_info",
@@ -98,7 +99,7 @@ COMPACT_NUMBER_COLUMNS = {
 DECIMAL_COLUMNS = {"price_level", "private_inv_cov"}
 
 DISPLAY_VALUE_MODES: tuple[str, str] = ("nominal", "real")
-CONTROL_DEFAULTS_VERSION = 9
+CONTROL_DEFAULTS_VERSION = 10
 UBI_PERCENTILE_PARAM_KEY = "param__ubi_target_percentile"
 UBI_PERCENTILE_UI_KEY = "ui__ubi_target_percentile"
 _TITLE_MODE_SUFFIX_RE = re.compile(r"\s+\((?:UIS|UBI|Stale)\)\s*$", re.IGNORECASE)
@@ -193,7 +194,14 @@ def _build_styled_rows(rows: Sequence[Dict[str, Any]]) -> Any:
             formatters[col] = "{:.0f}"
         elif col == "trust_active":
             formatters[col] = lambda v: "Yes" if bool(v) else "No"
-        elif col == "private_broad_roe_q":
+        elif col in {
+            "private_broad_roe_q",
+            "bank_broad_roe_q",
+            "corporate_info_broad_roe_q",
+            "corporate_physical_broad_roe_q",
+            "corporate_nonbank_broad_roe_q",
+            "corporate_broad_roe_q",
+        }:
             formatters[col] = lambda v: f"{100.0 * _annualize_quarterly_rate(float(v)):.2f}%"
         elif col in PERCENT_COLUMNS:
             formatters[col] = lambda v: f"{100.0 * float(v):.2f}%"
@@ -801,13 +809,13 @@ def main() -> None:
         plt.close(line_fig)
 
     st.caption(
-        "Gini labels: Pre-Tax/Pre-Transfer is household wages plus household-distributed dividends, "
-        "before income tax, VAT credit, income-support transfers, and debt-service deductions. Disposable is the model's "
-        "post-policy household income measure. Wealth is deposits plus allocated household equity claims minus loans."
+        "Gini labels: Disposable is the model's post-policy household income measure. "
+        "Wealth is deposits plus allocated household equity claims minus loans."
     )
     st.caption(
-        "DTI means debt-service-to-income in this model: a household debt-burden ratio based on interest payments "
-        "relative to income, not debt stock divided by income."
+        "Mortgage-burden metrics use required mortgage payment divided by pre-debt disposable income "
+        "(before mortgage and revolving debt service) or by wages, measured at the household level "
+        "and shown here as percentile summaries."
     )
 
     hh_count = int(support_debug.get("household_count", 0) or 0)
@@ -838,12 +846,12 @@ def main() -> None:
         rows,
         [
             "capex_per_h",
-            "private_broad_roe_q",
+            "corporate_nonbank_broad_roe_q",
         ],
         title="Investment Recycling",
         primary_ylabel="CAPEX / Household",
-        secondary_metrics=["private_broad_roe_q"],
-        secondary_ylabel="Private Broad ROE (Annualized %)",
+        secondary_metrics=["corporate_nonbank_broad_roe_q"],
+        secondary_ylabel="Non-Bank Broad ROE (Annualized %)",
         support_mode=support_mode,
         ax=ax_recycling,
     )
@@ -949,7 +957,7 @@ def main() -> None:
                 max_value=100,
                 value=(2, 98),
                 step=1,
-                help="Zooms the right-hand wealth panel to this percentile band while keeping a full-range panel for context.",
+                help="Zooms the right-hand wealth histogram to this percentile band while keeping a full-range histogram for context.",
             )
             wealth_fig = plot_wealth_distributions_full_zoom(
                 wealth_before,

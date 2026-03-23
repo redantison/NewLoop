@@ -10,6 +10,7 @@ config = {
     "parameters": {
         # Policy
         "disable_trust": False,
+        "disable_mortgage_relief": False,
         "disable_mortgage_index": False,
         "disable_mortgage_policy": False,
         "disable_income_tax": False,
@@ -27,14 +28,22 @@ config = {
         "vat_poverty_cons_frac": 0.15,    # poverty-line consumption as fraction of baseline real consumption
         # Dividend payout + reinvestment (simple capital stock K; no vintage queue)
         "dividend_payout_rate_firms": 0.75,
+        "dividend_payout_rate_firms_mature_max": 1.0,
         "dividend_payout_rate_bank": 1.0,
+        "sector_dividend_maturity_gap_half_sat": 0.02,
+        "sector_dividend_adjust_speed": 0.50,
+        "sector_surplus_distribution_share": 0.50,
+        "sector_surplus_cash_buffer_revenue_share": 0.10,
         "reinvest_rate_of_retained": 1.0,
         "solver_relaxation": 0.75,       # fixed-point relaxation for within-tick household solver (1.0 = none)
-        # Startup bootstrap: seed lagged retained earnings at t=0 from the implied
-        # retained-earnings state so CAPEX and investment-coverage diagnostics do not
-        # show an artificial quarter-0 jump.
+        # Startup bootstrap: seed lagged retained earnings and the initial broad-ROE
+        # denominator at t=0 from the implied steady-state so early diagnostics do not
+        # show an artificial jump. The heavier firm-capital bootstrap is kept as an
+        # opt-in because it changes the simulated economy, not just the metric base.
         "startup_bootstrap_lagged_retained": True,
         "startup_bootstrap_retained_scale": 1.00,
+        "startup_bootstrap_firm_capital": False,
+        "startup_bootstrap_capital_scale": 1.00,
         "capital_depr_rate_per_quarter": 0.02,
         # Sector-fulfillment pass 1: fixed household demand split plus
         # supplier-first capacity rationing with no new firm debt.
@@ -54,8 +63,8 @@ config = {
         "sector_install_rate_q": 0.05,
         "sector_dividend_cash_buffer_q": 0.00,
         "sector_dividend_service_floor": 0.95,
-        "firm_overhead_rate_info": 0.10,
-        "firm_overhead_rate_phys": 0.15,
+        "firm_overhead_rate_info": 0.15,
+        "firm_overhead_rate_phys": 0.25,
         # Household consumption buffer behavior: spend only a fraction of deposits above
         # the target liquid buffer, and conserve when below target.
         "hh_buffer_spend_excess_rate_q": 0.10,
