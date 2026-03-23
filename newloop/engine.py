@@ -518,6 +518,20 @@ class NewLoop:
             # Indexing the current contractual flow preserves "deflation relief" semantics.
             mort_pay_req_i = mort_pay_ctr_i * i_curr
 
+        if enabled:
+            # Borrower-protection ceiling: the indexed nominal payment may move down with the
+            # index, but it cannot exceed the original contractual burden in real terms.
+            # Convert the origination real burden back into current nominal terms using the
+            # configured mortgage price series so inflation never raises required payments above
+            # the origination real burden.
+            base_vec = np.maximum(0.0, _as_np(hh.mort_pay_base, dtype=float))
+            p0_vec = np.maximum(1e-9, _as_np(hh.mort_P0, dtype=float))
+            real_burden_cap_i = base_vec * (float(p_series_now) / p0_vec)
+            mort_pay_req_i = np.minimum(mort_pay_req_i, real_burden_cap_i)
+            # The indexed path is strictly a relief mechanism. It must never require more
+            # than the contemporaneous non-indexed contractual payment.
+            mort_pay_req_i = np.minimum(mort_pay_req_i, mort_pay_ctr_i)
+
         mort_pay_req_i = np.minimum(np.maximum(0.0, mort_pay_req_i), max_pay_i)
         mort_interest_paid_i = np.minimum(mort_interest_due_i, mort_pay_req_i)
         mort_interest_paid_i = np.maximum(0.0, mort_interest_paid_i)
@@ -1157,10 +1171,10 @@ class NewLoop:
         if int(self.state["t"]) == 0:
             return
 
-        # Trigger metric: use last-quarter debt-service stress.
+        # Trigger metric: use last-quarter mortgage-payment stress.
         # We take the maximum of:
-        #   - pop_dti_w_p90: interest / wage among employed debtors (wage-only)
-        #   - pop_dti_p90:   interest / (wage + income support) among debtors (inclusive)
+        #   - pop_dti_w_p90: required mortgage payment / wage among mortgagors
+        #   - pop_dti_p90:   required mortgage payment / disposable income among mortgagors
         # This prevents “never trigger” behavior if one of the two sub-metrics is empty or near-zero.
         dti_ratio = 0.0
         dti_w_p90 = 0.0
@@ -1632,12 +1646,10 @@ class NewLoop:
             vat_credit_i = vat_credit_per_h * vat_credit_weight_i
 
             # Disposable income used by the consumption rule.
-            # When mortgage indexing is enabled, households service mortgage-required payment
-            # plus revolving interest (contractual); otherwise retain legacy interest-only burden.
-            if mort_index_enable:
-                y_new = wages_i + float(uis) + div_i + vat_credit_i - rev_interest - mort_pay_req_i - income_tax_i
-            else:
-                y_new = wages_i + float(uis) + div_i + vat_credit_i - interest_hh - income_tax_i
+            # Households service the full required mortgage payment plus revolving interest
+            # in both indexed and non-indexed mortgage regimes so solver income matches
+            # the actual cash-settlement path.
+            y_new = wages_i + float(uis) + div_i + vat_credit_i - rev_interest - mort_pay_req_i - income_tax_i
             max_delta = float(np.max(np.abs(y_new - y_guess)))
 
             if max_delta < tol:
@@ -2643,8 +2655,11 @@ class NewLoop:
 
             own_avg = (frac("FA", "shares_FA") + frac("FH", "shares_FH") + frac("BANK", "shares_BANK")) / 3.0
 
-            # Population DTI percentiles directly from solver components (vectorized)
+            # Population mortgage-burden percentiles directly from solver components (vectorized)
             interest_hh = _as_np(solp.get("interest_hh", []), dtype=float)
+            mort_pay_req_i = _as_np(solp.get("mort_pay_req_i", []), dtype=float)
+            income_tax_i = _as_np(solp.get("income_tax_i", []), dtype=float)
+            vat_credit_i = _as_np(solp.get("vat_credit_i", []), dtype=float)
             uis = float(solp.get("uis", 0.0))
 
             if interest_hh.size and wages_i.size and interest_hh.size == wages_i.size:
@@ -2653,12 +2668,28 @@ class NewLoop:
                 # Income percentiles: everyone with gross income
                 incs = (gross - interest_hh)[gross > 0]
 
-                # IMPORTANT: apply the mask *before* dividing to avoid divide-by-zero / invalid warnings.
-                dti_mask = (interest_hh > 0) & (gross > 0)
-                dtis = (interest_hh[dti_mask] / gross[dti_mask]) if np.any(dti_mask) else np.asarray([], dtype=float)
+                if (
+                    mort_pay_req_i.size
+                    and mort_pay_req_i.size == wages_i.size
+                    and income_tax_i.size
+                    and income_tax_i.size == wages_i.size
+                    and vat_credit_i.size
+                    and vat_credit_i.size == wages_i.size
+                ):
+                    disp_pre_debt_i = wages_i + float(uis) + div_i + vat_credit_i - income_tax_i
+                    # IMPORTANT: apply the mask *before* dividing to avoid divide-by-zero / invalid warnings.
+                    dti_mask = (mort_pay_req_i > 0) & (disp_pre_debt_i > 0)
+                    dtis = (
+                        mort_pay_req_i[dti_mask] / disp_pre_debt_i[dti_mask]
+                    ) if np.any(dti_mask) else np.asarray([], dtype=float)
 
-                wage_dti_mask = (interest_hh > 0) & (wages_i > 0)
-                dtis_w = (interest_hh[wage_dti_mask] / wages_i[wage_dti_mask]) if np.any(wage_dti_mask) else np.asarray([], dtype=float)
+                    wage_dti_mask = (mort_pay_req_i > 0) & (wages_i > 0)
+                    dtis_w = (
+                        mort_pay_req_i[wage_dti_mask] / wages_i[wage_dti_mask]
+                    ) if np.any(wage_dti_mask) else np.asarray([], dtype=float)
+                else:
+                    dtis = np.asarray([], dtype=float)
+                    dtis_w = np.asarray([], dtype=float)
 
                 pop_dti_med = _pct_np(dtis, 50.0) if dtis.size else 0.0
                 pop_dti_p90 = _pct_np(dtis, 90.0) if dtis.size else 0.0

@@ -389,7 +389,7 @@ NON_GINI_METRIC_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "uis_issued_per_h",
         ),
     ),
-    ("Stress", ("pop_dti_p90", "pop_dti_w_p90")),
+    ("Stress", ("pop_dti_med", "pop_dti_p90", "pop_dti_w_med", "pop_dti_w_p90")),
 )
 
 

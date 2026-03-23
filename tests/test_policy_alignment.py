@@ -3,6 +3,8 @@ import sys
 import unittest
 from pathlib import Path
 
+import numpy as np
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
@@ -179,6 +181,38 @@ class PolicyAlignmentTests(unittest.TestCase):
 
         self.assertGreater(float(sim_tight.state.get("hh_buffer_gap_shortfall_total", 0.0)), 0.0)
         self.assertLess(float(sim_tight.history[0].total_consumption), float(sim_loose.history[0].total_consumption))
+
+    def test_indexed_mortgage_payment_is_capped_at_origination_real_burden(self):
+        cfg = make_cfg()
+        sim = NewLoop(cfg)
+        hh = sim.hh
+        self.assertIsNotNone(hh)
+        assert hh is not None
+        hh.ensure_memos()
+
+        active = np.asarray(hh.mortgage_loans, dtype=float) > 1e-12
+        self.assertTrue(bool(np.any(active)))
+
+        p_now = float(sim._mort_price_series_value(float(sim.state.get("price_level", 1.0))))
+        sim.state["mort_price_series_prev"] = p_now
+        sim.state["mort_income_series_prev"] = 1.0
+
+        wages_total = 1e9
+        terms = sim._compute_mortgage_index_terms(
+            mort=np.asarray(hh.mortgage_loans, dtype=float),
+            rL=float(sim.state.get("policy_rate_q", sim.params.get("loan_rate_per_quarter", 0.0))),
+            wages_total=wages_total,
+            div_house_total=0.0,
+            uis_per_h=0.0,
+            commit_state=False,
+        )
+
+        mort_pay_req_i = np.asarray(terms["mort_pay_req_i"], dtype=float)
+        base_vec = np.maximum(0.0, np.asarray(hh.mort_pay_base, dtype=float))
+        p0_vec = np.maximum(1e-9, np.asarray(hh.mort_P0, dtype=float))
+        cap_i = base_vec * (p_now / p0_vec)
+
+        self.assertTrue(np.all(mort_pay_req_i[active] <= (cap_i[active] + 1e-9)))
 
 
 if __name__ == "__main__":

@@ -801,13 +801,13 @@ def main() -> None:
         plt.close(line_fig)
 
     st.caption(
-        "Gini labels: Pre-Tax/Pre-Transfer is household wages plus household-distributed dividends, "
-        "before income tax, VAT credit, income-support transfers, and debt-service deductions. Disposable is the model's "
-        "post-policy household income measure. Wealth is deposits plus allocated household equity claims minus loans."
+        "Gini labels: Disposable is the model's post-policy household income measure. "
+        "Wealth is deposits plus allocated household equity claims minus loans."
     )
     st.caption(
-        "DTI means debt-service-to-income in this model: a household debt-burden ratio based on interest payments "
-        "relative to income, not debt stock divided by income."
+        "Mortgage-burden metrics use required mortgage payment divided by pre-debt disposable income "
+        "(before mortgage and revolving debt service) or by wages, measured at the household level "
+        "and shown here as percentile summaries."
     )
 
     hh_count = int(support_debug.get("household_count", 0) or 0)

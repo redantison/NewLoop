@@ -25,8 +25,10 @@ METRIC_LABELS: Dict[str, str] = {
     "private_roe_q": "Private Payout Yield / Quarter",
     "private_broad_roe_q": "Private Broad ROE (Annualized %)",
     "private_inv_cov": "Investment Coverage",
-    "pop_dti_p90": "Debt-Service-to-Income (DTI) P90",
-    "pop_dti_w_p90": "Debt-Service-to-Income (DTI) P90 (Wages)",
+    "pop_dti_med": "Mortgage Payment / Pre-Debt Disposable Income P50",
+    "pop_dti_p90": "Mortgage Payment / Pre-Debt Disposable Income P90",
+    "pop_dti_w_med": "Mortgage Payment / Wages P50",
+    "pop_dti_w_p90": "Mortgage Payment / Wages P90",
     "corporate_eq_info_per_h": "Corporate Equity (Info) / Household",
     "corporate_eq_physical_per_h": "Corporate Equity (Physical) / Household",
     "corporate_eq_total_per_h": "Corporate Equity (Total) / Household",
@@ -386,7 +388,7 @@ def plot_gini_series(
     *,
     support_mode: str | None = None,
 ) -> Any:
-    """Plot pre-tax/pre-transfer, disposable, and wealth Gini series on a dedicated 0-1 scale."""
+    """Plot disposable and wealth Gini series on a dedicated 0-1 scale."""
     import matplotlib.pyplot as plt
 
     rows = _require_rows(rows)
@@ -397,7 +399,7 @@ def plot_gini_series(
     else:
         fig = ax.figure
 
-    metrics = ["gini_market", "gini_disp", "gini_wealth"]
+    metrics = ["gini_disp", "gini_wealth"]
     for metric in metrics:
         ax.plot(x, _series(rows, metric), linewidth=2.0, label=metric_label(metric))
 
