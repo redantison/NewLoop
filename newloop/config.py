@@ -28,7 +28,12 @@ config = {
         "vat_poverty_cons_frac": 0.15,    # poverty-line consumption as fraction of baseline real consumption
         # Dividend payout + reinvestment (simple capital stock K; no vintage queue)
         "dividend_payout_rate_firms": 0.75,
+        "dividend_payout_rate_firms_mature_max": 1.0,
         "dividend_payout_rate_bank": 1.0,
+        "sector_dividend_maturity_gap_half_sat": 0.02,
+        "sector_dividend_adjust_speed": 0.50,
+        "sector_surplus_distribution_share": 0.50,
+        "sector_surplus_cash_buffer_revenue_share": 0.10,
         "reinvest_rate_of_retained": 1.0,
         "solver_relaxation": 0.75,       # fixed-point relaxation for within-tick household solver (1.0 = none)
         # Startup bootstrap: seed lagged retained earnings and the initial broad-ROE
