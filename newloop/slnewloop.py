@@ -957,7 +957,7 @@ def main() -> None:
                 max_value=100,
                 value=(2, 98),
                 step=1,
-                help="Zooms the right-hand wealth panel to this percentile band while keeping a full-range panel for context.",
+                help="Zooms the right-hand wealth histogram to this percentile band while keeping a full-range histogram for context.",
             )
             wealth_fig = plot_wealth_distributions_full_zoom(
                 wealth_before,

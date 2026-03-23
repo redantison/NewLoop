@@ -575,6 +575,7 @@ def plot_distribution_share(
     *,
     title: str,
     x_label: str,
+    x_limits: tuple[float, float] | None = None,
     ax: Any = None,
     bins: int = 60,
 ) -> Any:
@@ -590,15 +591,19 @@ def plot_distribution_share(
     if b.size == 0 or a.size == 0:
         raise ValueError("Distribution plot requires non-empty before and after arrays.")
 
-    q_lo = float(min(np.percentile(b, 1.0), np.percentile(a, 1.0)))
-    q_hi = float(max(np.percentile(b, 99.0), np.percentile(a, 99.0)))
+    if x_limits is not None:
+        q_lo = float(x_limits[0])
+        q_hi = float(x_limits[1])
+    else:
+        q_lo = float(min(np.percentile(b, 1.0), np.percentile(a, 1.0)))
+        q_hi = float(max(np.percentile(b, 99.0), np.percentile(a, 99.0)))
     if q_hi <= q_lo:
         q_lo = float(min(b.min(), a.min()))
         q_hi = float(max(b.max(), a.max()))
         if q_hi <= q_lo:
             q_hi = q_lo + 1.0
 
-    edges = np.linspace(q_lo, q_hi, int(max(20, bins)))
+    edges = np.linspace(q_lo, q_hi, int(max(20, bins)) + 1)
 
     if ax is None:
         fig, ax = plt.subplots(figsize=(9, 4.5))
@@ -613,6 +618,7 @@ def plot_distribution_share(
     ax.set_title(title)
     ax.set_xlabel(x_label)
     ax.set_ylabel("Share of Households")
+    ax.set_xlim(q_lo, q_hi)
     ax.yaxis.set_major_formatter(FuncFormatter(lambda val, _: f"{100.0 * float(val):.2f}%"))
     ax.grid(alpha=0.25)
     ax.legend(loc="best")
@@ -677,7 +683,7 @@ def plot_wealth_distributions_full_zoom(
     zoom_hi_pct: float = 98.0,
     support_mode: str | None = None,
 ) -> Any:
-    """Two-panel wealth ECDF: full range + zoomed percentile window."""
+    """Two-panel wealth histogram: full range + zoomed percentile window."""
     import matplotlib.pyplot as plt
 
     w_b = np.asarray(wealth_before, dtype=float)
@@ -694,6 +700,10 @@ def plot_wealth_distributions_full_zoom(
         lo = max(0.0, hi - 1.0)
 
     all_w = np.concatenate([w_b, w_a])
+    x_full_lo = float(np.min(all_w))
+    x_full_hi = float(np.max(all_w))
+    if x_full_hi <= x_full_lo:
+        x_full_hi = x_full_lo + 1.0
     x_lo = float(np.percentile(all_w, lo))
     x_hi = float(np.percentile(all_w, hi))
     if x_hi <= x_lo:
@@ -703,20 +713,23 @@ def plot_wealth_distributions_full_zoom(
             x_hi = x_lo + 1.0
 
     fig, axs = plt.subplots(1, 2, figsize=(13, 4.5), constrained_layout=True)
-    plot_distribution_compare(
+    plot_distribution_share(
         w_b,
         w_a,
-        title=_title_with_mode("Wealth Distribution (Full Range)", support_mode),
+        title=_title_with_mode("Wealth Distribution (Histogram, Full Range)", support_mode),
         x_label=value_label,
+        x_limits=(x_full_lo, x_full_hi),
         ax=axs[0],
+        bins=80,
     )
-    plot_distribution_compare(
+    plot_distribution_share(
         w_b,
         w_a,
-        title=_title_with_mode(f"Wealth Distribution (Zoomed p{int(round(lo))} to p{int(round(hi))})", support_mode),
+        title=_title_with_mode(f"Wealth Distribution (Histogram, Zoomed p{int(round(lo))} to p{int(round(hi))})", support_mode),
         x_label=value_label,
         x_limits=(x_lo, x_hi),
         ax=axs[1],
+        bins=70,
     )
     return fig
 
@@ -741,10 +754,10 @@ def plot_income_wealth_distributions(
         x_label=value_label,
         ax=axs[0],
     )
-    plot_distribution_compare(
+    plot_distribution_share(
         wealth_before,
         wealth_after,
-        title=_title_with_mode("Wealth Distribution (Before vs After)", support_mode),
+        title=_title_with_mode("Wealth Distribution (Histogram)", support_mode),
         x_label=value_label,
         ax=axs[1],
     )
