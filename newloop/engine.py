@@ -74,6 +74,8 @@ class NewLoop:
             "sector_capacity_phys_real_prev": 0.0,
             "sector_unmet_info_real_prev": 0.0,
             "sector_unmet_phys_real_prev": 0.0,
+            "sector_unmet_info_real_sm_prev": 0.0,
+            "sector_unmet_phys_real_sm_prev": 0.0,
             "sector_free_cash_info_prev": 0.0,
             "sector_free_cash_phys_prev": 0.0,
             "sector_capex_queue_info_nom": 0.0,
@@ -961,11 +963,11 @@ class NewLoop:
 
         if firm_id == "FA":
             prev_capacity = max(0.0, float(self.state.get("sector_capacity_info_real_prev", 0.0)))
-            prev_unmet = max(0.0, float(self.state.get("sector_unmet_info_real_prev", 0.0)))
+            prev_unmet = max(0.0, float(self.state.get("sector_unmet_info_real_sm_prev", self.state.get("sector_unmet_info_real_prev", 0.0))))
             prev_free_cash = max(0.0, float(self.state.get("sector_free_cash_info_prev", 0.0)))
         else:
             prev_capacity = max(0.0, float(self.state.get("sector_capacity_phys_real_prev", 0.0)))
-            prev_unmet = max(0.0, float(self.state.get("sector_unmet_phys_real_prev", 0.0)))
+            prev_unmet = max(0.0, float(self.state.get("sector_unmet_phys_real_sm_prev", self.state.get("sector_unmet_phys_real_prev", 0.0))))
             prev_free_cash = max(0.0, float(self.state.get("sector_free_cash_phys_prev", 0.0)))
 
         maintenance_nom = self._sector_maintenance_capex_nom(firm_id, p_now)
@@ -2895,8 +2897,21 @@ class NewLoop:
 
         self.state["sector_capacity_info_real_prev"] = float(capacity_fa_real)
         self.state["sector_capacity_phys_real_prev"] = float(capacity_fh_real)
-        self.state["sector_unmet_info_real_prev"] = float(max(0.0, hh_demand_fa_real - hh_sales_fa_real))
-        self.state["sector_unmet_phys_real_prev"] = float(max(0.0, hh_demand_fh_real - hh_sales_fh_real))
+        unmet_info_real = float(max(0.0, hh_demand_fa_real - hh_sales_fa_real))
+        unmet_phys_real = float(max(0.0, hh_demand_fh_real - hh_sales_fh_real))
+        self.state["sector_unmet_info_real_prev"] = float(unmet_info_real)
+        self.state["sector_unmet_phys_real_prev"] = float(unmet_phys_real)
+        unmet_alpha = max(0.0, min(1.0, float(self.params.get("sector_capex_unmet_ewma_alpha", 1.0))))
+        prev_unmet_info_sm = float(self.state.get("sector_unmet_info_real_sm_prev", unmet_info_real))
+        prev_unmet_phys_sm = float(self.state.get("sector_unmet_phys_real_sm_prev", unmet_phys_real))
+        if int(self.state.get("t", 0)) <= 0:
+            next_unmet_info_sm = unmet_info_real
+            next_unmet_phys_sm = unmet_phys_real
+        else:
+            next_unmet_info_sm = (unmet_alpha * unmet_info_real) + ((1.0 - unmet_alpha) * prev_unmet_info_sm)
+            next_unmet_phys_sm = (unmet_alpha * unmet_phys_real) + ((1.0 - unmet_alpha) * prev_unmet_phys_sm)
+        self.state["sector_unmet_info_real_sm_prev"] = float(max(0.0, next_unmet_info_sm))
+        self.state["sector_unmet_phys_real_sm_prev"] = float(max(0.0, next_unmet_phys_sm))
         self.state["sector_service_ratio_info_prev"] = float(service_ratio_info)
         self.state["sector_service_ratio_phys_prev"] = float(service_ratio_phys)
         self.state["sector_free_cash_info_prev"] = float(max(0.0, self.nodes["FA"].get("deposits", 0.0)))
