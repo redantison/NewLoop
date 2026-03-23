@@ -58,6 +58,7 @@ PERCENT_COLUMNS = {
     "gini_wealth",
     "private_roe_q",
     "private_broad_roe_q",
+    "corporate_broad_roe_q",
     "trust_equity_pct",
     "corp_tax_rate_eff",
     "sector_util_info",
@@ -98,7 +99,7 @@ COMPACT_NUMBER_COLUMNS = {
 DECIMAL_COLUMNS = {"price_level", "private_inv_cov"}
 
 DISPLAY_VALUE_MODES: tuple[str, str] = ("nominal", "real")
-CONTROL_DEFAULTS_VERSION = 9
+CONTROL_DEFAULTS_VERSION = 10
 UBI_PERCENTILE_PARAM_KEY = "param__ubi_target_percentile"
 UBI_PERCENTILE_UI_KEY = "ui__ubi_target_percentile"
 _TITLE_MODE_SUFFIX_RE = re.compile(r"\s+\((?:UIS|UBI|Stale)\)\s*$", re.IGNORECASE)
@@ -194,6 +195,8 @@ def _build_styled_rows(rows: Sequence[Dict[str, Any]]) -> Any:
         elif col == "trust_active":
             formatters[col] = lambda v: "Yes" if bool(v) else "No"
         elif col == "private_broad_roe_q":
+            formatters[col] = lambda v: f"{100.0 * _annualize_quarterly_rate(float(v)):.2f}%"
+        elif col == "corporate_broad_roe_q":
             formatters[col] = lambda v: f"{100.0 * _annualize_quarterly_rate(float(v)):.2f}%"
         elif col in PERCENT_COLUMNS:
             formatters[col] = lambda v: f"{100.0 * float(v):.2f}%"
@@ -838,12 +841,12 @@ def main() -> None:
         rows,
         [
             "capex_per_h",
-            "private_broad_roe_q",
+            "corporate_broad_roe_q",
         ],
         title="Investment Recycling",
         primary_ylabel="CAPEX / Household",
-        secondary_metrics=["private_broad_roe_q"],
-        secondary_ylabel="Private Broad ROE (Annualized %)",
+        secondary_metrics=["corporate_broad_roe_q"],
+        secondary_ylabel="Total Corporate Broad ROE (Annualized %)",
         support_mode=support_mode,
         ax=ax_recycling,
     )

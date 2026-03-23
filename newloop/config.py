@@ -10,6 +10,7 @@ config = {
     "parameters": {
         # Policy
         "disable_trust": False,
+        "disable_mortgage_relief": False,
         "disable_mortgage_index": False,
         "disable_mortgage_policy": False,
         "disable_income_tax": False,

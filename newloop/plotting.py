@@ -15,6 +15,7 @@ METRIC_LABELS: Dict[str, str] = {
     "automation_phys": "Automation (Physical)",
     "automation_phys_flow": "Automation Flow (Physical, Δ/q)",
     "price_level": "Price Level",
+    "price_level_deflated": "Deflated Price Level",
     "inflation": "Inflation",
     "real_avg_income": "Real Avg Income",
     "real_consumption": "Real Consumption",
@@ -24,6 +25,7 @@ METRIC_LABELS: Dict[str, str] = {
     "private_eq_per_h": "Private Equity / Household",
     "private_roe_q": "Private Payout Yield / Quarter",
     "private_broad_roe_q": "Private Broad ROE (Annualized %)",
+    "corporate_broad_roe_q": "Total Corporate Broad ROE (Annualized %)",
     "private_inv_cov": "Investment Coverage",
     "pop_dti_med": "Mortgage Payment / Pre-Debt Disposable Income P50",
     "pop_dti_p90": "Mortgage Payment / Pre-Debt Disposable Income P90",
@@ -51,8 +53,8 @@ METRIC_LABELS: Dict[str, str] = {
 }
 
 DEFAULT_LINE_METRICS: List[str] = [
-    "real_consumption",
-    "trust_equity_pct",
+    "inflation",
+    "price_level_deflated",
 ]
 
 
@@ -77,6 +79,14 @@ def _series(rows: Sequence[Mapping[str, Any]], metric: str) -> List[float]:
             return float("nan")
         return ((1.0 + q) ** 4 - 1.0) * 100.0
 
+    if metric == "price_level_deflated":
+        values: List[float] = []
+        for row in rows:
+            p = float(row.get("price_level", 1.0))
+            if p <= 0.0:
+                p = 1e-9
+            values.append(1.0 / p)
+        return values
     if metric == "trust_equity_pct":
         values: List[float] = []
         trust_started = False
@@ -87,9 +97,9 @@ def _series(rows: Sequence[Mapping[str, Any]], metric: str) -> List[float]:
                 trust_started = True
             values.append(value if trust_started else float("nan"))
         return values
-    if metric in {"private_roe_q", "private_broad_roe_q"}:
+    if metric in {"private_roe_q", "private_broad_roe_q", "corporate_broad_roe_q"}:
         values = [float(r.get(metric, 0.0)) for r in rows]
-        if metric == "private_broad_roe_q":
+        if metric in {"private_broad_roe_q", "corporate_broad_roe_q"}:
             values = [_annualize_quarterly_rate(v) for v in values]
         if values:
             values[0] = float("nan")

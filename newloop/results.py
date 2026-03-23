@@ -407,7 +407,7 @@ def _startup_solver_snapshot(sim: NewLoop) -> Dict[str, Any] | None:
     rate_q = max(0.0, float(sim.state.get("policy_rate_q", sim.params.get("loan_rate_per_quarter", 0.0))))
     raw_interest_i = np.maximum(0.0, mort_i * rate_q) + np.maximum(0.0, rev_i * rate_q)
 
-    if mort_index_enable and rev_interest_i.shape == wages_i.shape and mort_pay_req_i.shape == wages_i.shape:
+    if rev_interest_i.shape == wages_i.shape and mort_pay_req_i.shape == wages_i.shape:
         debt_service_i = np.maximum(0.0, rev_interest_i) + np.maximum(0.0, mort_pay_req_i)
     else:
         debt_service_i = np.maximum(0.0, interest_hh_i) if interest_hh_i.shape == wages_i.shape else raw_interest_i
@@ -530,7 +530,7 @@ def _baseline_calibration_regime_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
     params["baseline_calibration_enabled"] = False
     params["automation_disabled"] = True
     params["disable_trust"] = True
-    params["disable_mortgage_policy"] = True
+    params["disable_mortgage_relief"] = True
     params["disable_income_support"] = True
     return regime_cfg
 
