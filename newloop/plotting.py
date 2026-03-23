@@ -25,15 +25,19 @@ METRIC_LABELS: Dict[str, str] = {
     "private_eq_per_h": "Private Equity / Household",
     "private_roe_q": "Private Payout Yield / Quarter",
     "private_broad_roe_q": "Private Broad ROE (Annualized %)",
+    "bank_broad_roe_q": "Bank Broad ROE (Annualized %)",
+    "corporate_info_broad_roe_q": "Info Broad ROE (Annualized %)",
+    "corporate_physical_broad_roe_q": "Physical Broad ROE (Annualized %)",
+    "corporate_nonbank_broad_roe_q": "Non-Bank Corporate Broad ROE (Annualized %)",
     "corporate_broad_roe_q": "Total Corporate Broad ROE (Annualized %)",
     "private_inv_cov": "Investment Coverage",
     "pop_dti_med": "Mortgage Payment / Pre-Debt Disposable Income P50",
     "pop_dti_p90": "Mortgage Payment / Pre-Debt Disposable Income P90",
     "pop_dti_w_med": "Mortgage Payment / Wages P50",
     "pop_dti_w_p90": "Mortgage Payment / Wages P90",
-    "corporate_eq_info_per_h": "Corporate Equity (Info) / Household",
-    "corporate_eq_physical_per_h": "Corporate Equity (Physical) / Household",
-    "corporate_eq_total_per_h": "Corporate Equity (Total) / Household",
+    "corporate_eq_info_per_h": "Corporate Broad Equity (Info) / Household",
+    "corporate_eq_physical_per_h": "Corporate Broad Equity (Physical) / Household",
+    "corporate_eq_total_per_h": "Corporate Broad Equity (Total) / Household",
     "trust_equity_pct": "Trust Equity %",
     "uis_per_h": "Income Support / Household",
     "uis_from_fund_dep_per_h": "Income Support from FUND",
@@ -57,6 +61,8 @@ DEFAULT_LINE_METRICS: List[str] = [
     "price_level_deflated",
 ]
 
+SPLIT_ROE_EQUITY_FLOOR_PER_H = 500.0
+
 
 def _require_rows(rows: Sequence[Mapping[str, Any]]) -> List[Mapping[str, Any]]:
     if not rows:
@@ -79,6 +85,13 @@ def _series(rows: Sequence[Mapping[str, Any]], metric: str) -> List[float]:
             return float("nan")
         return ((1.0 + q) ** 4 - 1.0) * 100.0
 
+    split_roe_equity_key = {
+        "bank_broad_roe_q": None,
+        "corporate_info_broad_roe_q": "corporate_eq_info_per_h",
+        "corporate_physical_broad_roe_q": "corporate_eq_physical_per_h",
+        "corporate_nonbank_broad_roe_q": "corporate_eq_total_per_h",
+    }
+
     if metric == "price_level_deflated":
         values: List[float] = []
         for row in rows:
@@ -97,9 +110,37 @@ def _series(rows: Sequence[Mapping[str, Any]], metric: str) -> List[float]:
                 trust_started = True
             values.append(value if trust_started else float("nan"))
         return values
-    if metric in {"private_roe_q", "private_broad_roe_q", "corporate_broad_roe_q"}:
+    if metric in {
+        "private_roe_q",
+        "private_broad_roe_q",
+        "bank_broad_roe_q",
+        "corporate_info_broad_roe_q",
+        "corporate_physical_broad_roe_q",
+        "corporate_nonbank_broad_roe_q",
+        "corporate_broad_roe_q",
+    }:
         values = [float(r.get(metric, 0.0)) for r in rows]
-        if metric in {"private_broad_roe_q", "corporate_broad_roe_q"}:
+        equity_key = split_roe_equity_key.get(metric)
+        if equity_key is not None:
+            filtered: List[float] = []
+            for idx, value in enumerate(values):
+                if idx == 0:
+                    filtered.append(float("nan"))
+                else:
+                    prev_equity_per_h = float(rows[idx - 1].get(equity_key, 0.0))
+                    if prev_equity_per_h < SPLIT_ROE_EQUITY_FLOOR_PER_H:
+                        filtered.append(float("nan"))
+                    else:
+                        filtered.append(value)
+            values = filtered
+        if metric in {
+            "private_broad_roe_q",
+            "bank_broad_roe_q",
+            "corporate_info_broad_roe_q",
+            "corporate_physical_broad_roe_q",
+            "corporate_nonbank_broad_roe_q",
+            "corporate_broad_roe_q",
+        }:
             values = [_annualize_quarterly_rate(v) for v in values]
         if values:
             values[0] = float("nan")

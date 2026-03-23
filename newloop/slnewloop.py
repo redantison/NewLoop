@@ -194,9 +194,14 @@ def _build_styled_rows(rows: Sequence[Dict[str, Any]]) -> Any:
             formatters[col] = "{:.0f}"
         elif col == "trust_active":
             formatters[col] = lambda v: "Yes" if bool(v) else "No"
-        elif col == "private_broad_roe_q":
-            formatters[col] = lambda v: f"{100.0 * _annualize_quarterly_rate(float(v)):.2f}%"
-        elif col == "corporate_broad_roe_q":
+        elif col in {
+            "private_broad_roe_q",
+            "bank_broad_roe_q",
+            "corporate_info_broad_roe_q",
+            "corporate_physical_broad_roe_q",
+            "corporate_nonbank_broad_roe_q",
+            "corporate_broad_roe_q",
+        }:
             formatters[col] = lambda v: f"{100.0 * _annualize_quarterly_rate(float(v)):.2f}%"
         elif col in PERCENT_COLUMNS:
             formatters[col] = lambda v: f"{100.0 * float(v):.2f}%"
@@ -841,12 +846,12 @@ def main() -> None:
         rows,
         [
             "capex_per_h",
-            "corporate_broad_roe_q",
+            "corporate_nonbank_broad_roe_q",
         ],
         title="Investment Recycling",
         primary_ylabel="CAPEX / Household",
-        secondary_metrics=["corporate_broad_roe_q"],
-        secondary_ylabel="Total Corporate Broad ROE (Annualized %)",
+        secondary_metrics=["corporate_nonbank_broad_roe_q"],
+        secondary_ylabel="Non-Bank Broad ROE (Annualized %)",
         support_mode=support_mode,
         ax=ax_recycling,
     )

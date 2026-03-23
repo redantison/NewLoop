@@ -10,6 +10,7 @@ sys.path.insert(0, str(ROOT))
 
 from newloop.config import get_default_config
 from newloop.engine import NewLoop
+from newloop.results import _population_distribution_snapshot
 
 
 def make_cfg():
@@ -248,6 +249,89 @@ class PolicyAlignmentTests(unittest.TestCase):
         self.assertAlmostEqual(float(sim.nodes["BANK"].get("equity", 0.0)), equity_before + 10.0, places=6)
         self.assertAlmostEqual(float(sim.nodes["BANK"].get("loan_assets", 0.0)), loan_assets_before - 20.0, places=6)
         self.assertAlmostEqual(float(sim.nodes["GOV"].get("deposits", 0.0)), 0.0, places=6)
+
+    def test_corporate_roe_split_metrics_recompose_to_totals(self):
+        cfg = make_cfg()
+        sim = NewLoop(cfg)
+
+        sim.step()
+        p_prev = float(sim.state.get("price_level", 1.0))
+        bank_eq_prev = float(sim._firm_balance_sheet_equity_proxy("BANK", p_prev))
+        fa_eq_prev = float(sim._firm_broad_equity_proxy("FA", p_prev))
+        fh_eq_prev = float(sim._firm_broad_equity_proxy("FH", p_prev))
+
+        sim.step()
+        row = sim.history[-1]
+
+        total_eq_prev = bank_eq_prev + fa_eq_prev + fh_eq_prev
+        nonbank_eq_prev = fa_eq_prev + fh_eq_prev
+        self.assertGreater(total_eq_prev, 0.0)
+        self.assertGreater(nonbank_eq_prev, 0.0)
+
+        total_recomposed = (
+            (float(row.bank_broad_roe_q) * bank_eq_prev)
+            + (float(row.corporate_info_broad_roe_q) * fa_eq_prev)
+            + (float(row.corporate_physical_broad_roe_q) * fh_eq_prev)
+        ) / total_eq_prev
+        nonbank_recomposed = (
+            (float(row.corporate_info_broad_roe_q) * fa_eq_prev)
+            + (float(row.corporate_physical_broad_roe_q) * fh_eq_prev)
+        ) / nonbank_eq_prev
+
+        self.assertAlmostEqual(float(row.corporate_broad_roe_q), total_recomposed, places=9)
+        self.assertAlmostEqual(float(row.corporate_nonbank_broad_roe_q), nonbank_recomposed, places=9)
+
+    def test_startup_bootstrap_seeds_positive_broad_equity_denominator_by_default(self):
+        cfg = make_cfg()
+        sim = NewLoop(cfg)
+
+        sim._bootstrap_startup_lagged_retained()
+
+        self.assertGreater(float(sim.state.get("corporate_info_equity_prev_total", 0.0)), 0.0)
+        self.assertGreater(float(sim.state.get("corporate_physical_equity_prev_total", 0.0)), 0.0)
+        self.assertAlmostEqual(float(sim.nodes["FA"].get("K", 0.0)), 0.0, places=9)
+        self.assertAlmostEqual(float(sim.nodes["FH"].get("K", 0.0)), 0.0, places=9)
+
+    def test_startup_bootstrap_respects_explicit_initial_firm_capital(self):
+        cfg = make_cfg()
+        cfg["nodes"]["FA"]["stocks"]["K"] = 123.0
+        cfg["nodes"]["FH"]["stocks"]["K"] = 456.0
+        sim = NewLoop(cfg)
+
+        sim._bootstrap_startup_lagged_retained()
+
+        self.assertAlmostEqual(float(sim.nodes["FA"].get("K", 0.0)), 123.0, places=9)
+        self.assertAlmostEqual(float(sim.nodes["FH"].get("K", 0.0)), 456.0, places=9)
+
+    def test_startup_bootstrap_can_opt_in_to_firm_capital_seed(self):
+        cfg = make_cfg()
+        cfg["parameters"]["startup_bootstrap_firm_capital"] = True
+        sim = NewLoop(cfg)
+
+        sim._bootstrap_startup_lagged_retained()
+
+        self.assertGreater(float(sim.nodes["FA"].get("K", 0.0)), 0.0)
+        self.assertGreater(float(sim.nodes["FH"].get("K", 0.0)), 0.0)
+
+    def test_population_wealth_snapshot_splits_trust_value_equally(self):
+        cfg = make_cfg()
+        sim = NewLoop(cfg)
+        assert sim.hh is not None
+
+        baseline = _population_distribution_snapshot(sim)
+        self.assertIsNotNone(baseline)
+        assert baseline is not None
+
+        sim.nodes["FUND"].set("deposits", 200.0)
+        sim.nodes["BANK"].add("deposit_liab", 200.0)
+        sim.nodes["BANK"].add("reserves", 200.0)
+
+        with_trust = _population_distribution_snapshot(sim)
+        self.assertIsNotNone(with_trust)
+        assert with_trust is not None
+
+        delta = np.asarray(with_trust["wealth"], dtype=float) - np.asarray(baseline["wealth"], dtype=float)
+        np.testing.assert_allclose(delta, np.full(delta.shape, 200.0 / float(sim.hh.n)), rtol=0.0, atol=1e-9)
 
 
 if __name__ == "__main__":

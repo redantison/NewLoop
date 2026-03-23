@@ -386,7 +386,18 @@ NON_GINI_METRIC_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "uis_issued_per_h",
         ),
     ),
-    ("Capital", ("corporate_broad_roe_q", "private_broad_roe_q", "private_inv_cov")),
+    (
+        "Capital",
+        (
+            "corporate_nonbank_broad_roe_q",
+            "bank_broad_roe_q",
+            "corporate_info_broad_roe_q",
+            "corporate_physical_broad_roe_q",
+            "corporate_broad_roe_q",
+            "private_broad_roe_q",
+            "private_inv_cov",
+        ),
+    ),
     ("Stress", ("pop_dti_med", "pop_dti_p90", "pop_dti_w_med", "pop_dti_w_p90")),
 )
 
