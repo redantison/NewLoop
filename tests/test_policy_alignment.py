@@ -73,6 +73,7 @@ class PolicyAlignmentTests(unittest.TestCase):
         cfg = make_cfg()
         params = cfg["parameters"]
         params["trust_trigger_dti"] = 1.0
+        params["disable_income_support"] = True
         params["loan_rate_per_quarter"] = 0.0
         params["vat_rate"] = 0.0
         params["income_tax_rate"] = 0.0
@@ -94,6 +95,7 @@ class PolicyAlignmentTests(unittest.TestCase):
         cfg = make_cfg()
         params = cfg["parameters"]
         params["trust_trigger_dti"] = 1.0
+        params["disable_income_support"] = True
         params["loan_rate_per_quarter"] = 0.0
         params["vat_rate"] = 0.0
         params["income_tax_rate"] = 0.0
@@ -118,6 +120,7 @@ class PolicyAlignmentTests(unittest.TestCase):
         cfg = make_cfg()
         params = cfg["parameters"]
         params["trust_trigger_dti"] = 1.0
+        params["disable_income_support"] = True
         params["loan_rate_per_quarter"] = 0.0
         params["vat_rate"] = 0.0
         params["income_tax_rate"] = 0.0
@@ -141,6 +144,7 @@ class PolicyAlignmentTests(unittest.TestCase):
         cfg = make_cfg()
         params = cfg["parameters"]
         params["trust_trigger_dti"] = 1.0
+        params["disable_income_support"] = True
         params["loan_rate_per_quarter"] = 0.0
         params["vat_rate"] = 0.0
         params["income_tax_rate"] = 0.0
@@ -213,6 +217,37 @@ class PolicyAlignmentTests(unittest.TestCase):
         cap_i = base_vec * (p_now / p0_vec)
 
         self.assertTrue(np.all(mort_pay_req_i[active] <= (cap_i[active] + 1e-9)))
+
+    def test_mortgage_neutralization_splits_interest_from_principal(self):
+        cfg = make_cfg()
+        cfg["parameters"]["mort_neutralize_trigger_mode"] = "Always"
+        sim = NewLoop(cfg)
+        n = sim.hh.n if sim.hh is not None else 0
+        self.assertGreater(n, 0)
+        interest_gap_i = np.zeros(n, dtype=float)
+        principal_gap_i = np.zeros(n, dtype=float)
+        interest_gap_i[0] = 10.0
+        principal_gap_i[0] = 20.0
+
+        sim.nodes["GOV"].set("deposits", 30.0)
+        sim.nodes["BANK"].add("deposit_liab", 30.0)
+        sim.nodes["BANK"].add("reserves", 30.0)
+        loan_assets_before = float(sim.nodes["BANK"].get("loan_assets", 0.0))
+        equity_before = float(sim.nodes["BANK"].get("equity", 0.0))
+
+        neutral = sim._apply_mortgage_gap_neutralization(
+            interest_gap_i=interest_gap_i,
+            principal_gap_i=principal_gap_i,
+            mort_interest_due_total=10.0,
+            mort_pay_ctr_total=30.0,
+        )
+
+        self.assertAlmostEqual(float(neutral["paid_interest_total"]), 10.0, places=6)
+        self.assertAlmostEqual(float(neutral["paid_principal_total"]), 20.0, places=6)
+        self.assertAlmostEqual(float(np.sum(neutral["paid_principal_i"])), 20.0, places=6)
+        self.assertAlmostEqual(float(sim.nodes["BANK"].get("equity", 0.0)), equity_before + 10.0, places=6)
+        self.assertAlmostEqual(float(sim.nodes["BANK"].get("loan_assets", 0.0)), loan_assets_before - 20.0, places=6)
+        self.assertAlmostEqual(float(sim.nodes["GOV"].get("deposits", 0.0)), 0.0, places=6)
 
 
 if __name__ == "__main__":
