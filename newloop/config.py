@@ -63,8 +63,8 @@ config = {
         "sector_install_rate_q": 0.05,
         "sector_dividend_cash_buffer_q": 0.00,
         "sector_dividend_service_floor": 0.95,
-        "firm_overhead_rate_info": 0.10,
-        "firm_overhead_rate_phys": 0.15,
+        "firm_overhead_rate_info": 0.15,
+        "firm_overhead_rate_phys": 0.25,
         # Household consumption buffer behavior: spend only a fraction of deposits above
         # the target liquid buffer, and conserve when below target.
         "hh_buffer_spend_excess_rate_q": 0.10,
