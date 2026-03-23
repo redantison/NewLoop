@@ -38,6 +38,7 @@ class NewLoop:
         self.income_support_policy = make_income_support_policy(self.params)
         p0 = float(config["parameters"].get("price_level_initial", 1.0))
         base_rate_q = max(0.0, float(config["parameters"].get("loan_rate_per_quarter", 0.0)))
+        payout_firms_base = max(0.0, min(1.0, float(config["parameters"].get("dividend_payout_rate_firms", 1.0))))
         self.state = {
             "t": 0,
             "automation": 0.0,
@@ -72,6 +73,8 @@ class NewLoop:
             "sector_capex_queue_phys_nom": 0.0,
             "sector_service_ratio_info_prev": 1.0,
             "sector_service_ratio_phys_prev": 1.0,
+            "sector_payout_rate_info_prev": payout_firms_base,
+            "sector_payout_rate_phys_prev": payout_firms_base,
             # Central-bank policy-rate diagnostics (quarterly rate).
             "policy_rate_q": base_rate_q,
             "policy_rate_target_q": base_rate_q,
@@ -799,21 +802,80 @@ class NewLoop:
             return commit
         if issuer == "BANK":
             payout_rate = max(0.0, min(1.0, float(self.params.get("dividend_payout_rate_bank", 1.0))))
+        elif issuer == "FA":
+            payout_rate = max(0.0, min(1.0, float(self.state.get("sector_payout_rate_info_prev", self.params.get("dividend_payout_rate_firms", 1.0)))))
+        elif issuer == "FH":
+            payout_rate = max(0.0, min(1.0, float(self.state.get("sector_payout_rate_phys_prev", self.params.get("dividend_payout_rate_firms", 1.0)))))
         else:
             payout_rate = max(0.0, min(1.0, float(self.params.get("dividend_payout_rate_firms", 1.0))))
         retained_prev = max(0.0, float(self.nodes[issuer].memo.get("retained_prev", 0.0)))
         return payout_rate * retained_prev
 
-    def _sector_capex_plan_nom(self, firm_id: str, price_level: float) -> float:
+    def _sector_maintenance_capex_nom(self, firm_id: str, price_level: float) -> float:
         p_now = max(1e-9, float(price_level))
         depr_q = max(0.0, min(1.0, float(self.params.get("capital_depr_rate_per_quarter", 0.0))))
+        capacity_per_k = self._sector_capacity_per_k(firm_id)
+        capital = max(0.0, float(self.nodes[firm_id].get("K", 0.0)))
+        if firm_id == "FA":
+            base_capacity = max(0.0, float(self.state.get("sector_base_capacity_info_real", 0.0)))
+        else:
+            base_capacity = max(0.0, float(self.state.get("sector_base_capacity_phys_real", 0.0)))
+        if capacity_per_k > 1e-12:
+            maintenance_stock = capital + (base_capacity / capacity_per_k)
+        else:
+            maintenance_stock = capital
+        return float(depr_q * maintenance_stock * p_now)
+
+    def _sector_maturity_signal(self, firm_id: str) -> float:
+        half_sat = max(1e-9, float(self.params.get("sector_dividend_maturity_gap_half_sat", 0.02)))
+        if firm_id == "FA":
+            prev_capacity = max(0.0, float(self.state.get("sector_capacity_info_real_prev", 0.0)))
+            prev_unmet = max(0.0, float(self.state.get("sector_unmet_info_real_prev", 0.0)))
+        else:
+            prev_capacity = max(0.0, float(self.state.get("sector_capacity_phys_real_prev", 0.0)))
+            prev_unmet = max(0.0, float(self.state.get("sector_unmet_phys_real_prev", 0.0)))
+        gap_ratio = (prev_unmet / max(prev_capacity, 1e-9)) if prev_capacity > 1e-12 else 0.0
+        return float(half_sat / (gap_ratio + half_sat))
+
+    def _sector_target_payout_rate(self, firm_id: str) -> float:
+        payout_base = max(0.0, min(1.0, float(self.params.get("dividend_payout_rate_firms", 1.0))))
+        payout_max = max(payout_base, min(1.0, float(self.params.get("dividend_payout_rate_firms_mature_max", payout_base))))
+        maturity_signal = self._sector_maturity_signal(firm_id)
+        return float(payout_base + ((payout_max - payout_base) * maturity_signal))
+
+    def _update_sector_payout_rate(self, firm_id: str) -> float:
+        adjust_speed = max(0.0, min(1.0, float(self.params.get("sector_dividend_adjust_speed", 0.50))))
+        target_rate = self._sector_target_payout_rate(firm_id)
+        if firm_id == "FA":
+            key = "sector_payout_rate_info_prev"
+        else:
+            key = "sector_payout_rate_phys_prev"
+        prev_rate = max(0.0, min(1.0, float(self.state.get(key, self.params.get("dividend_payout_rate_firms", 1.0)))))
+        next_rate = prev_rate + (adjust_speed * (target_rate - prev_rate))
+        next_rate = max(0.0, min(1.0, next_rate))
+        self.state[key] = float(next_rate)
+        return float(next_rate)
+
+    def _sector_surplus_distribution_nom(self, firm_id: str, price_level: float) -> float:
+        sweep_share = max(0.0, min(1.0, float(self.params.get("sector_surplus_distribution_share", 0.0))))
+        if sweep_share <= 0.0:
+            return 0.0
+        revenue_buffer_share = max(0.0, float(self.params.get("sector_surplus_cash_buffer_revenue_share", 0.0)))
+        maturity_signal = self._sector_maturity_signal(firm_id)
+        deposits = max(0.0, float(self.nodes[firm_id].get("deposits", 0.0)))
+        revenue_prev = max(0.0, float(self.nodes[firm_id].memo.get("revenue_prev", 0.0)))
+        reserve_nom = self._sector_maintenance_capex_nom(firm_id, price_level) + (revenue_buffer_share * revenue_prev)
+        surplus_cash = max(0.0, deposits - reserve_nom)
+        return float(sweep_share * maturity_signal * surplus_cash)
+
+    def _sector_capex_plan_nom(self, firm_id: str, price_level: float) -> float:
+        p_now = max(1e-9, float(price_level))
         half_sat = max(1e-9, float(self.params.get("sector_capex_gap_half_sat", 0.15)))
         share_min = max(0.0, min(1.0, float(self.params.get("sector_capex_share_min", 0.0))))
         share_max = max(share_min, min(1.0, float(self.params.get("sector_capex_share_max", share_min))))
         gap_close = max(0.0, min(1.0, float(self.params.get("sector_capex_gap_close_rate", 0.25))))
         growth_cap_rate = max(0.0, float(self.params.get("sector_capex_growth_cap_rate_q", 0.08)))
         capacity_per_k = self._sector_capacity_per_k(firm_id)
-        capital = max(0.0, float(self.nodes[firm_id].get("K", 0.0)))
 
         if firm_id == "FA":
             prev_capacity = max(0.0, float(self.state.get("sector_capacity_info_real_prev", 0.0)))
@@ -824,15 +886,7 @@ class NewLoop:
             prev_unmet = max(0.0, float(self.state.get("sector_unmet_phys_real_prev", 0.0)))
             prev_free_cash = max(0.0, float(self.state.get("sector_free_cash_phys_prev", 0.0)))
 
-        if firm_id == "FA":
-            base_capacity = max(0.0, float(self.state.get("sector_base_capacity_info_real", 0.0)))
-        else:
-            base_capacity = max(0.0, float(self.state.get("sector_base_capacity_phys_real", 0.0)))
-        if capacity_per_k > 1e-12:
-            maintenance_stock = capital + (base_capacity / capacity_per_k)
-        else:
-            maintenance_stock = capital
-        maintenance_nom = depr_q * maintenance_stock * p_now
+        maintenance_nom = self._sector_maintenance_capex_nom(firm_id, p_now)
         gap_ratio = prev_unmet / max(prev_capacity, 1e-9) if prev_capacity > 1e-12 else 0.0
         gap_signal = gap_ratio / (gap_ratio + half_sat) if gap_ratio > 0.0 else 0.0
         capex_share = share_min + ((share_max - share_min) * gap_signal)
@@ -2684,15 +2738,19 @@ class NewLoop:
         self.nodes["BANK"].memo["retained_prev"] = float(bank_retained_total)
         self.state["sector_capex_queue_info_nom"] = float(sol.get("capex_queue_info_next", 0.0))
         self.state["sector_capex_queue_phys_nom"] = float(sol.get("capex_queue_phys_next", 0.0))
-        payout_firms = max(0.0, min(1.0, float(self.params.get("dividend_payout_rate_firms", 1.0))))
+        p_now = max(1e-9, float(self.state.get("price_level", 1.0)))
+        payout_firms_info = self._update_sector_payout_rate("FA")
+        payout_firms_phys = self._update_sector_payout_rate("FH")
+        surplus_dist_info = self._sector_surplus_distribution_nom("FA", p_now)
+        surplus_dist_phys = self._sector_surplus_distribution_nom("FH", p_now)
         payout_bank = max(0.0, min(1.0, float(self.params.get("dividend_payout_rate_bank", 1.0))))
         service_floor = max(1e-9, float(self.params.get("sector_dividend_service_floor", 0.95)))
         service_ratio_info = min(1.0, float(sol.get("hh_sales_fa_real", 0.0)) / max(1e-9, float(sol.get("hh_demand_fa_real", 0.0)))) if float(sol.get("hh_demand_fa_real", 0.0)) > 1e-12 else 1.0
         service_ratio_phys = min(1.0, float(sol.get("hh_sales_fh_real", 0.0)) / max(1e-9, float(sol.get("hh_demand_fh_real", 0.0)))) if float(sol.get("hh_demand_fh_real", 0.0)) > 1e-12 else 1.0
         stress_scale_info = max(0.0, min(1.0, service_ratio_info / service_floor))
         stress_scale_phys = max(0.0, min(1.0, service_ratio_phys / service_floor))
-        self.nodes["FA"].memo["dividend_commit_prev"] = payout_firms * float(sol.get("p_fa", 0.0)) * stress_scale_info
-        self.nodes["FH"].memo["dividend_commit_prev"] = payout_firms * float(sol.get("p_fh", 0.0)) * stress_scale_phys
+        self.nodes["FA"].memo["dividend_commit_prev"] = (payout_firms_info * float(sol.get("p_fa", 0.0)) * stress_scale_info) + surplus_dist_info
+        self.nodes["FH"].memo["dividend_commit_prev"] = (payout_firms_phys * float(sol.get("p_fh", 0.0)) * stress_scale_phys) + surplus_dist_phys
         self.nodes["BANK"].memo["dividend_commit_prev"] = payout_bank * float(sol.get("bank_profit", 0.0))
         self.nodes["FA"].memo["revenue_prev"] = float(sol.get("rev_fa", 0.0))
         self.nodes["FH"].memo["revenue_prev"] = float(sol.get("rev_fh", 0.0))

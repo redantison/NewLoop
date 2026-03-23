@@ -333,6 +333,43 @@ class PolicyAlignmentTests(unittest.TestCase):
         delta = np.asarray(with_trust["wealth"], dtype=float) - np.asarray(baseline["wealth"], dtype=float)
         np.testing.assert_allclose(delta, np.full(delta.shape, 200.0 / float(sim.hh.n)), rtol=0.0, atol=1e-9)
 
+    def test_sector_target_payout_rate_rises_when_unmet_demand_is_low(self):
+        cfg = make_cfg()
+        sim = NewLoop(cfg)
+
+        sim.state["sector_capacity_info_real_prev"] = 100.0
+        sim.state["sector_unmet_info_real_prev"] = 0.0
+        low_gap_rate = sim._sector_target_payout_rate("FA")
+
+        sim.state["sector_unmet_info_real_prev"] = 10.0
+        high_gap_rate = sim._sector_target_payout_rate("FA")
+
+        self.assertGreater(low_gap_rate, high_gap_rate)
+        self.assertAlmostEqual(
+            low_gap_rate,
+            float(cfg["parameters"]["dividend_payout_rate_firms_mature_max"]),
+            places=9,
+        )
+
+    def test_sector_surplus_distribution_requires_cash_above_reserves(self):
+        cfg = make_cfg()
+        sim = NewLoop(cfg)
+
+        sim.state["sector_capacity_info_real_prev"] = 100.0
+        sim.state["sector_unmet_info_real_prev"] = 0.0
+        sim.state["sector_base_capacity_info_real"] = 50.0
+        sim.nodes["FA"].memo["revenue_prev"] = 200.0
+        sim.nodes["FA"].set("deposits", 300.0)
+
+        dist_nom = sim._sector_surplus_distribution_nom("FA", 1.0)
+        reserve_nom = sim._sector_maintenance_capex_nom("FA", 1.0) + (0.10 * 200.0)
+        expected = 0.50 * max(0.0, 300.0 - reserve_nom)
+
+        self.assertAlmostEqual(dist_nom, expected, places=6)
+
+        sim.nodes["FA"].set("deposits", reserve_nom - 1.0)
+        self.assertAlmostEqual(sim._sector_surplus_distribution_nom("FA", 1.0), 0.0, places=9)
+
 
 if __name__ == "__main__":
     unittest.main()
