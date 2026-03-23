@@ -381,6 +381,35 @@ def _assign_linear_by_percentile_rank(
     return np.interp(rank_pct, pct_vals, anchor_vals).astype(float)
 
 
+def _with_linear_endpoint_anchors(
+    schedule: Tuple[Tuple[float, float], ...],
+    *,
+    floor: float = 0.0,
+) -> Tuple[Tuple[float, float], ...]:
+    """Add endpoint anchors so linear interpolation does not create flat tail buckets."""
+    if len(schedule) == 0:
+        return tuple()
+
+    pts = [(float(pct), float(val)) for pct, val in schedule]
+    pts.sort(key=lambda item: item[0])
+
+    if len(pts) >= 2 and pts[0][0] > 0.0:
+        p0, v0 = pts[0]
+        p1, v1 = pts[1]
+        slope = (v1 - v0) / max(1e-9, (p1 - p0))
+        extrap = max(float(floor), v0 - (slope * p0))
+        pts.insert(0, (0.0, extrap))
+
+    if len(pts) >= 2 and pts[-1][0] < 100.0:
+        p0, v0 = pts[-2]
+        p1, v1 = pts[-1]
+        slope = (v1 - v0) / max(1e-9, (p1 - p0))
+        extrap = max(float(floor), v1 + (slope * (100.0 - p1)))
+        pts.append((100.0, extrap))
+
+    return tuple(pts)
+
+
 def generate_population(cfg: PopulationConfig) -> Population:
     # Vectorized implementation (NumPy). Keeps the same public interface and outputs.
     if NP is None:
@@ -423,9 +452,14 @@ def generate_population(cfg: PopulationConfig) -> Population:
         base_real = np.full(n, float(cfg.base_real_cons_q), dtype=float)
 
     # --- Liquid-buffer target (used both for initialization and in-run consumption behavior) ---
-    target_months = _assign_piecewise_by_percentile_rank(
+    # Interpolate between percentile anchors so the precautionary-buffer rule does not
+    # create artificial household cohorts at a few discrete month targets.
+    target_months = _assign_linear_by_percentile_rank(
         wealth_signal,
-        tuple((float(pct), float(months)) for pct, months in cfg.liquid_buffer_months_by_wealth_pct),
+        _with_linear_endpoint_anchors(
+            tuple((float(pct), float(months)) for pct, months in cfg.liquid_buffer_months_by_wealth_pct),
+            floor=0.0,
+        ),
     )
 
     # --- Deposits (liquid wealth proxy) ---

@@ -3,6 +3,8 @@ import sys
 import unittest
 from pathlib import Path
 
+import numpy as np
+
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -45,14 +47,30 @@ class PopulationGenerationTests(unittest.TestCase):
         self.assertLessEqual(base_real_medians[0], 500.0)
         self.assertGreaterEqual(base_real_medians[-1], 625.0)
         self.assertLessEqual(base_real_medians[-1], 725.0)
-        self.assertGreaterEqual(realized_buffer_months[0], 1.0)
+        self.assertGreaterEqual(realized_buffer_months[0], 0.9)
         self.assertLessEqual(realized_buffer_months[0], 3.0)
         self.assertGreaterEqual(realized_buffer_months[-1], 7.0)
         self.assertLessEqual(realized_buffer_months[-1], 14.0)
-        self.assertGreaterEqual(month_medians[0], 1.0)
+        self.assertGreaterEqual(month_medians[0], 0.9)
         self.assertLessEqual(month_medians[0], 3.0)
         self.assertGreaterEqual(month_medians[-1], 7.0)
         self.assertLessEqual(month_medians[-1], 14.0)
+
+    def test_liquid_buffer_targets_are_smoothed_between_percentile_anchors(self):
+        cfg = PopulationConfig(
+            n_families=5000,
+            seed=7919,
+            employment_rate=1.0,
+            deposit_generation_mode="liquid_buffer_months",
+        )
+        pop = generate_population(cfg)
+
+        rounded_targets = {round(float(x), 3) for x in pop.liquid_buffer_months_target}
+        _, counts = np.unique(np.round(pop.liquid_buffer_months_target, 3), return_counts=True)
+        self.assertGreater(len(rounded_targets), 100)
+        self.assertIn(1.5, rounded_targets)
+        self.assertIn(12.0, rounded_targets)
+        self.assertLess(int(counts.max()), 100)
 
 
 if __name__ == "__main__":
