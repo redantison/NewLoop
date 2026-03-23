@@ -31,11 +31,14 @@ config = {
         "dividend_payout_rate_bank": 1.0,
         "reinvest_rate_of_retained": 1.0,
         "solver_relaxation": 0.75,       # fixed-point relaxation for within-tick household solver (1.0 = none)
-        # Startup bootstrap: seed lagged retained earnings at t=0 from the implied
-        # retained-earnings state so CAPEX and investment-coverage diagnostics do not
-        # show an artificial quarter-0 jump.
+        # Startup bootstrap: seed lagged retained earnings and the initial broad-ROE
+        # denominator at t=0 from the implied steady-state so early diagnostics do not
+        # show an artificial jump. The heavier firm-capital bootstrap is kept as an
+        # opt-in because it changes the simulated economy, not just the metric base.
         "startup_bootstrap_lagged_retained": True,
         "startup_bootstrap_retained_scale": 1.00,
+        "startup_bootstrap_firm_capital": False,
+        "startup_bootstrap_capital_scale": 1.00,
         "capital_depr_rate_per_quarter": 0.02,
         # Sector-fulfillment pass 1: fixed household demand split plus
         # supplier-first capacity rationing with no new firm debt.
