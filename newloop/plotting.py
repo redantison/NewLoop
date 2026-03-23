@@ -612,8 +612,13 @@ def plot_distribution_share(
 
     w_b = np.full(b.size, 1.0 / float(b.size), dtype=float)
     w_a = np.full(a.size, 1.0 / float(a.size), dtype=float)
-    ax.hist(b, bins=edges, weights=w_b, histtype="step", linewidth=2.0, label="Before")
-    ax.hist(a, bins=edges, weights=w_a, histtype="step", linewidth=2.0, label="After")
+    before_hist = ax.hist(b, bins=edges, weights=w_b, histtype="step", linewidth=2.0, label="Before")
+    after_hist = ax.hist(a, bins=edges, weights=w_a, histtype="step", linewidth=2.0, label="After")
+    before_color = before_hist[2][0].get_edgecolor()
+    after_color = after_hist[2][0].get_edgecolor()
+
+    ax.axvline(float(np.median(b)), color=before_color, linestyle=":", linewidth=1.8, alpha=0.9)
+    ax.axvline(float(np.median(a)), color=after_color, linestyle=":", linewidth=1.8, alpha=0.9)
 
     ax.set_title(title)
     ax.set_xlabel(x_label)

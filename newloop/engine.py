@@ -11,6 +11,13 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 
 from .mathutils import _as_np, _pct, _pct_np, automation_two_hump, calculate_gini_np
+from .mortgage import (
+    orig_principal_from_balance,
+    payment_from_balance,
+    payment_from_orig_principal,
+    remaining_term,
+    scheduled_payment_components,
+)
 from .income_support import apply_income_support_payment, make_income_support_policy
 from .newloop_types import HouseholdState, Node, TickResult
 
@@ -144,6 +151,11 @@ class NewLoop:
                 deposits_raw = getattr(pop, "deposits")
                 mortgage_loans_raw = getattr(pop, "mortgage_loans")
                 revolving_loans_raw = getattr(pop, "revolving_loans")
+                mort_rate_q_raw = getattr(pop, "mortgage_rate_q")
+                mort_age_q_raw = getattr(pop, "mortgage_age_q")
+                mort_term_q_raw = getattr(pop, "mortgage_term_q")
+                mort_payment_sched_q_raw = getattr(pop, "mortgage_payment_sched_q")
+                mort_orig_principal_raw = getattr(pop, "mortgage_orig_principal")
                 mpc_q_raw = getattr(pop, "mpc_q")
                 base_real_cons_q_raw = getattr(pop, "base_real_cons_q")
             except Exception:
@@ -151,6 +163,11 @@ class NewLoop:
                 deposits_raw = []
                 mortgage_loans_raw = []
                 revolving_loans_raw = []
+                mort_rate_q_raw = []
+                mort_age_q_raw = []
+                mort_term_q_raw = []
+                mort_payment_sched_q_raw = []
+                mort_orig_principal_raw = []
                 mpc_q_raw = []
                 base_real_cons_q_raw = []
 
@@ -158,6 +175,11 @@ class NewLoop:
             deposits = _as_np(deposits_raw, dtype=float)
             mortgage_loans = _as_np(mortgage_loans_raw, dtype=float)
             revolving_loans = _as_np(revolving_loans_raw, dtype=float)
+            mort_rate_q = _as_np(mort_rate_q_raw, dtype=float)
+            mort_age_q = _as_np(mort_age_q_raw, dtype=float)
+            mort_term_q = _as_np(mort_term_q_raw, dtype=float)
+            mort_payment_sched_q = _as_np(mort_payment_sched_q_raw, dtype=float)
+            mort_orig_principal = _as_np(mort_orig_principal_raw, dtype=float)
             mpc_q = _as_np(mpc_q_raw, dtype=float)
             base_real_cons_q = _as_np(base_real_cons_q_raw, dtype=float)
             liquid_buffer_months_target_raw = getattr(pop, "liquid_buffer_months_target", np.zeros(base_real_cons_q.shape[0], dtype=float))
@@ -168,6 +190,11 @@ class NewLoop:
                 deposits.shape[0],
                 mortgage_loans.shape[0],
                 revolving_loans.shape[0],
+                mort_rate_q.shape[0] if mort_rate_q.size else mortgage_loans.shape[0],
+                mort_age_q.shape[0] if mort_age_q.size else mortgage_loans.shape[0],
+                mort_term_q.shape[0] if mort_term_q.size else mortgage_loans.shape[0],
+                mort_payment_sched_q.shape[0] if mort_payment_sched_q.size else mortgage_loans.shape[0],
+                mort_orig_principal.shape[0] if mort_orig_principal.size else mortgage_loans.shape[0],
                 mpc_q.shape[0],
                 base_real_cons_q.shape[0],
                 liquid_buffer_months_target.shape[0],
@@ -182,6 +209,11 @@ class NewLoop:
                     revolving_loans=revolving_loans[:n].copy(),
                     mpc_q=mpc_q[:n].copy(),
                     base_real_cons_q=base_real_cons_q[:n].copy(),
+                    mort_rate_q=mort_rate_q[:n].copy(),
+                    mort_age_q=mort_age_q[:n].copy(),
+                    mort_term_q=mort_term_q[:n].copy(),
+                    mort_payment_sched_q=mort_payment_sched_q[:n].copy(),
+                    mort_orig_principal=mort_orig_principal[:n].copy(),
                     liquid_buffer_months_target=liquid_buffer_months_target[:n].copy(),
                 )
                 self.hh.ensure_memos()
@@ -522,11 +554,58 @@ class NewLoop:
             y = wages + div_hh + uis_total
         return max(1e-9, float(y))
 
+    def _mortgage_fixed_rate_q(self) -> float:
+        return max(0.0, float(self.params.get("mortgage_fixed_rate_q", self.params.get("loan_rate_per_quarter", 0.0))))
+
+    def _mortgage_term_quarters(self) -> int:
+        return max(1, int(self.params.get("mortgage_term_quarters", 60)))
+
+    def _refresh_mortgage_contract_state(self) -> None:
+        if self.hh is None or self.hh.n <= 0:
+            return
+        hh = self.hh
+        hh.ensure_memos()
+        mort = _as_np(hh.mortgage_loans, dtype=float)
+        active = mort > 1e-12
+        inactive = ~active
+
+        if np.any(active):
+            default_rate_q = self._mortgage_fixed_rate_q()
+            default_term_q = float(self._mortgage_term_quarters())
+            hh.mort_rate_q[active] = np.where(hh.mort_rate_q[active] > 1e-12, hh.mort_rate_q[active], default_rate_q)
+            hh.mort_term_q[active] = np.where(hh.mort_term_q[active] > 1e-12, hh.mort_term_q[active], default_term_q)
+            hh.mort_age_q[active] = np.maximum(0.0, np.minimum(hh.mort_age_q[active], hh.mort_term_q[active] - 1.0))
+            rem_q = remaining_term(hh.mort_term_q[active], hh.mort_age_q[active])
+            hh.mort_payment_sched_q[active] = np.where(
+                hh.mort_payment_sched_q[active] > 1e-12,
+                hh.mort_payment_sched_q[active],
+                payment_from_balance(mort[active], hh.mort_rate_q[active], rem_q),
+            )
+            hh.mort_orig_principal[active] = np.where(
+                hh.mort_orig_principal[active] > 1e-12,
+                hh.mort_orig_principal[active],
+                orig_principal_from_balance(mort[active], hh.mort_rate_q[active], hh.mort_term_q[active], hh.mort_age_q[active]),
+            )
+
+        if np.any(inactive):
+            hh.mort_rate_q[inactive] = 0.0
+            hh.mort_age_q[inactive] = 0.0
+            hh.mort_term_q[inactive] = 0.0
+            hh.mort_payment_sched_q[inactive] = 0.0
+            hh.mort_orig_principal[inactive] = 0.0
+            hh.mort_P0[inactive] = 0.0
+            hh.mort_Y0[inactive] = 0.0
+            hh.mort_t0[inactive] = -1
+            hh.mort_pay_base[inactive] = 0.0
+            hh.mort_index_prev[inactive] = 1.0
+            hh.mort_dlnI_sm_prev[inactive] = 0.0
+
     def _ensure_mortgage_index_anchors(self, p_series_now: float, y_series_now: float, rL: float) -> None:
         if self.hh is None or self.hh.n <= 0:
             return
         hh = self.hh
         hh.ensure_memos()
+        self._refresh_mortgage_contract_state()
 
         mort = _as_np(hh.mortgage_loans, dtype=float)
         active = mort > 1e-12
@@ -534,12 +613,10 @@ class NewLoop:
         new_mask = active & (hh.mort_t0 < 0)
 
         if np.any(new_mask):
-            mort_pay_rate = max(0.0, min(1.0, float(self.params.get("mortgage_principal_pay_rate_q", 0.0))))
-            ctr_at_anchor = mort[new_mask] * (max(0.0, float(rL)) + mort_pay_rate)
             hh.mort_P0[new_mask] = float(max(1e-9, p_series_now))
             hh.mort_Y0[new_mask] = float(max(1e-9, y_series_now))
             hh.mort_t0[new_mask] = int(self.state.get("t", 0))
-            hh.mort_pay_base[new_mask] = ctr_at_anchor
+            hh.mort_pay_base[new_mask] = np.maximum(0.0, hh.mort_payment_sched_q[new_mask])
             hh.mort_index_prev[new_mask] = 1.0
             hh.mort_dlnI_sm_prev[new_mask] = 0.0
 
@@ -586,13 +663,20 @@ class NewLoop:
 
         hh = self.hh
         hh.ensure_memos()
+        self._refresh_mortgage_contract_state()
         n = int(hh.n)
         mort_vec = _as_np(mort, dtype=float)
-
-        mort_pay_rate = max(0.0, min(1.0, float(self.params.get("mortgage_principal_pay_rate_q", 0.0))))
-        mort_interest_due_i = np.maximum(0.0, mort_vec) * max(0.0, float(rL))
-        mort_principal_ctr_i = np.maximum(0.0, mort_vec) * mort_pay_rate
-        mort_pay_ctr_i = mort_interest_due_i + mort_principal_ctr_i
+        mort_rate_q = np.maximum(0.0, _as_np(hh.mort_rate_q, dtype=float))
+        mort_age_q = np.maximum(0.0, _as_np(hh.mort_age_q, dtype=float))
+        mort_term_q = np.maximum(0.0, _as_np(hh.mort_term_q, dtype=float))
+        mort_payment_sched_q = np.maximum(0.0, _as_np(hh.mort_payment_sched_q, dtype=float))
+        mort_remaining_q = remaining_term(mort_term_q, mort_age_q)
+        mort_pay_ctr_i, mort_interest_due_i, mort_principal_ctr_i = scheduled_payment_components(
+            mort_vec,
+            mort_rate_q,
+            mort_payment_sched_q,
+            mort_remaining_q,
+        )
 
         p_series_now = self._mort_price_series_value(float(self.state.get("price_level", 1.0)))
         y_series_now = self._mort_income_series_value(wages_total, div_house_total, uis_per_h)
@@ -655,8 +739,6 @@ class NewLoop:
             base_vec = np.maximum(0.0, _as_np(hh.mort_pay_base, dtype=float))
             mort_pay_req_i = base_vec * i_curr
         elif enabled:
-            # Caveat: this model uses stylized proportional paydown mortgages (no amortization object).
-            # Indexing the current contractual flow preserves "deflation relief" semantics.
             mort_pay_req_i = mort_pay_ctr_i * i_curr
 
         if enabled:
@@ -2398,6 +2480,7 @@ class NewLoop:
             bank.add("equity", +rev_int_total)
 
         # Mortgage required payment is the single household mortgage cash-flow path.
+        active_mort_start = mort > 1e-12
         dep_before_mort = deposits.copy()
         deposits[:] = deposits - mort_pay_req_i
         mort_overdraft_need = np.maximum(0.0, mort_pay_req_i - np.maximum(0.0, dep_before_mort))
@@ -2438,6 +2521,12 @@ class NewLoop:
                 self.state["mort_principal_paid_total"] = float(
                     float(self.state.get("mort_principal_paid_total", 0.0)) + neutral_principal_total
                 )
+        if np.any(active_mort_start):
+            hh.mort_age_q[active_mort_start] = np.minimum(
+                hh.mort_term_q[active_mort_start],
+                hh.mort_age_q[active_mort_start] + 1.0,
+            )
+        self._refresh_mortgage_contract_state()
 
         trust_interest = float(sol.get("trust_interest", 0.0))
         if trust_interest > 0:
@@ -2591,7 +2680,6 @@ class NewLoop:
         # 6b) Household principal repayment (revolving first, then mortgage)
         # -------------------------------------------------
         rev_pay_rate = float(self.params.get("revolving_principal_pay_rate_q", 0.0))
-        mort_pay_rate = float(self.params.get("mortgage_principal_pay_rate_q", 0.0))
         rL = float(self.state.get("policy_rate_q", self.params.get("loan_rate_per_quarter", 0.0)))
         rev_rollover_share = float(self.params.get("revolving_rollover_share", 0.0))
         mort_turnover_enabled = bool(self.params.get("mortgage_turnover_enabled", False))
@@ -2600,12 +2688,12 @@ class NewLoop:
         mort_turnover_income_mult_cap = float(self.params.get("mortgage_turnover_income_mult_cap", 4.0))
         mort_turnover_min_wage_q = float(self.params.get("mortgage_turnover_min_wage_q", 1.0))
         rev_pay_rate = max(0.0, min(1.0, rev_pay_rate))
-        mort_pay_rate = max(0.0, min(1.0, mort_pay_rate))
         rev_rollover_share = max(0.0, min(1.0, rev_rollover_share))
         mort_turnover_replace_share = max(0.0, min(1.0, mort_turnover_replace_share))
         mort_turnover_dti_cap = max(0.0, mort_turnover_dti_cap)
         mort_turnover_income_mult_cap = max(0.0, mort_turnover_income_mult_cap)
         mort_turnover_min_wage_q = max(0.0, mort_turnover_min_wage_q)
+        self._refresh_mortgage_contract_state()
 
         principal_paid_total = 0.0
         rev_rollover_total = 0.0
@@ -2655,11 +2743,15 @@ class NewLoop:
             mort_cap_i = mort_turnover_income_mult_cap * annual_wage_i
             headroom_income_i = np.maximum(0.0, mort_cap_i - mort)
 
-            mort_payment_rate_q = max(1e-9, float(rL) + mort_pay_rate)
-            current_mort_payment_i = mort * mort_payment_rate_q
+            current_mort_payment_i = np.maximum(0.0, hh.mort_payment_sched_q)
             current_rev_interest_i = np.maximum(0.0, rev * rL)
             dti_room_nom = np.maximum(0.0, (mort_turnover_dti_cap * np.maximum(0.0, wages_i)) - current_rev_interest_i - current_mort_payment_i)
-            headroom_dti_i = dti_room_nom / mort_payment_rate_q
+            new_unit_payment_q = payment_from_orig_principal(
+                np.ones_like(mort),
+                self._mortgage_fixed_rate_q(),
+                float(self._mortgage_term_quarters()),
+            )
+            headroom_dti_i = dti_room_nom / np.maximum(1e-9, new_unit_payment_q)
             headroom_i = np.minimum(headroom_income_i, headroom_dti_i)
 
             eligible = (wages_i >= mort_turnover_min_wage_q) & (headroom_i > 1e-9)
@@ -2668,28 +2760,34 @@ class NewLoop:
                 score_i[eligible] = headroom_i[eligible] / (1.0 + np.maximum(0.0, mort[eligible]))
                 allocation = np.zeros_like(mort, dtype=float)
                 remaining = float(mort_gap_total)
-                active = eligible.copy()
+                ranked_idx = np.argsort(-score_i)
 
-                for _ in range(8):
-                    active_scores = score_i[active]
-                    score_sum = float(np.sum(active_scores))
-                    if remaining <= 1e-9 or score_sum <= 1e-12:
+                for idx in ranked_idx.tolist():
+                    if remaining <= 1e-9:
                         break
-
-                    prop = np.zeros_like(mort, dtype=float)
-                    prop[active] = remaining * (score_i[active] / score_sum)
-                    room = np.maximum(0.0, headroom_i - allocation)
-                    add_i = np.minimum(prop, room)
-                    add_sum = float(np.sum(add_i))
-                    if add_sum <= 1e-12:
-                        break
-                    allocation += add_i
-                    remaining = max(0.0, remaining - add_sum)
-                    active = active & ((headroom_i - allocation) > 1e-9)
+                    if not bool(eligible[idx]):
+                        continue
+                    room = float(max(0.0, headroom_i[idx] - allocation[idx]))
+                    if room <= 1e-9:
+                        continue
+                    add = min(room, remaining)
+                    allocation[idx] += add
+                    remaining = max(0.0, remaining - add)
 
                 mort_turnover_total = float(np.sum(np.maximum(0.0, allocation)))
                 if mort_turnover_total > 0.0:
+                    new_rate_q = self._mortgage_fixed_rate_q()
+                    new_term_q = float(self._mortgage_term_quarters())
+                    new_mask = allocation > 1e-9
                     mort[:] = mort + allocation
+                    hh.mort_rate_q[new_mask] = new_rate_q
+                    hh.mort_term_q[new_mask] = new_term_q
+                    hh.mort_age_q[new_mask] = 0.0
+                    # Treat recycled mortgages as fresh 15-year refinancings of the
+                    # full post-allocation balance, not just the incremental top-up.
+                    hh.mort_payment_sched_q[new_mask] = payment_from_orig_principal(mort[new_mask], new_rate_q, new_term_q)
+                    hh.mort_orig_principal[new_mask] = mort[new_mask]
+                    hh.mort_t0[new_mask] = -1
                     deposits[:] = deposits + allocation
                     self.nodes["BANK"].add("loan_assets", mort_turnover_total)
                     self.nodes["BANK"].add("deposit_liab", mort_turnover_total)

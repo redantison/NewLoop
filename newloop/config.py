@@ -122,6 +122,8 @@ config = {
         "mort_neutralize_cap_value": 0.0,
         "revolving_principal_pay_rate_q": 0.05,  # 5%/q max paydown if cash available
         "revolving_rollover_share": 1.0,        # share of revolving principal repayment immediately re-lent to the same household
+        "mortgage_fixed_rate_q": 0.01125,       # 4.5% annual fixed coupon for new mortgages
+        "mortgage_term_quarters": 60,           # 15-year fixed mortgage
         "mortgage_principal_pay_rate_q": 0.01,   # 1%/q max paydown if cash available
         "mortgage_turnover_enabled": True,      # replace amortized mortgage stock by issuing new mortgages to eligible households
         "mortgage_turnover_replace_share": 1.0,
