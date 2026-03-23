@@ -10,7 +10,8 @@ sys.path.insert(0, str(ROOT))
 
 from newloop.config import get_default_config
 from newloop.engine import NewLoop
-from newloop.mortgage import payment_from_orig_principal, remaining_term, scheduled_payment_components
+from newloop.mortgage import balance_from_orig_principal, payment_from_orig_principal, remaining_term, scheduled_payment_components
+from newloop.results import _prepare_startup_sim, _run_baseline_calibration, _startup_solver_snapshot, run_simulation
 
 
 def make_cfg():
@@ -86,11 +87,42 @@ class MortgageScheduleTests(unittest.TestCase):
         self.assertTrue(np.all(np.asarray(hh.mort_term_q, dtype=float)[active] == 60.0))
         self.assertTrue(np.all(np.asarray(hh.mort_payment_sched_q, dtype=float)[active] > 0.0))
         self.assertTrue(
-            np.all(
-                np.asarray(hh.mort_orig_principal, dtype=float)[active]
-                >= (np.asarray(hh.mortgage_loans, dtype=float)[active] - 1e-9)
+            np.allclose(
+                np.asarray(hh.mortgage_loans, dtype=float)[active],
+                balance_from_orig_principal(
+                    np.asarray(hh.mort_orig_principal, dtype=float)[active],
+                    np.asarray(hh.mort_rate_q, dtype=float)[active],
+                    np.asarray(hh.mort_term_q, dtype=float)[active],
+                    np.asarray(hh.mort_age_q, dtype=float)[active],
+                ),
+                rtol=1e-7,
+                atol=1e-9,
             )
         )
+        self.assertTrue(
+            np.allclose(
+                np.asarray(hh.mort_payment_sched_q, dtype=float)[active],
+                payment_from_orig_principal(
+                    np.asarray(hh.mort_orig_principal, dtype=float)[active],
+                    np.asarray(hh.mort_rate_q, dtype=float)[active],
+                    np.asarray(hh.mort_term_q, dtype=float)[active],
+                ),
+                rtol=1e-7,
+                atol=1e-9,
+            )
+        )
+
+    def test_startup_disposable_income_tail_is_not_pathological(self):
+        cfg = make_cfg()
+        eff, _ = _run_baseline_calibration(cfg)
+        sim = NewLoop(copy.deepcopy(eff))
+        _prepare_startup_sim(sim)
+        snap = _startup_solver_snapshot(sim)
+        self.assertIsNotNone(snap)
+        assert snap is not None
+
+        y = np.asarray(snap["disposable_income_i"], dtype=float)
+        self.assertGreater(float(np.min(y)), -10000.0)
 
     def test_turnover_originates_new_age_zero_fixed_rate_mortgages(self):
         cfg = make_cfg()
@@ -135,6 +167,19 @@ class MortgageScheduleTests(unittest.TestCase):
                 atol=1e-9,
             )
         )
+
+    def test_revolving_credit_is_capped(self):
+        cfg = make_cfg()
+        run = run_simulation(120, cfg)
+        hh = run.sim.hh
+        self.assertIsNotNone(hh)
+        assert hh is not None
+
+        rev = np.asarray(hh.revolving_loans, dtype=float)
+        wages_q = np.asarray(hh.wages0_q, dtype=float)
+        cap_mult = float(cfg["parameters"]["population_config"]["revolving_cap_income_mult"])
+        rev_cap = cap_mult * np.maximum(0.0, 4.0 * wages_q)
+        self.assertTrue(np.all(rev <= (rev_cap + 1e-6)))
 
 
 if __name__ == "__main__":

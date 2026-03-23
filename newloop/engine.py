@@ -2474,6 +2474,17 @@ class NewLoop:
                 self.state["mort_index_min"] = float(np.min(curr_i[active_mort]))
                 self.state["mort_index_max"] = float(np.max(curr_i[active_mort]))
 
+        pop_cfg = self.params.get("population_config", {}) if isinstance(self.params.get("population_config", {}), dict) else {}
+        rev_income_cap_mult = self.params.get("revolving_credit_limit_income_mult", pop_cfg.get("revolving_cap_income_mult", 0.0))
+        rev_income_cap_mult = max(0.0, float(rev_income_cap_mult))
+        annual_wage_i = 4.0 * np.maximum(0.0, wages_i)
+        if rev_income_cap_mult > 0.0:
+            rev_limit_i = rev_income_cap_mult * annual_wage_i
+        else:
+            rev_limit_i = np.full(n, np.inf, dtype=float)
+        rev_headroom_i = np.maximum(0.0, rev_limit_i - rev)
+        mort_unpaid_cash_shortfall_i = np.zeros(n, dtype=float)
+
         # Revolving interest remains contractual in all mortgage regimes.
         deposits[:] = deposits - rev_interest_i
         rev_int_total = float(np.sum(np.maximum(0.0, rev_interest_i)))
@@ -2482,22 +2493,42 @@ class NewLoop:
             bank.add("equity", +rev_int_total)
 
         # Mortgage required payment is the single household mortgage cash-flow path.
+        # Households may bridge only a capped portion via revolving credit; any
+        # residual shortfall remains unpaid on the mortgage side instead of
+        # turning into effectively unlimited revolving debt.
         active_mort_start = mort > 1e-12
         dep_before_mort = deposits.copy()
-        deposits[:] = deposits - mort_pay_req_i
-        mort_overdraft_need = np.maximum(0.0, mort_pay_req_i - np.maximum(0.0, dep_before_mort))
+        cash_available_for_mort_i = np.maximum(0.0, dep_before_mort)
+        mort_overdraft_need = np.maximum(0.0, mort_pay_req_i - cash_available_for_mort_i)
+        mort_revolving_bridge_i = np.minimum(mort_overdraft_need, rev_headroom_i)
+        actual_mort_payment_i = np.minimum(mort_pay_req_i, cash_available_for_mort_i + mort_revolving_bridge_i)
+        mort_unpaid_cash_shortfall_i = np.maximum(0.0, mort_pay_req_i - actual_mort_payment_i)
+        deposits[:] = deposits - actual_mort_payment_i
+        mort_bridge_total = float(np.sum(np.maximum(0.0, mort_revolving_bridge_i)))
+        if mort_bridge_total > 0.0:
+            deposits[:] = deposits + mort_revolving_bridge_i
+            rev[:] = rev + mort_revolving_bridge_i
+            bank.add("loan_assets", +mort_bridge_total)
+            bank.add("deposit_liab", +mort_bridge_total)
+        actual_mort_interest_paid_i = np.minimum(np.maximum(0.0, mort_interest_paid_i), actual_mort_payment_i)
+        actual_mort_principal_paid_i = np.minimum(
+            np.maximum(0.0, mort_principal_paid_i),
+            np.maximum(0.0, actual_mort_payment_i - actual_mort_interest_paid_i),
+        )
         self.state["mort_overdraft_due_to_payment_total"] = float(np.sum(mort_overdraft_need))
         self.state["mort_overdraft_due_to_payment_count"] = float(np.sum(mort_overdraft_need > 1e-12))
+        self.state["mort_revolving_bridge_total"] = float(mort_bridge_total)
+        self.state["mort_unpaid_cash_shortfall_total"] = float(np.sum(mort_unpaid_cash_shortfall_i))
 
-        mort_int_paid_total = float(np.sum(np.maximum(0.0, mort_interest_paid_i)))
-        mort_prin_paid_total = float(np.sum(np.maximum(0.0, mort_principal_paid_i)))
+        mort_int_paid_total = float(np.sum(np.maximum(0.0, actual_mort_interest_paid_i)))
+        mort_prin_paid_total = float(np.sum(np.maximum(0.0, actual_mort_principal_paid_i)))
         self.state["mort_principal_paid_total"] = float(mort_prin_paid_total)
 
         if mort_int_paid_total > 0.0:
             bank.add("deposit_liab", -mort_int_paid_total)
             bank.add("equity", +mort_int_paid_total)
         if mort_prin_paid_total > 0.0:
-            mort[:] = np.maximum(0.0, mort - mort_principal_paid_i)
+            mort[:] = np.maximum(0.0, mort - actual_mort_principal_paid_i)
             bank.add("loan_assets", -mort_prin_paid_total)
             bank.add("deposit_liab", -mort_prin_paid_total)
 
@@ -2741,7 +2772,6 @@ class NewLoop:
 
         if mort_turnover_enabled and mort_principal_paid_total > 0.0 and mort_turnover_replace_share > 0.0:
             mort_gap_total = mort_principal_paid_total * mort_turnover_replace_share
-            annual_wage_i = 4.0 * np.maximum(0.0, wages_i)
             mort_cap_i = mort_turnover_income_mult_cap * annual_wage_i
             headroom_income_i = np.maximum(0.0, mort_cap_i - mort)
             active_mort_i = mort > 1e-9
@@ -2756,7 +2786,6 @@ class NewLoop:
             )
             headroom_dti_i = dti_room_nom / np.maximum(1e-9, new_unit_payment_q)
             headroom_i = np.minimum(headroom_income_i, headroom_dti_i)
-            pop_cfg = self.params.get("population_config", {}) if isinstance(self.params.get("population_config", {}), dict) else {}
             if "mortgage_turnover_target_share" not in self.state:
                 self.state["mortgage_turnover_target_share"] = float(np.mean(active_mort_i)) if active_mort_i.size else 0.0
             target_share = float(pop_cfg.get("mortgage_share", self.state.get("mortgage_turnover_target_share", 0.0)))
@@ -2866,7 +2895,7 @@ class NewLoop:
         self.nodes["HH"].set("loans", hh_total_loan)
 
         if y_vec.shape[0] == n:
-            hh.prev_income = y_vec.astype(float, copy=True)
+            hh.prev_income = (y_vec + mort_unpaid_cash_shortfall_i).astype(float, copy=True)
         hh.prev_uis = float(uis)
         hh.prev_wages_total = float(sol.get("w_total", 0.0))
 

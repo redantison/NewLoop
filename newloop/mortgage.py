@@ -59,6 +59,23 @@ def payment_from_orig_principal(
     return payment_from_balance(principal, rate_q, term_q)
 
 
+def balance_from_orig_principal(
+    principal: np.ndarray | float | int,
+    rate_q: np.ndarray | float | int,
+    term_q: np.ndarray | float | int,
+    age_q: np.ndarray | float | int,
+) -> np.ndarray:
+    payment = payment_from_orig_principal(principal, rate_q, term_q)
+    rem = remaining_term(term_q, age_q)
+    af_rem = annuity_factor(rate_q, rem)
+    out = np.zeros(np.broadcast(payment, af_rem).shape, dtype=float)
+    payment_b = np.broadcast_to(payment, out.shape)
+    af_rem_b = np.broadcast_to(af_rem, out.shape)
+    valid = (payment_b > 1e-12) & (af_rem_b > 1e-12)
+    out[valid] = payment_b[valid] * af_rem_b[valid]
+    return out
+
+
 def orig_principal_from_balance(
     balance: np.ndarray | float | int,
     rate_q: np.ndarray | float | int,

@@ -31,7 +31,7 @@ import math
 import random
 import statistics
 
-from .mortgage import orig_principal_from_balance, payment_from_balance, remaining_term
+from .mortgage import balance_from_orig_principal, payment_from_orig_principal, remaining_term
 
 # ----------------------------
 # Utilities
@@ -569,21 +569,18 @@ def generate_population(cfg: PopulationConfig) -> Population:
             sigma=float(cfg.mortgage_income_mult_sigma),
             size=int(mort_mask.sum()),
         )
-        mortgage_loans[mort_mask] = np.maximum(0.0, mort_mult * wages_annual[mort_mask])
+        orig_principal = np.maximum(0.0, mort_mult * wages_annual[mort_mask])
         term_q = float(max(1, int(getattr(cfg, "mortgage_term_quarters", 60))))
         rate_q = float(max(0.0, float(cfg.mortgage_rate_effective) / 4.0))
         ages = rng.integers(0, int(term_q), size=int(mort_mask.sum()), endpoint=False).astype(float)
+        payment_q = payment_from_orig_principal(orig_principal, rate_q, term_q)
+        current_balance = balance_from_orig_principal(orig_principal, rate_q, term_q, ages)
+        mortgage_loans[mort_mask] = current_balance
         mortgage_rate_q[mort_mask] = rate_q
         mortgage_age_q[mort_mask] = ages
         mortgage_term_q[mort_mask] = term_q
-        rem_q = remaining_term(term_q, ages)
-        mortgage_payment_sched_q[mort_mask] = payment_from_balance(mortgage_loans[mort_mask], rate_q, rem_q)
-        mortgage_orig_principal[mort_mask] = orig_principal_from_balance(
-            mortgage_loans[mort_mask],
-            rate_q,
-            term_q,
-            ages,
-        )
+        mortgage_payment_sched_q[mort_mask] = payment_q
+        mortgage_orig_principal[mort_mask] = orig_principal
 
     rev_mask = has_wage & (rng.random(n) < rev_p)
     if rev_mask.any():
