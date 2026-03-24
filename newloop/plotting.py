@@ -30,6 +30,8 @@ METRIC_LABELS: Dict[str, str] = {
     "bank_broad_roe_q": "Bank Broad ROE (Annualized %)",
     "corporate_info_broad_roe_q": "Info Broad ROE (Annualized %)",
     "corporate_physical_broad_roe_q": "Physical Broad ROE (Annualized %)",
+    "sector_op_margin_info": "Info Profit Margin (%)",
+    "sector_op_margin_phys": "Physical Profit Margin (%)",
     "corporate_nonbank_broad_roe_q": "Non-Bank Corporate Broad ROE (Annualized %)",
     "corporate_broad_roe_q": "Total Corporate Broad ROE (Annualized %)",
     "private_inv_cov": "Investment Coverage",
@@ -118,6 +120,8 @@ def _series(rows: Sequence[Mapping[str, Any]], metric: str) -> List[float]:
         "bank_broad_roe_q",
         "corporate_info_broad_roe_q",
         "corporate_physical_broad_roe_q",
+        "sector_op_margin_info",
+        "sector_op_margin_phys",
         "corporate_nonbank_broad_roe_q",
         "corporate_broad_roe_q",
     }:
@@ -144,8 +148,18 @@ def _series(rows: Sequence[Mapping[str, Any]], metric: str) -> List[float]:
             "corporate_broad_roe_q",
         }:
             values = [_annualize_quarterly_rate(v) for v in values]
+        elif metric in {"sector_op_margin_info", "sector_op_margin_phys"}:
+            values = [100.0 * float(v) for v in values]
         if values:
-            values[0] = float("nan")
+            if metric in {
+                "private_broad_roe_q",
+                "bank_broad_roe_q",
+                "corporate_info_broad_roe_q",
+                "corporate_physical_broad_roe_q",
+                "corporate_nonbank_broad_roe_q",
+                "corporate_broad_roe_q",
+            }:
+                values[0] = float("nan")
         return values
     return [float(r.get(metric, 0.0)) for r in rows]
 

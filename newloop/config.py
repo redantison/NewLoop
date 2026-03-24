@@ -44,6 +44,10 @@ config = {
         "startup_bootstrap_retained_scale": 1.00,
         "startup_bootstrap_firm_capital": False,
         "startup_bootstrap_capital_scale": 1.00,
+        "sector_input_cost_rate_info": 0.20,
+        "sector_input_cost_rate_phys": 0.15,
+        "ums_drain_to_fund_rate_q": 0.25,
+        "ums_drain_to_gov_share": 0.15,
         "capital_depr_rate_per_quarter": 0.02,
         # Sector-fulfillment pass 1: fixed household demand split plus
         # supplier-first capacity rationing with no new firm debt.
@@ -212,7 +216,7 @@ config = {
         "price_adjust_speed": 0.10,    # pass-through speed to target price (1.0=no stickiness, lower=more inertia)
 
         # Production structure
-        "wage_share_of_revenue": {"FH": 0.65, "FA": 0.40},
+        "wage_share_of_revenue": {"FH": 0.50, "FA": 0.40},
 
         # Automation path ("two_hump" recommended; "linear" available as fallback)
         "automation_disabled": False,
@@ -244,6 +248,9 @@ config = {
 
         # Government sink / spender
         "GOV":  {"stocks": {"deposits": 0.0}},
+
+        # Unmodeled sector reservoir for sector input-cost leakages.
+        "UMS":  {"stocks": {"deposits": 0.0}},
 
         # Aggregate households (population mode). Equity starts here.
         "HH": {"stocks": {

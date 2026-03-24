@@ -124,6 +124,15 @@ class MortgageScheduleTests(unittest.TestCase):
         y = np.asarray(snap["disposable_income_i"], dtype=float)
         self.assertGreater(float(np.min(y)), -10000.0)
 
+    def test_baseline_calibration_enabled_does_not_crash_run(self):
+        cfg = make_cfg()
+        cfg["parameters"]["baseline_calibration_enabled"] = True
+
+        run = run_simulation(12, cfg)
+
+        self.assertTrue(bool(run.rows))
+        self.assertIsNotNone(run.baseline_calibration)
+
     def test_turnover_originates_new_age_zero_fixed_rate_mortgages(self):
         cfg = make_cfg()
         params = cfg["parameters"]

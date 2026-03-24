@@ -122,6 +122,8 @@ class TickResult:
     bank_broad_roe_q: float
     corporate_info_broad_roe_q: float
     corporate_physical_broad_roe_q: float
+    sector_op_margin_info: float
+    sector_op_margin_phys: float
     corporate_nonbank_broad_roe_q: float
     corporate_broad_roe_q: float
     private_inv_cov: float

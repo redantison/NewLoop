@@ -10,7 +10,7 @@ sys.path.insert(0, str(ROOT))
 
 from newloop.config import get_default_config
 from newloop.engine import NewLoop
-from newloop.results import _population_distribution_snapshot
+from newloop.results import _population_distribution_snapshot, _prepare_startup_sim, _startup_diagnostics
 
 
 def make_cfg():
@@ -82,6 +82,10 @@ class PolicyAlignmentTests(unittest.TestCase):
         params["corporate_tax_dynamic_with_wages"] = False
         params["gov_tax_rebate_rate"] = 0.0
         params["fund_residual_to_gov_share"] = 0.25
+        params["firm_overhead_rate_info"] = 0.0
+        params["firm_overhead_rate_phys"] = 0.0
+        params["sector_input_cost_rate_info"] = 0.0
+        params["sector_input_cost_rate_phys"] = 0.0
 
         sim = NewLoop(cfg)
         sim.nodes["FUND"].set("deposits", 100.0)
@@ -106,6 +110,10 @@ class PolicyAlignmentTests(unittest.TestCase):
         params["gov_rebate_buffer_quarters"] = 4
         params["gov_rebate_start_delay_quarters"] = 0
         params["gov_rebate_ramp_quarters"] = 0
+        params["firm_overhead_rate_info"] = 0.0
+        params["firm_overhead_rate_phys"] = 0.0
+        params["sector_input_cost_rate_info"] = 0.0
+        params["sector_input_cost_rate_phys"] = 0.0
 
         sim = NewLoop(cfg)
         sim.gov_obligation_history = [100.0, 100.0, 100.0, 100.0]
@@ -369,6 +377,60 @@ class PolicyAlignmentTests(unittest.TestCase):
 
         sim.nodes["FA"].set("deposits", reserve_nom - 1.0)
         self.assertAlmostEqual(sim._sector_surplus_distribution_nom("FA", 1.0), 0.0, places=9)
+
+    def test_startup_diagnostics_report_target_like_sector_operating_margins(self):
+        cfg = make_cfg()
+        sim = NewLoop(cfg)
+
+        _prepare_startup_sim(sim)
+        diag = _startup_diagnostics(sim)
+
+        self.assertIsNotNone(diag)
+        assert diag is not None
+        self.assertAlmostEqual(float(diag.get("startup_op_margin_info", 0.0)), 0.25, delta=0.03)
+        self.assertAlmostEqual(float(diag.get("startup_op_margin_phys", 0.0)), 0.10, delta=0.03)
+
+    def test_sector_input_costs_accumulate_in_ums_before_trust_runs(self):
+        cfg = make_cfg()
+        cfg["parameters"]["disable_trust"] = True
+        sim = NewLoop(cfg)
+
+        sim.step()
+
+        self.assertGreater(float(sim.nodes["UMS"].get("deposits", 0.0)), 0.0)
+        self.assertGreater(float(sim.state.get("sector_input_cost_total", 0.0)), 0.0)
+
+    def test_ums_drain_recycles_to_fund_when_trust_is_active(self):
+        cfg = make_cfg()
+        cfg["parameters"]["disable_income_support"] = True
+        cfg["parameters"]["ums_drain_to_fund_rate_q"] = 1.0
+        cfg["parameters"]["ums_drain_to_gov_share"] = 0.15
+        cfg["parameters"]["fund_residual_to_gov_share"] = 0.0
+        cfg["parameters"]["send_fund_residual_to_gov"] = False
+        cfg["parameters"]["vat_rate"] = 0.0
+        cfg["parameters"]["income_tax_rate"] = 0.0
+        cfg["parameters"]["corporate_tax_rate"] = 0.0
+        cfg["parameters"]["corporate_tax_dynamic_with_wages"] = False
+        cfg["parameters"]["firm_overhead_rate_info"] = 0.0
+        cfg["parameters"]["firm_overhead_rate_phys"] = 0.0
+        cfg["parameters"]["sector_input_cost_rate_info"] = 0.0
+        cfg["parameters"]["sector_input_cost_rate_phys"] = 0.0
+        sim = NewLoop(cfg)
+
+        sim.state["trust_active"] = True
+        sim.nodes["UMS"].set("deposits", 100.0)
+        sim.nodes["BANK"].add("deposit_liab", 100.0)
+        sim.nodes["BANK"].add("reserves", 100.0)
+        gov_before = float(sim.nodes["GOV"].get("deposits", 0.0))
+        fund_before = float(sim.nodes["FUND"].get("deposits", 0.0))
+
+        sim.step()
+
+        self.assertAlmostEqual(float(sim.nodes["UMS"].get("deposits", 0.0)), 0.0, places=6)
+        self.assertAlmostEqual(float(sim.nodes["GOV"].get("deposits", 0.0)) - gov_before, 15.0, places=6)
+        self.assertGreaterEqual(float(sim.nodes["FUND"].get("deposits", 0.0)) - fund_before, 85.0)
+        self.assertAlmostEqual(float(sim.state.get("ums_drain_to_fund_total", 0.0)), 85.0, places=6)
+        self.assertAlmostEqual(float(sim.state.get("ums_drain_to_gov_total", 0.0)), 15.0, places=6)
 
 
 if __name__ == "__main__":

@@ -155,6 +155,8 @@ def _startup_diagnostics(sim: NewLoop) -> Dict[str, Any] | None:
 
     circular_flow: Dict[str, float] = {}
     decile_rows: List[Dict[str, Any]] = []
+    op_margin_info = 0.0
+    op_margin_phys = 0.0
     if sol is not None:
         c_hh_nom_i = np.asarray(sol.get("c_hh_nom", []), dtype=float)
         c_firm_nom_i = np.asarray(sol.get("c_firm_nom", []), dtype=float)
@@ -170,6 +172,18 @@ def _startup_diagnostics(sim: NewLoop) -> Dict[str, Any] | None:
             + float(sol.get("retained_fh", 0.0)) * (1.0 - f_fh)
             + float(sol.get("retained_bk", 0.0)) * (1.0 - f_bk)
         )
+        rev_fa = float(sol.get("rev_fa", 0.0))
+        rev_fh = float(sol.get("rev_fh", 0.0))
+        w_fa = float(sol.get("w_fa", 0.0))
+        w_fh = float(sol.get("w_fh", 0.0))
+        overhead_fa = float(sol.get("overhead_fa", 0.0))
+        overhead_fh = float(sol.get("overhead_fh", 0.0))
+        input_cost_fa = float(sol.get("input_cost_fa", 0.0))
+        input_cost_fh = float(sol.get("input_cost_fh", 0.0))
+        if rev_fa > 1e-9:
+            op_margin_info = (rev_fa - w_fa - overhead_fa - input_cost_fa) / rev_fa
+        if rev_fh > 1e-9:
+            op_margin_phys = (rev_fh - w_fh - overhead_fh - input_cost_fh) / rev_fh
         circular_flow = {
             "hh_consumption_nom": float(np.sum(np.maximum(0.0, c_hh_nom_i))),
             "firm_revenue_nom": float(sol.get("c_total", 0.0)),
@@ -185,6 +199,8 @@ def _startup_diagnostics(sim: NewLoop) -> Dict[str, Any] | None:
             "private_retained_total": float(private_retained_total),
             "capex_total_nom": float(sol.get("capex_total_nom", 0.0)),
             "buffer_shortfall_total": float(np.sum(np.maximum(0.0, -buffer_gap_i))),
+            "input_cost_info_total": float(input_cost_fa),
+            "input_cost_phys_total": float(input_cost_fh),
         }
 
         order = np.argsort(wage_income_i, kind="stable")
@@ -225,6 +241,9 @@ def _startup_diagnostics(sim: NewLoop) -> Dict[str, Any] | None:
         "mean_base_consumption_gap": float(np.mean(base_cons_gap_i)),
         "buffer_shortfall_total": float(np.sum(np.maximum(0.0, -buffer_gap_i))),
         "startup_dti_w_p90": float(np.percentile(wage_dti_i, 90.0)) if wage_dti_i.size else 0.0,
+        "startup_op_margin_info": float(op_margin_info),
+        "startup_op_margin_phys": float(op_margin_phys),
+        "startup_ums_deposits": float(sim.nodes["UMS"].get("deposits", 0.0)),
         "circular_flow": circular_flow,
         "decile_rows": decile_rows,
         "table_rows": [
@@ -598,8 +617,15 @@ def _run_baseline_calibration(cfg: Dict[str, Any]) -> tuple[Dict[str, Any], Dict
         denom = np.maximum(np.abs(current_base_targets), 1e-9)
         max_change_pct = float(np.max(np.abs(updated_targets - current_base_targets) / denom)) if updated_targets.size else 0.0
 
-        for _ in range(calib_quarters):
-            sim.step()
+        try:
+            for _ in range(calib_quarters):
+                sim.step()
+        except Exception as exc:
+            report["skipped_reason"] = "infeasible_hidden_baseline_regime"
+            report["error"] = str(exc)
+            report["failed_iteration"] = int(iter_idx + 1)
+            report["converged"] = False
+            return candidate_cfg, report
 
         rows = _visible_rows(sim.history)
         if rows:
