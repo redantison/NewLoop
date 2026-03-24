@@ -3341,6 +3341,8 @@ class NewLoop:
                 gini_disp=float(gini_disp),
                 gini_wealth=float(gini_wealth),
                 private_eq_per_h=float(private_equity_total) / float(self.hh.n),
+                hh_deposits_per_h=float(np.sum(dep_i)) / float(self.hh.n),
+                hh_debt_per_h=float(np.sum(loan_i)) / float(self.hh.n),
                 corporate_eq_info_per_h=float(fa_broad_equity_proxy_hist) / float(self.hh.n),
                 corporate_eq_physical_per_h=float(fh_broad_equity_proxy_hist) / float(self.hh.n),
                 corporate_eq_total_per_h=float(fa_broad_equity_proxy_hist + fh_broad_equity_proxy_hist) / float(self.hh.n),
