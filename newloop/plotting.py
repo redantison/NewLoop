@@ -15,7 +15,7 @@ METRIC_LABELS: Dict[str, str] = {
     "automation_phys": "Automation (Physical)",
     "automation_phys_flow": "Automation Flow (Physical, Δ/q)",
     "price_level": "Price Level",
-    "price_level_deflated": "Deflated Price Level",
+    "price_level_deflated": "Real Price Level",
     "inflation": "Inflation",
     "real_avg_income": "Real Avg Income",
     "real_consumption": "Real Consumption",
@@ -23,11 +23,15 @@ METRIC_LABELS: Dict[str, str] = {
     "gini_disp": "Gini (Disposable)",
     "gini_wealth": "Gini (Wealth)",
     "private_eq_per_h": "Private Equity / Household",
+    "hh_deposits_per_h": "Household Deposits / Household",
+    "hh_debt_per_h": "Household Debt / Household",
     "private_roe_q": "Private Payout Yield / Quarter",
     "private_broad_roe_q": "Private Broad ROE (Annualized %)",
     "bank_broad_roe_q": "Bank Broad ROE (Annualized %)",
     "corporate_info_broad_roe_q": "Info Broad ROE (Annualized %)",
     "corporate_physical_broad_roe_q": "Physical Broad ROE (Annualized %)",
+    "sector_op_margin_info": "Info Profit Margin (%)",
+    "sector_op_margin_phys": "Physical Profit Margin (%)",
     "corporate_nonbank_broad_roe_q": "Non-Bank Corporate Broad ROE (Annualized %)",
     "corporate_broad_roe_q": "Total Corporate Broad ROE (Annualized %)",
     "private_inv_cov": "Investment Coverage",
@@ -44,6 +48,9 @@ METRIC_LABELS: Dict[str, str] = {
     "uis_from_gov_dep_per_h": "Income Support from GOV",
     "uis_issued_per_h": "Income Support Issued",
     "corp_tax_rate_eff": "Effective Corporate Tax Rate",
+    "fund_dividend_inflow_per_h": "FUND Dividends / Household",
+    "ums_drain_to_fund_per_h": "UMS -> FUND / Household",
+    "fund_tracked_inflows_per_h": "Total FUND Inflows / Household",
     "sector_capacity_info_per_h": "Sector Capacity (Info) / Household",
     "sector_capacity_physical_per_h": "Sector Capacity (Physical) / Household",
     "sector_util_info": "HH Utilization (Info)",
@@ -98,7 +105,7 @@ def _series(rows: Sequence[Mapping[str, Any]], metric: str) -> List[float]:
             p = float(row.get("price_level", 1.0))
             if p <= 0.0:
                 p = 1e-9
-            values.append(1.0 / p)
+            values.append(p)
         return values
     if metric == "trust_equity_pct":
         values: List[float] = []
@@ -116,6 +123,8 @@ def _series(rows: Sequence[Mapping[str, Any]], metric: str) -> List[float]:
         "bank_broad_roe_q",
         "corporate_info_broad_roe_q",
         "corporate_physical_broad_roe_q",
+        "sector_op_margin_info",
+        "sector_op_margin_phys",
         "corporate_nonbank_broad_roe_q",
         "corporate_broad_roe_q",
     }:
@@ -142,8 +151,18 @@ def _series(rows: Sequence[Mapping[str, Any]], metric: str) -> List[float]:
             "corporate_broad_roe_q",
         }:
             values = [_annualize_quarterly_rate(v) for v in values]
+        elif metric in {"sector_op_margin_info", "sector_op_margin_phys"}:
+            values = [100.0 * float(v) for v in values]
         if values:
-            values[0] = float("nan")
+            if metric in {
+                "private_broad_roe_q",
+                "bank_broad_roe_q",
+                "corporate_info_broad_roe_q",
+                "corporate_physical_broad_roe_q",
+                "corporate_nonbank_broad_roe_q",
+                "corporate_broad_roe_q",
+            }:
+                values[0] = float("nan")
         return values
     return [float(r.get(metric, 0.0)) for r in rows]
 
@@ -390,6 +409,45 @@ def plot_income_support_funding_mix(
     return fig
 
 
+def plot_fund_inflows(
+    rows: Sequence[Mapping[str, Any]],
+    ax: Any = None,
+    *,
+    support_mode: str = "UIS",
+) -> Any:
+    """Stacked-area chart for FUND inflow channels."""
+    import matplotlib.pyplot as plt
+
+    rows = _require_rows(rows)
+    x = [int(r.get("t", i)) for i, r in enumerate(rows)]
+    mode = _normalized_mode(support_mode) or "UIS"
+
+    fund_div = np.maximum(0.0, np.nan_to_num(np.asarray(_series(rows, "fund_dividend_inflow_per_h"), dtype=float), nan=0.0))
+    ums_to_fund = np.maximum(0.0, np.nan_to_num(np.asarray(_series(rows, "ums_drain_to_fund_per_h"), dtype=float), nan=0.0))
+    total = fund_div + ums_to_fund
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(9, 4.5))
+    else:
+        fig = ax.figure
+
+    layers = [fund_div, ums_to_fund]
+    labels = [
+        metric_label("fund_dividend_inflow_per_h"),
+        metric_label("ums_drain_to_fund_per_h"),
+    ]
+
+    ax.stackplot(x, *layers, labels=labels, alpha=0.8)
+    ax.plot(x, total, color="0.1", linewidth=2.0, linestyle="--", label=metric_label("fund_tracked_inflows_per_h"))
+    ax.set_title(_title_with_mode("Fund Inflows", mode))
+    ax.set_xlabel("Quarter")
+    ax.set_ylabel("Per-Household")
+    _apply_compact_y_ticks(ax)
+    ax.grid(alpha=0.25)
+    ax.legend(loc="upper left")
+    return fig
+
+
 def plot_cumulative_income_support_funding(
     rows: Sequence[Mapping[str, Any]],
     ax: Any = None,
@@ -612,8 +670,13 @@ def plot_distribution_share(
 
     w_b = np.full(b.size, 1.0 / float(b.size), dtype=float)
     w_a = np.full(a.size, 1.0 / float(a.size), dtype=float)
-    ax.hist(b, bins=edges, weights=w_b, histtype="step", linewidth=2.0, label="Before")
-    ax.hist(a, bins=edges, weights=w_a, histtype="step", linewidth=2.0, label="After")
+    before_hist = ax.hist(b, bins=edges, weights=w_b, histtype="step", linewidth=2.0, label="Before")
+    after_hist = ax.hist(a, bins=edges, weights=w_a, histtype="step", linewidth=2.0, label="After")
+    before_color = before_hist[2][0].get_edgecolor()
+    after_color = after_hist[2][0].get_edgecolor()
+
+    ax.axvline(float(np.median(b)), color=before_color, linestyle=":", linewidth=1.8, alpha=0.9)
+    ax.axvline(float(np.median(a)), color=after_color, linestyle=":", linewidth=1.8, alpha=0.9)
 
     ax.set_title(title)
     ax.set_xlabel(x_label)
@@ -675,6 +738,7 @@ def plot_income_distribution_dual(
 
 
 def plot_wealth_distributions_full_zoom(
+    rows: Sequence[Mapping[str, Any]],
     wealth_before: Sequence[float],
     wealth_after: Sequence[float],
     *,
@@ -683,9 +747,10 @@ def plot_wealth_distributions_full_zoom(
     zoom_hi_pct: float = 98.0,
     support_mode: str | None = None,
 ) -> Any:
-    """Two-panel wealth histogram: full range + zoomed percentile window."""
+    """Wealth reservoirs over time + zoomed wealth histogram."""
     import matplotlib.pyplot as plt
 
+    rows = _require_rows(rows)
     w_b = np.asarray(wealth_before, dtype=float)
     w_a = np.asarray(wealth_after, dtype=float)
     w_b = w_b[np.isfinite(w_b)]
@@ -713,15 +778,29 @@ def plot_wealth_distributions_full_zoom(
             x_hi = x_lo + 1.0
 
     fig, axs = plt.subplots(1, 2, figsize=(13, 4.5), constrained_layout=True)
-    plot_distribution_share(
-        w_b,
-        w_a,
-        title=_title_with_mode("Wealth Distribution (Histogram, Full Range)", support_mode),
-        x_label=value_label,
-        x_limits=(x_full_lo, x_full_hi),
-        ax=axs[0],
-        bins=80,
-    )
+    t = [int(row.get("t", idx)) for idx, row in enumerate(rows)]
+    deposits = [float(row.get("hh_deposits_per_h", 0.0)) for row in rows]
+    direct_equity = [float(row.get("private_eq_per_h", 0.0)) for row in rows]
+    trust_value = [float(row.get("trust_value_per_h", 0.0)) for row in rows]
+    debt = [-float(row.get("hh_debt_per_h", 0.0)) for row in rows]
+    net_worth = [
+        float(dep + eq + trust + debt_val)
+        for dep, eq, trust, debt_val in zip(deposits, direct_equity, trust_value, debt)
+    ]
+
+    ax_left = axs[0]
+    ax_left.plot(t, deposits, label="Deposits", color="#1f77b4", linewidth=2.0)
+    ax_left.plot(t, direct_equity, label="Direct Equity", color="#ff7f0e", linewidth=2.0)
+    ax_left.plot(t, trust_value, label="Trust Value", color="#2ca02c", linewidth=2.0)
+    ax_left.plot(t, debt, label="Debt", color="#d62728", linewidth=2.0)
+    ax_left.plot(t, net_worth, label="Net Worth", color="#9467bd", linewidth=2.4, linestyle="--")
+    ax_left.axhline(0.0, color="0.4", linewidth=1.0, alpha=0.6)
+    ax_left.set_title(_title_with_mode("Household Wealth Reservoirs", support_mode))
+    ax_left.set_xlabel("Quarter")
+    ax_left.set_ylabel(value_label)
+    ax_left.grid(True, alpha=0.25)
+    ax_left.legend(loc="best")
+
     plot_distribution_share(
         w_b,
         w_a,

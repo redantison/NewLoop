@@ -44,6 +44,10 @@ config = {
         "startup_bootstrap_retained_scale": 1.00,
         "startup_bootstrap_firm_capital": False,
         "startup_bootstrap_capital_scale": 1.00,
+        "sector_input_cost_rate_info": 0.20,
+        "sector_input_cost_rate_phys": 0.15,
+        "ums_drain_to_fund_rate_q": 0.25,
+        "ums_drain_to_gov_share": 0.15,
         "capital_depr_rate_per_quarter": 0.02,
         # Sector-fulfillment pass 1: fixed household demand split plus
         # supplier-first capacity rationing with no new firm debt.
@@ -60,6 +64,7 @@ config = {
         "sector_capex_gap_half_sat": 0.15,
         "sector_capex_gap_close_rate": 0.25,
         "sector_capex_growth_cap_rate_q": 0.08,
+        "sector_capex_unmet_ewma_alpha": 0.25,
         "sector_install_rate_q": 0.05,
         "sector_dividend_cash_buffer_q": 0.00,
         "sector_dividend_service_floor": 0.95,
@@ -120,8 +125,10 @@ config = {
         "mort_neutralize_fund_allowed_if_debt_outstanding": False,
         "mort_neutralize_cap_mode": "None",  # "None"|"BankEquityFloor"|"PctOfMortgageInterest"|"PctOfMortgagePayment"
         "mort_neutralize_cap_value": 0.0,
-        "revolving_principal_pay_rate_q": 0.05,  # 5%/q max paydown if cash available
-        "revolving_rollover_share": 1.0,        # share of revolving principal repayment immediately re-lent to the same household
+        "revolving_principal_pay_rate_q": 0.0,   # revolving principal may persist unless a later rule retires it
+        "revolving_rollover_share": 0.0,        # share of revolving principal repayment immediately re-lent to the same household
+        "mortgage_fixed_rate_q": 0.01125,       # 4.5% annual fixed coupon for new mortgages
+        "mortgage_term_quarters": 60,           # 15-year fixed mortgage
         "mortgage_principal_pay_rate_q": 0.01,   # 1%/q max paydown if cash available
         "mortgage_turnover_enabled": True,      # replace amortized mortgage stock by issuing new mortgages to eligible households
         "mortgage_turnover_replace_share": 1.0,
@@ -209,7 +216,7 @@ config = {
         "price_adjust_speed": 0.10,    # pass-through speed to target price (1.0=no stickiness, lower=more inertia)
 
         # Production structure
-        "wage_share_of_revenue": {"FH": 0.65, "FA": 0.40},
+        "wage_share_of_revenue": {"FH": 0.50, "FA": 0.40},
 
         # Automation path ("two_hump" recommended; "linear" available as fallback)
         "automation_disabled": False,
@@ -241,6 +248,9 @@ config = {
 
         # Government sink / spender
         "GOV":  {"stocks": {"deposits": 0.0}},
+
+        # Unmodeled sector reservoir for sector input-cost leakages.
+        "UMS":  {"stocks": {"deposits": 0.0}},
 
         # Aggregate households (population mode). Equity starts here.
         "HH": {"stocks": {

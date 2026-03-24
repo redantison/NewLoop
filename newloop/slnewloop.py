@@ -18,6 +18,7 @@ from .plotting import (
     DEFAULT_LINE_METRICS,
     metric_options,
     plot_default_dashboard,
+    plot_fund_inflows,
     plot_income_distribution_dual,
     plot_metric_lines,
     plot_wealth_distributions_full_zoom,
@@ -61,6 +62,8 @@ PERCENT_COLUMNS = {
     "corporate_broad_roe_q",
     "trust_equity_pct",
     "corp_tax_rate_eff",
+    "sector_op_margin_info",
+    "sector_op_margin_phys",
     "sector_util_info",
     "sector_util_physical",
     "pop_dti_med",
@@ -240,16 +243,28 @@ def _render_startup_diagnostics(startup_diag: Dict[str, Any], baseline_calibrati
     c5, c6 = st.columns(2)
     c5.metric("Base Cons Uncovered", f"{100.0 * float(startup_diag.get('share_base_consumption_uncovered', 0.0)):.1f}%")
     c6.metric("Mean Base Gap", _compact_number(float(startup_diag.get("mean_base_consumption_gap", 0.0))))
+    c7, c8, c9 = st.columns(3)
+    c7.metric("IS Op Margin", f"{100.0 * float(startup_diag.get('startup_op_margin_info', 0.0)):.1f}%")
+    c8.metric("PS Op Margin", f"{100.0 * float(startup_diag.get('startup_op_margin_phys', 0.0)):.1f}%")
+    c9.metric("UMS Deposits", _compact_number(float(startup_diag.get("startup_ums_deposits", 0.0))))
     if baseline_calibration and bool(baseline_calibration.get("enabled", False)):
         iterations = int(baseline_calibration.get("iterations_completed", 0))
         max_change = 100.0 * float(baseline_calibration.get("max_target_change_pct", 0.0))
         converged = bool(baseline_calibration.get("converged", False))
-        st.caption(
-            f"Baseline calibration ran for {iterations} iteration(s) before visible Q0; final quintile-target change was {max_change:.2f}%."
-        )
-        st.caption("Visible Q0 is the calibrated startup state directly; no hidden startup burn-in is applied.")
-        if not converged:
-            st.caption("Baseline calibration has not fully converged yet, so some residual startup drift is still expected.")
+        skipped_reason = str(baseline_calibration.get("skipped_reason", "")).strip()
+        if skipped_reason:
+            st.caption(f"Baseline calibration was skipped: {skipped_reason}.")
+            st.caption("Visible Q0 uses the standard uncalibrated startup state, exactly as if baseline calibration were off.")
+            err = str(baseline_calibration.get("error", "")).strip()
+            if err:
+                st.caption(err)
+        else:
+            st.caption(
+                f"Baseline calibration ran for {iterations} iteration(s) before visible Q0; final quintile-target change was {max_change:.2f}%."
+            )
+            st.caption("Visible Q0 is the calibrated startup state directly; no hidden startup burn-in is applied.")
+            if not converged:
+                st.caption("Baseline calibration has not fully converged yet, so some residual startup drift is still expected.")
     elif float(startup_diag.get("mean_deposit_to_target_ratio", 0.0)) > 0.95:
         st.caption("Startup buffer alignment appears active: visible Q0 household deposits have been re-seeded to the live runtime buffer target without changing the consumption ladder.")
     st.caption(f"Aggregate buffer shortfall to hit runtime targets: {_compact_number(float(startup_diag.get('buffer_shortfall_total', 0.0)))}.")
@@ -829,6 +844,18 @@ def main() -> None:
         "(economy totals, in the currently selected nominal/real display mode)."
     )
 
+    fund_flow_fig, (ax_fund_inflows, ax_fund_blank) = plt.subplots(1, 2, figsize=(13, 4.5), constrained_layout=True)
+    plot_fund_inflows(
+        rows,
+        support_mode=support_mode,
+        ax=ax_fund_inflows,
+    )
+    ax_fund_blank.axis("off")
+    if config_stale:
+        _mark_figure_stale(fund_flow_fig)
+    st.pyplot(fund_flow_fig, clear_figure=False)
+    plt.close(fund_flow_fig)
+
     equity_fig, (ax_equity, ax_recycling) = plt.subplots(1, 2, figsize=(13, 4.5), constrained_layout=True)
     plot_metric_lines(
         rows,
@@ -847,11 +874,17 @@ def main() -> None:
         [
             "capex_per_h",
             "corporate_nonbank_broad_roe_q",
+            "sector_op_margin_info",
+            "sector_op_margin_phys",
         ],
         title="Investment Recycling",
         primary_ylabel="CAPEX / Household",
-        secondary_metrics=["corporate_nonbank_broad_roe_q"],
-        secondary_ylabel="Non-Bank Broad ROE (Annualized %)",
+        secondary_metrics=[
+            "corporate_nonbank_broad_roe_q",
+            "sector_op_margin_info",
+            "sector_op_margin_phys",
+        ],
+        secondary_ylabel="ROE / Profit Margin (%)",
         support_mode=support_mode,
         ax=ax_recycling,
     )
@@ -957,9 +990,10 @@ def main() -> None:
                 max_value=100,
                 value=(2, 98),
                 step=1,
-                help="Zooms the right-hand wealth histogram to this percentile band while keeping a full-range histogram for context.",
+                help="Zooms the right-hand wealth histogram to this percentile band while keeping the left-hand household wealth reservoirs plot for context.",
             )
             wealth_fig = plot_wealth_distributions_full_zoom(
+                rows,
                 wealth_before,
                 wealth_after,
                 value_label=value_label,
