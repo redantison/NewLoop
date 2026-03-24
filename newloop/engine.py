@@ -3447,6 +3447,11 @@ class NewLoop:
                 vat_credit_per_h=float(self.state.get("vat_credit_total", 0.0)) / float(self.hh.n),
                 gov_dep_per_h=float(self.nodes["GOV"].get("deposits", 0.0)) / float(self.hh.n),
                 fund_dep_per_h=float(self.nodes["FUND"].get("deposits", 0.0)) / float(self.hh.n),
+                fund_dividend_inflow_per_h=float(solp.get("div_fund", 0.0)) / float(self.hh.n),
+                ums_drain_to_fund_per_h=float(self.state.get("ums_drain_to_fund_total", 0.0)) / float(self.hh.n),
+                fund_tracked_inflows_per_h=(
+                    float(solp.get("div_fund", 0.0)) + float(self.state.get("ums_drain_to_fund_total", 0.0))
+                ) / float(self.hh.n),
                 capex_per_h=float(self.state.get("capex_total", 0.0)) / float(self.hh.n),
                 sector_capacity_info_per_h=float(solp.get("capacity_fa_real", 0.0)) / float(self.hh.n),
                 sector_capacity_physical_per_h=float(solp.get("capacity_fh_real", 0.0)) / float(self.hh.n),

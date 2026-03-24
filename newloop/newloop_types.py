@@ -135,6 +135,9 @@ class TickResult:
     vat_credit_per_h: float
     gov_dep_per_h: float
     fund_dep_per_h: float
+    fund_dividend_inflow_per_h: float
+    ums_drain_to_fund_per_h: float
+    fund_tracked_inflows_per_h: float
     capex_per_h: float
     sector_capacity_info_per_h: float
     sector_capacity_physical_per_h: float

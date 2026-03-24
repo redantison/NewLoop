@@ -18,6 +18,7 @@ from .plotting import (
     DEFAULT_LINE_METRICS,
     metric_options,
     plot_default_dashboard,
+    plot_fund_inflows,
     plot_income_distribution_dual,
     plot_metric_lines,
     plot_wealth_distributions_full_zoom,
@@ -251,17 +252,19 @@ def _render_startup_diagnostics(startup_diag: Dict[str, Any], baseline_calibrati
         max_change = 100.0 * float(baseline_calibration.get("max_target_change_pct", 0.0))
         converged = bool(baseline_calibration.get("converged", False))
         skipped_reason = str(baseline_calibration.get("skipped_reason", "")).strip()
-        st.caption(
-            f"Baseline calibration ran for {iterations} iteration(s) before visible Q0; final quintile-target change was {max_change:.2f}%."
-        )
-        st.caption("Visible Q0 is the calibrated startup state directly; no hidden startup burn-in is applied.")
         if skipped_reason:
             st.caption(f"Baseline calibration was skipped: {skipped_reason}.")
+            st.caption("Visible Q0 uses the standard uncalibrated startup state, exactly as if baseline calibration were off.")
             err = str(baseline_calibration.get("error", "")).strip()
             if err:
                 st.caption(err)
-        elif not converged:
-            st.caption("Baseline calibration has not fully converged yet, so some residual startup drift is still expected.")
+        else:
+            st.caption(
+                f"Baseline calibration ran for {iterations} iteration(s) before visible Q0; final quintile-target change was {max_change:.2f}%."
+            )
+            st.caption("Visible Q0 is the calibrated startup state directly; no hidden startup burn-in is applied.")
+            if not converged:
+                st.caption("Baseline calibration has not fully converged yet, so some residual startup drift is still expected.")
     elif float(startup_diag.get("mean_deposit_to_target_ratio", 0.0)) > 0.95:
         st.caption("Startup buffer alignment appears active: visible Q0 household deposits have been re-seeded to the live runtime buffer target without changing the consumption ladder.")
     st.caption(f"Aggregate buffer shortfall to hit runtime targets: {_compact_number(float(startup_diag.get('buffer_shortfall_total', 0.0)))}.")
@@ -840,6 +843,18 @@ def main() -> None:
         "Cumulative public funding equals cumulative GOV funding plus cumulative issuance funding "
         "(economy totals, in the currently selected nominal/real display mode)."
     )
+
+    fund_flow_fig, (ax_fund_inflows, ax_fund_blank) = plt.subplots(1, 2, figsize=(13, 4.5), constrained_layout=True)
+    plot_fund_inflows(
+        rows,
+        support_mode=support_mode,
+        ax=ax_fund_inflows,
+    )
+    ax_fund_blank.axis("off")
+    if config_stale:
+        _mark_figure_stale(fund_flow_fig)
+    st.pyplot(fund_flow_fig, clear_figure=False)
+    plt.close(fund_flow_fig)
 
     equity_fig, (ax_equity, ax_recycling) = plt.subplots(1, 2, figsize=(13, 4.5), constrained_layout=True)
     plot_metric_lines(

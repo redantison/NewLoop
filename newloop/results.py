@@ -551,13 +551,26 @@ def _baseline_calibration_regime_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
     params["baseline_calibration_enabled"] = False
     params["automation_disabled"] = True
     params["disable_trust"] = True
-    params["disable_mortgage_relief"] = True
-    params["disable_income_support"] = True
+    # Hidden startup-consistency regime:
+    # preserve the configured household/fiscal structure, but suppress
+    # payout/recycling behavior that can obscure the sustainable startup
+    # consumption ladder we are trying to fit.
+    params["dividend_payout_rate_firms"] = 0.0
+    params["dividend_payout_rate_firms_mature_max"] = 0.0
+    params["dividend_payout_rate_bank"] = 0.0
+    params["sector_surplus_distribution_share"] = 0.0
+    params["gov_tax_rebate_rate"] = 0.0
+    params["sector_capex_share_min"] = 0.0
+    params["sector_capex_share_max"] = 0.0
+    params["sector_capex_gap_close_rate"] = 0.0
+    params["sector_capex_growth_cap_rate_q"] = 0.0
+    params["sector_install_rate_q"] = 0.0
     return regime_cfg
 
 
 def _run_baseline_calibration(cfg: Dict[str, Any]) -> tuple[Dict[str, Any], Dict[str, Any] | None]:
     effective_cfg = copy.deepcopy(cfg)
+    uncalibrated_cfg = copy.deepcopy(effective_cfg)
     params = effective_cfg.get("parameters", {})
     if not bool(params.get("baseline_calibration_enabled", False)):
         return effective_cfg, None
@@ -580,6 +593,7 @@ def _run_baseline_calibration(cfg: Dict[str, Any]) -> tuple[Dict[str, Any], Dict
 
     report: Dict[str, Any] = {
         "enabled": True,
+        "mode": "startup_consistency",
         "iterations": [],
         "iterations_completed": 0,
         "quintile_boundaries_pct": _quintile_boundaries(n_quintiles),
@@ -595,12 +609,14 @@ def _run_baseline_calibration(cfg: Dict[str, Any]) -> tuple[Dict[str, Any], Dict
         reset_stats = _apply_startup_income_buffer_reset(sim, reset_deposits=reset_deposits)
         if sim.hh is None or sim.hh.n <= 0:
             report["skipped_reason"] = "no_households"
-            break
+            report["converged"] = False
+            return uncalibrated_cfg, report
 
         startup_snapshot = _startup_solver_snapshot(sim)
         if startup_snapshot is None:
             report["skipped_reason"] = "startup_snapshot_failed"
-            break
+            report["converged"] = False
+            return uncalibrated_cfg, report
 
         hh = sim.hh
         hh.ensure_memos()
@@ -625,7 +641,7 @@ def _run_baseline_calibration(cfg: Dict[str, Any]) -> tuple[Dict[str, Any], Dict
             report["error"] = str(exc)
             report["failed_iteration"] = int(iter_idx + 1)
             report["converged"] = False
-            return candidate_cfg, report
+            return uncalibrated_cfg, report
 
         rows = _visible_rows(sim.history)
         if rows:
