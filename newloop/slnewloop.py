@@ -957,9 +957,10 @@ def main() -> None:
                 max_value=100,
                 value=(2, 98),
                 step=1,
-                help="Zooms the right-hand wealth histogram to this percentile band while keeping a full-range histogram for context.",
+                help="Zooms the right-hand wealth histogram to this percentile band while keeping the left-hand household wealth reservoirs plot for context.",
             )
             wealth_fig = plot_wealth_distributions_full_zoom(
+                rows,
                 wealth_before,
                 wealth_after,
                 value_label=value_label,

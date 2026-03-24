@@ -38,6 +38,11 @@ class HouseholdState:
     revolving_loans: np.ndarray
     mpc_q: np.ndarray
     base_real_cons_q: np.ndarray
+    mort_rate_q: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=float))
+    mort_age_q: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=float))
+    mort_term_q: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=float))
+    mort_payment_sched_q: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=float))
+    mort_orig_principal: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=float))
     liquid_buffer_months_target: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=float))
 
     prev_income: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=float))
@@ -57,6 +62,16 @@ class HouseholdState:
             self.liquid_buffer_months_target = np.zeros(self.n, dtype=float)
         if (self.prev_income.size == 0) or (self.prev_income.shape[0] != self.n):
             self.prev_income = np.asarray(self.wages0_q, dtype=float).copy()
+        if (self.mort_rate_q.size == 0) or (self.mort_rate_q.shape[0] != self.n):
+            self.mort_rate_q = np.zeros(self.n, dtype=float)
+        if (self.mort_age_q.size == 0) or (self.mort_age_q.shape[0] != self.n):
+            self.mort_age_q = np.zeros(self.n, dtype=float)
+        if (self.mort_term_q.size == 0) or (self.mort_term_q.shape[0] != self.n):
+            self.mort_term_q = np.zeros(self.n, dtype=float)
+        if (self.mort_payment_sched_q.size == 0) or (self.mort_payment_sched_q.shape[0] != self.n):
+            self.mort_payment_sched_q = np.zeros(self.n, dtype=float)
+        if (self.mort_orig_principal.size == 0) or (self.mort_orig_principal.shape[0] != self.n):
+            self.mort_orig_principal = np.zeros(self.n, dtype=float)
         if (self.mort_P0.size == 0) or (self.mort_P0.shape[0] != self.n):
             self.mort_P0 = np.zeros(self.n, dtype=float)
         if (self.mort_Y0.size == 0) or (self.mort_Y0.shape[0] != self.n):
@@ -97,6 +112,8 @@ class TickResult:
     gini_disp: float
     gini_wealth: float
     private_eq_per_h: float
+    hh_deposits_per_h: float
+    hh_debt_per_h: float
     corporate_eq_info_per_h: float
     corporate_eq_physical_per_h: float
     corporate_eq_total_per_h: float

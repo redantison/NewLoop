@@ -31,6 +31,7 @@ import math
 import random
 import statistics
 
+from .mortgage import balance_from_orig_principal, payment_from_orig_principal, remaining_term
 
 # ----------------------------
 # Utilities
@@ -218,6 +219,7 @@ class PopulationConfig:
     # Interest rates (effective rates on outstanding balances; baseline calibration)
     mortgage_rate_effective: float = 0.045
     revolving_rate_effective: float = 0.20
+    mortgage_term_quarters: int = 60
 
     # MPC schedule by deposits percentile (piecewise)
     # (pct_upper_bound, mpc)
@@ -250,6 +252,11 @@ class Population:
     loans: List[float]
     mortgage_loans: List[float]
     revolving_loans: List[float]
+    mortgage_rate_q: List[float]
+    mortgage_age_q: List[float]
+    mortgage_term_q: List[float]
+    mortgage_payment_sched_q: List[float]
+    mortgage_orig_principal: List[float]
     mpc_q: List[float]
     base_real_cons_q: List[float]
     liquid_buffer_months_target: List[float]
@@ -549,6 +556,11 @@ def generate_population(cfg: PopulationConfig) -> Population:
 
     mortgage_loans = np.zeros(n, dtype=float)
     revolving_loans = np.zeros(n, dtype=float)
+    mortgage_rate_q = np.zeros(n, dtype=float)
+    mortgage_age_q = np.zeros(n, dtype=float)
+    mortgage_term_q = np.zeros(n, dtype=float)
+    mortgage_payment_sched_q = np.zeros(n, dtype=float)
+    mortgage_orig_principal = np.zeros(n, dtype=float)
 
     mort_mask = has_wage & (rng.random(n) < mort_p)
     if mort_mask.any():
@@ -557,7 +569,18 @@ def generate_population(cfg: PopulationConfig) -> Population:
             sigma=float(cfg.mortgage_income_mult_sigma),
             size=int(mort_mask.sum()),
         )
-        mortgage_loans[mort_mask] = np.maximum(0.0, mort_mult * wages_annual[mort_mask])
+        orig_principal = np.maximum(0.0, mort_mult * wages_annual[mort_mask])
+        term_q = float(max(1, int(getattr(cfg, "mortgage_term_quarters", 60))))
+        rate_q = float(max(0.0, float(cfg.mortgage_rate_effective) / 4.0))
+        ages = rng.integers(0, int(term_q), size=int(mort_mask.sum()), endpoint=False).astype(float)
+        payment_q = payment_from_orig_principal(orig_principal, rate_q, term_q)
+        current_balance = balance_from_orig_principal(orig_principal, rate_q, term_q, ages)
+        mortgage_loans[mort_mask] = current_balance
+        mortgage_rate_q[mort_mask] = rate_q
+        mortgage_age_q[mort_mask] = ages
+        mortgage_term_q[mort_mask] = term_q
+        mortgage_payment_sched_q[mort_mask] = payment_q
+        mortgage_orig_principal[mort_mask] = orig_principal
 
     rev_mask = has_wage & (rng.random(n) < rev_p)
     if rev_mask.any():
@@ -579,6 +602,11 @@ def generate_population(cfg: PopulationConfig) -> Population:
         loans=loans.astype(float).tolist(),
         mortgage_loans=mortgage_loans.astype(float).tolist(),
         revolving_loans=revolving_loans.astype(float).tolist(),
+        mortgage_rate_q=mortgage_rate_q.astype(float).tolist(),
+        mortgage_age_q=mortgage_age_q.astype(float).tolist(),
+        mortgage_term_q=mortgage_term_q.astype(float).tolist(),
+        mortgage_payment_sched_q=mortgage_payment_sched_q.astype(float).tolist(),
+        mortgage_orig_principal=mortgage_orig_principal.astype(float).tolist(),
         mpc_q=[float(x) for x in mpc_q],
         base_real_cons_q=base_real.astype(float).tolist(),
         liquid_buffer_months_target=target_months.astype(float).tolist(),

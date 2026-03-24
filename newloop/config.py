@@ -60,6 +60,7 @@ config = {
         "sector_capex_gap_half_sat": 0.15,
         "sector_capex_gap_close_rate": 0.25,
         "sector_capex_growth_cap_rate_q": 0.08,
+        "sector_capex_unmet_ewma_alpha": 0.25,
         "sector_install_rate_q": 0.05,
         "sector_dividend_cash_buffer_q": 0.00,
         "sector_dividend_service_floor": 0.95,
@@ -120,8 +121,10 @@ config = {
         "mort_neutralize_fund_allowed_if_debt_outstanding": False,
         "mort_neutralize_cap_mode": "None",  # "None"|"BankEquityFloor"|"PctOfMortgageInterest"|"PctOfMortgagePayment"
         "mort_neutralize_cap_value": 0.0,
-        "revolving_principal_pay_rate_q": 0.05,  # 5%/q max paydown if cash available
-        "revolving_rollover_share": 1.0,        # share of revolving principal repayment immediately re-lent to the same household
+        "revolving_principal_pay_rate_q": 0.0,   # revolving principal may persist unless a later rule retires it
+        "revolving_rollover_share": 0.0,        # share of revolving principal repayment immediately re-lent to the same household
+        "mortgage_fixed_rate_q": 0.01125,       # 4.5% annual fixed coupon for new mortgages
+        "mortgage_term_quarters": 60,           # 15-year fixed mortgage
         "mortgage_principal_pay_rate_q": 0.01,   # 1%/q max paydown if cash available
         "mortgage_turnover_enabled": True,      # replace amortized mortgage stock by issuing new mortgages to eligible households
         "mortgage_turnover_replace_share": 1.0,

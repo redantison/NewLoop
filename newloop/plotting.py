@@ -23,6 +23,8 @@ METRIC_LABELS: Dict[str, str] = {
     "gini_disp": "Gini (Disposable)",
     "gini_wealth": "Gini (Wealth)",
     "private_eq_per_h": "Private Equity / Household",
+    "hh_deposits_per_h": "Household Deposits / Household",
+    "hh_debt_per_h": "Household Debt / Household",
     "private_roe_q": "Private Payout Yield / Quarter",
     "private_broad_roe_q": "Private Broad ROE (Annualized %)",
     "bank_broad_roe_q": "Bank Broad ROE (Annualized %)",
@@ -612,8 +614,13 @@ def plot_distribution_share(
 
     w_b = np.full(b.size, 1.0 / float(b.size), dtype=float)
     w_a = np.full(a.size, 1.0 / float(a.size), dtype=float)
-    ax.hist(b, bins=edges, weights=w_b, histtype="step", linewidth=2.0, label="Before")
-    ax.hist(a, bins=edges, weights=w_a, histtype="step", linewidth=2.0, label="After")
+    before_hist = ax.hist(b, bins=edges, weights=w_b, histtype="step", linewidth=2.0, label="Before")
+    after_hist = ax.hist(a, bins=edges, weights=w_a, histtype="step", linewidth=2.0, label="After")
+    before_color = before_hist[2][0].get_edgecolor()
+    after_color = after_hist[2][0].get_edgecolor()
+
+    ax.axvline(float(np.median(b)), color=before_color, linestyle=":", linewidth=1.8, alpha=0.9)
+    ax.axvline(float(np.median(a)), color=after_color, linestyle=":", linewidth=1.8, alpha=0.9)
 
     ax.set_title(title)
     ax.set_xlabel(x_label)
@@ -675,6 +682,7 @@ def plot_income_distribution_dual(
 
 
 def plot_wealth_distributions_full_zoom(
+    rows: Sequence[Mapping[str, Any]],
     wealth_before: Sequence[float],
     wealth_after: Sequence[float],
     *,
@@ -683,9 +691,10 @@ def plot_wealth_distributions_full_zoom(
     zoom_hi_pct: float = 98.0,
     support_mode: str | None = None,
 ) -> Any:
-    """Two-panel wealth histogram: full range + zoomed percentile window."""
+    """Wealth reservoirs over time + zoomed wealth histogram."""
     import matplotlib.pyplot as plt
 
+    rows = _require_rows(rows)
     w_b = np.asarray(wealth_before, dtype=float)
     w_a = np.asarray(wealth_after, dtype=float)
     w_b = w_b[np.isfinite(w_b)]
@@ -713,15 +722,29 @@ def plot_wealth_distributions_full_zoom(
             x_hi = x_lo + 1.0
 
     fig, axs = plt.subplots(1, 2, figsize=(13, 4.5), constrained_layout=True)
-    plot_distribution_share(
-        w_b,
-        w_a,
-        title=_title_with_mode("Wealth Distribution (Histogram, Full Range)", support_mode),
-        x_label=value_label,
-        x_limits=(x_full_lo, x_full_hi),
-        ax=axs[0],
-        bins=80,
-    )
+    t = [int(row.get("t", idx)) for idx, row in enumerate(rows)]
+    deposits = [float(row.get("hh_deposits_per_h", 0.0)) for row in rows]
+    direct_equity = [float(row.get("private_eq_per_h", 0.0)) for row in rows]
+    trust_value = [float(row.get("trust_value_per_h", 0.0)) for row in rows]
+    debt = [-float(row.get("hh_debt_per_h", 0.0)) for row in rows]
+    net_worth = [
+        float(dep + eq + trust + debt_val)
+        for dep, eq, trust, debt_val in zip(deposits, direct_equity, trust_value, debt)
+    ]
+
+    ax_left = axs[0]
+    ax_left.plot(t, deposits, label="Deposits", color="#1f77b4", linewidth=2.0)
+    ax_left.plot(t, direct_equity, label="Direct Equity", color="#ff7f0e", linewidth=2.0)
+    ax_left.plot(t, trust_value, label="Trust Value", color="#2ca02c", linewidth=2.0)
+    ax_left.plot(t, debt, label="Debt", color="#d62728", linewidth=2.0)
+    ax_left.plot(t, net_worth, label="Net Worth", color="#9467bd", linewidth=2.4, linestyle="--")
+    ax_left.axhline(0.0, color="0.4", linewidth=1.0, alpha=0.6)
+    ax_left.set_title(_title_with_mode("Household Wealth Reservoirs", support_mode))
+    ax_left.set_xlabel("Quarter")
+    ax_left.set_ylabel(value_label)
+    ax_left.grid(True, alpha=0.25)
+    ax_left.legend(loc="best")
+
     plot_distribution_share(
         w_b,
         w_a,
