@@ -15,7 +15,7 @@ METRIC_LABELS: Dict[str, str] = {
     "automation_phys": "Automation (Physical)",
     "automation_phys_flow": "Automation Flow (Physical, Δ/q)",
     "price_level": "Price Level",
-    "price_level_deflated": "Deflated Price Level",
+    "price_level_deflated": "Real Price Level",
     "inflation": "Inflation",
     "real_avg_income": "Real Avg Income",
     "real_consumption": "Real Consumption",
@@ -30,6 +30,8 @@ METRIC_LABELS: Dict[str, str] = {
     "bank_broad_roe_q": "Bank Broad ROE (Annualized %)",
     "corporate_info_broad_roe_q": "Info Broad ROE (Annualized %)",
     "corporate_physical_broad_roe_q": "Physical Broad ROE (Annualized %)",
+    "sector_op_margin_info": "Info Profit Margin (%)",
+    "sector_op_margin_phys": "Physical Profit Margin (%)",
     "corporate_nonbank_broad_roe_q": "Non-Bank Corporate Broad ROE (Annualized %)",
     "corporate_broad_roe_q": "Total Corporate Broad ROE (Annualized %)",
     "private_inv_cov": "Investment Coverage",
@@ -46,6 +48,9 @@ METRIC_LABELS: Dict[str, str] = {
     "uis_from_gov_dep_per_h": "Income Support from GOV",
     "uis_issued_per_h": "Income Support Issued",
     "corp_tax_rate_eff": "Effective Corporate Tax Rate",
+    "fund_dividend_inflow_per_h": "FUND Dividends / Household",
+    "ums_drain_to_fund_per_h": "UMS -> FUND / Household",
+    "fund_tracked_inflows_per_h": "Total FUND Inflows / Household",
     "sector_capacity_info_per_h": "Sector Capacity (Info) / Household",
     "sector_capacity_physical_per_h": "Sector Capacity (Physical) / Household",
     "sector_util_info": "HH Utilization (Info)",
@@ -100,7 +105,7 @@ def _series(rows: Sequence[Mapping[str, Any]], metric: str) -> List[float]:
             p = float(row.get("price_level", 1.0))
             if p <= 0.0:
                 p = 1e-9
-            values.append(1.0 / p)
+            values.append(p)
         return values
     if metric == "trust_equity_pct":
         values: List[float] = []
@@ -118,6 +123,8 @@ def _series(rows: Sequence[Mapping[str, Any]], metric: str) -> List[float]:
         "bank_broad_roe_q",
         "corporate_info_broad_roe_q",
         "corporate_physical_broad_roe_q",
+        "sector_op_margin_info",
+        "sector_op_margin_phys",
         "corporate_nonbank_broad_roe_q",
         "corporate_broad_roe_q",
     }:
@@ -144,8 +151,18 @@ def _series(rows: Sequence[Mapping[str, Any]], metric: str) -> List[float]:
             "corporate_broad_roe_q",
         }:
             values = [_annualize_quarterly_rate(v) for v in values]
+        elif metric in {"sector_op_margin_info", "sector_op_margin_phys"}:
+            values = [100.0 * float(v) for v in values]
         if values:
-            values[0] = float("nan")
+            if metric in {
+                "private_broad_roe_q",
+                "bank_broad_roe_q",
+                "corporate_info_broad_roe_q",
+                "corporate_physical_broad_roe_q",
+                "corporate_nonbank_broad_roe_q",
+                "corporate_broad_roe_q",
+            }:
+                values[0] = float("nan")
         return values
     return [float(r.get(metric, 0.0)) for r in rows]
 
@@ -384,6 +401,45 @@ def plot_income_support_funding_mix(
 
     ax.stackplot(x, *layers, labels=labels, alpha=0.8)
     ax.set_title(_title_with_mode("Income Support Funding Mix", mode))
+    ax.set_xlabel("Quarter")
+    ax.set_ylabel("Per-Household")
+    _apply_compact_y_ticks(ax)
+    ax.grid(alpha=0.25)
+    ax.legend(loc="upper left")
+    return fig
+
+
+def plot_fund_inflows(
+    rows: Sequence[Mapping[str, Any]],
+    ax: Any = None,
+    *,
+    support_mode: str = "UIS",
+) -> Any:
+    """Stacked-area chart for FUND inflow channels."""
+    import matplotlib.pyplot as plt
+
+    rows = _require_rows(rows)
+    x = [int(r.get("t", i)) for i, r in enumerate(rows)]
+    mode = _normalized_mode(support_mode) or "UIS"
+
+    fund_div = np.maximum(0.0, np.nan_to_num(np.asarray(_series(rows, "fund_dividend_inflow_per_h"), dtype=float), nan=0.0))
+    ums_to_fund = np.maximum(0.0, np.nan_to_num(np.asarray(_series(rows, "ums_drain_to_fund_per_h"), dtype=float), nan=0.0))
+    total = fund_div + ums_to_fund
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(9, 4.5))
+    else:
+        fig = ax.figure
+
+    layers = [fund_div, ums_to_fund]
+    labels = [
+        metric_label("fund_dividend_inflow_per_h"),
+        metric_label("ums_drain_to_fund_per_h"),
+    ]
+
+    ax.stackplot(x, *layers, labels=labels, alpha=0.8)
+    ax.plot(x, total, color="0.1", linewidth=2.0, linestyle="--", label=metric_label("fund_tracked_inflows_per_h"))
+    ax.set_title(_title_with_mode("Fund Inflows", mode))
     ax.set_xlabel("Quarter")
     ax.set_ylabel("Per-Household")
     _apply_compact_y_ticks(ax)

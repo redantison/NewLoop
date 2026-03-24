@@ -106,6 +106,11 @@ class NewLoop:
             "mort_index_max": 1.0,
             "mort_overdraft_due_to_payment_total": 0.0,
             "mort_overdraft_due_to_payment_count": 0.0,
+            "sector_input_cost_info_total": 0.0,
+            "sector_input_cost_phys_total": 0.0,
+            "sector_input_cost_total": 0.0,
+            "ums_drain_to_fund_total": 0.0,
+            "ums_drain_to_gov_total": 0.0,
         }
 
         self.nodes: Dict[str, Node] = {
@@ -114,7 +119,7 @@ class NewLoop:
         }
 
         # Ensure required nodes exist (population-mode core only)
-        for required in ["BANK", "FUND", "FA", "FH", "GOV", "HH"]:
+        for required in ["BANK", "FUND", "FA", "FH", "GOV", "UMS", "HH"]:
             if required not in self.nodes:
                 self.nodes[required] = Node(required, stocks={})
 
@@ -307,6 +312,17 @@ class NewLoop:
         seed_sol = self.solve_within_tick_population()
         if seed_sol is None:
             raise RuntimeError("Startup lagged-retained bootstrap expected a population solution but received None.")
+
+        explicit_revenue = any(
+            abs(float(self.nodes[node_id].memo.get("revenue_prev", 0.0))) > 1e-12
+            for node_id in ("FA", "FH")
+        )
+        if not explicit_revenue:
+            self.nodes["FA"].memo["revenue_prev"] = max(0.0, float(seed_sol.get("rev_fa", 0.0)))
+            self.nodes["FH"].memo["revenue_prev"] = max(0.0, float(seed_sol.get("rev_fh", 0.0)))
+            seed_sol = self.solve_within_tick_population()
+            if seed_sol is None:
+                raise RuntimeError("Startup lagged-retained bootstrap expected a population solution after revenue seed.")
 
         self._bootstrap_startup_prev_equity(seed_sol)
         if bool(self.params.get("startup_bootstrap_firm_capital", False)):
@@ -879,6 +895,11 @@ class NewLoop:
             rate = max(0.0, float(self.params.get("firm_overhead_rate_phys", 0.0)))
         revenue_prev = max(0.0, float(self.nodes[firm_id].memo.get("revenue_prev", 0.0)))
         return rate * revenue_prev
+
+    def _sector_input_cost_rate(self, firm_id: str) -> float:
+        if firm_id == "FA":
+            return max(0.0, float(self.params.get("sector_input_cost_rate_info", 0.0)))
+        return max(0.0, float(self.params.get("sector_input_cost_rate_phys", 0.0)))
 
     def _lagged_dividend_commit_nom(self, issuer: str) -> float:
         commit = max(0.0, float(self.nodes[issuer].memo.get("dividend_commit_prev", 0.0)))
@@ -1875,14 +1896,16 @@ class NewLoop:
 
             rev_fa = float(sector_step["rev_fa"])
             rev_fh = float(sector_step["rev_fh"])
+            input_cost_fa = rev_fa * self._sector_input_cost_rate("FA")
+            input_cost_fh = rev_fh * self._sector_input_cost_rate("FH")
 
             w_fa = rev_fa * ws_fa
             w_fh = rev_fh * ws_fh
             w_total = float(w_fa + w_fh)
 
             # profits pre-tax (capex is not expensed; it's a cash outflow later)
-            p_fa_pre_tax = max(0.0, rev_fa - w_fa - fa_interest - overhead_fa)
-            p_fh_pre_tax = max(0.0, rev_fh - w_fh - fh_interest - overhead_fh)
+            p_fa_pre_tax = max(0.0, rev_fa - w_fa - fa_interest - overhead_fa - input_cost_fa)
+            p_fh_pre_tax = max(0.0, rev_fh - w_fh - fh_interest - overhead_fh - input_cost_fh)
 
             mort_interest_due = mort * rL
             rev_interest = rev * rL
@@ -1971,6 +1994,7 @@ class NewLoop:
                     - w_fa
                     - fa_interest
                     - overhead_fa
+                    - input_cost_fa
                     - corp_tax_fa
                     - div_cash_buffer_fa,
                 ),
@@ -1985,6 +2009,7 @@ class NewLoop:
                     - w_fh
                     - fh_interest
                     - overhead_fh
+                    - input_cost_fh
                     - corp_tax_fh
                     - div_cash_buffer_fh,
                 ),
@@ -2120,6 +2145,8 @@ class NewLoop:
                     "hh_fulfillment_ratio": float(hh_fulfillment_ratio),
                     "overhead_fa": float(overhead_fa),
                     "overhead_fh": float(overhead_fh),
+                    "input_cost_fa": float(input_cost_fa),
+                    "input_cost_fh": float(input_cost_fh),
                     "div_commit_fa": float(div_commit_fa),
                     "div_commit_fh": float(div_commit_fh),
                     "div_commit_bk": float(div_commit_bk),
@@ -2348,6 +2375,24 @@ class NewLoop:
             overhead_total += overhead_fh
         if overhead_total > 0.0:
             self.nodes["GOV"].add("deposits", overhead_total)
+
+        # -------------------------------------------------
+        # 2aa) Sector input costs: firms -> UMS reservoir
+        # -------------------------------------------------
+        input_cost_fa = float(sol.get("input_cost_fa", 0.0))
+        input_cost_fh = float(sol.get("input_cost_fh", 0.0))
+        input_cost_total = 0.0
+        if input_cost_fa > 0.0:
+            self.nodes["FA"].add("deposits", -input_cost_fa)
+            input_cost_total += input_cost_fa
+        if input_cost_fh > 0.0:
+            self.nodes["FH"].add("deposits", -input_cost_fh)
+            input_cost_total += input_cost_fh
+        if input_cost_total > 0.0:
+            self.nodes["UMS"].add("deposits", input_cost_total)
+        self.state["sector_input_cost_info_total"] = float(max(0.0, input_cost_fa))
+        self.state["sector_input_cost_phys_total"] = float(max(0.0, input_cost_fh))
+        self.state["sector_input_cost_total"] = float(max(0.0, input_cost_total))
 
         # -------------------------------------------------
         # 2b) Firm interest: firms -> BANK
@@ -2637,6 +2682,24 @@ class NewLoop:
             transfer = residual * fund_residual_share
             if transfer > 0:
                 self._xfer_deposits("FUND", "GOV", transfer)
+
+        self.state["ums_drain_to_fund_total"] = 0.0
+        self.state["ums_drain_to_gov_total"] = 0.0
+        if bool(self.state.get("trust_active", False)):
+            ums_drain_rate = max(0.0, min(1.0, float(self.params.get("ums_drain_to_fund_rate_q", 0.0))))
+            if ums_drain_rate > 0.0:
+                ums_dep = max(0.0, self.nodes["UMS"].get("deposits", 0.0))
+                ums_transfer = ums_dep * ums_drain_rate
+                if ums_transfer > 0.0:
+                    ums_gov_share = max(0.0, min(1.0, float(self.params.get("ums_drain_to_gov_share", 0.0))))
+                    ums_to_gov = ums_transfer * ums_gov_share
+                    ums_to_fund = ums_transfer - ums_to_gov
+                    if ums_to_fund > 0.0:
+                        self._xfer_deposits("UMS", "FUND", ums_to_fund)
+                    if ums_to_gov > 0.0:
+                        self._xfer_deposits("UMS", "GOV", ums_to_gov)
+                    self.state["ums_drain_to_fund_total"] = float(ums_to_fund)
+                    self.state["ums_drain_to_gov_total"] = float(ums_to_gov)
 
         # -------------------------------------------------
         # 6) Income-support payments: issuance share -> FUND dep -> GOV dep -> extra issuance
@@ -3299,6 +3362,26 @@ class NewLoop:
                 (bank_corporate_payout_total + bank_corporate_retained_total) / prev_bank_eq_total
                 if prev_bank_eq_total > 1e-9 else 0.0
             )
+            rev_info = float(solp.get("rev_fa", 0.0))
+            rev_phys = float(solp.get("rev_fh", 0.0))
+            sector_op_margin_info = (
+                (
+                    rev_info
+                    - float(solp.get("w_fa", 0.0))
+                    - float(solp.get("overhead_fa", 0.0))
+                    - float(solp.get("input_cost_fa", 0.0))
+                ) / rev_info
+                if rev_info > 1e-9 else 0.0
+            )
+            sector_op_margin_phys = (
+                (
+                    rev_phys
+                    - float(solp.get("w_fh", 0.0))
+                    - float(solp.get("overhead_fh", 0.0))
+                    - float(solp.get("input_cost_fh", 0.0))
+                ) / rev_phys
+                if rev_phys > 1e-9 else 0.0
+            )
             corporate_info_broad_roe_q = (
                 (info_corporate_payout_total + info_corporate_retained_total) / prev_info_eq_total
                 if prev_info_eq_total > 1e-9 else 0.0
@@ -3351,6 +3434,8 @@ class NewLoop:
                 bank_broad_roe_q=float(bank_broad_roe_q),
                 corporate_info_broad_roe_q=float(corporate_info_broad_roe_q),
                 corporate_physical_broad_roe_q=float(corporate_physical_broad_roe_q),
+                sector_op_margin_info=float(sector_op_margin_info),
+                sector_op_margin_phys=float(sector_op_margin_phys),
                 corporate_nonbank_broad_roe_q=float(corporate_nonbank_broad_roe_q),
                 corporate_broad_roe_q=float(corporate_broad_roe_q),
                 private_inv_cov=float(private_inv_cov),
@@ -3362,6 +3447,11 @@ class NewLoop:
                 vat_credit_per_h=float(self.state.get("vat_credit_total", 0.0)) / float(self.hh.n),
                 gov_dep_per_h=float(self.nodes["GOV"].get("deposits", 0.0)) / float(self.hh.n),
                 fund_dep_per_h=float(self.nodes["FUND"].get("deposits", 0.0)) / float(self.hh.n),
+                fund_dividend_inflow_per_h=float(solp.get("div_fund", 0.0)) / float(self.hh.n),
+                ums_drain_to_fund_per_h=float(self.state.get("ums_drain_to_fund_total", 0.0)) / float(self.hh.n),
+                fund_tracked_inflows_per_h=(
+                    float(solp.get("div_fund", 0.0)) + float(self.state.get("ums_drain_to_fund_total", 0.0))
+                ) / float(self.hh.n),
                 capex_per_h=float(self.state.get("capex_total", 0.0)) / float(self.hh.n),
                 sector_capacity_info_per_h=float(solp.get("capacity_fa_real", 0.0)) / float(self.hh.n),
                 sector_capacity_physical_per_h=float(solp.get("capacity_fh_real", 0.0)) / float(self.hh.n),

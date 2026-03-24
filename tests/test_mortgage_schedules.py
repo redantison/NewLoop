@@ -1,6 +1,7 @@
 import copy
 import sys
 import unittest
+from unittest import mock
 from pathlib import Path
 
 import numpy as np
@@ -11,7 +12,13 @@ sys.path.insert(0, str(ROOT))
 from newloop.config import get_default_config
 from newloop.engine import NewLoop
 from newloop.mortgage import balance_from_orig_principal, payment_from_orig_principal, remaining_term, scheduled_payment_components
-from newloop.results import _prepare_startup_sim, _run_baseline_calibration, _startup_solver_snapshot, run_simulation
+from newloop.results import (
+    _baseline_calibration_regime_cfg,
+    _prepare_startup_sim,
+    _run_baseline_calibration,
+    _startup_solver_snapshot,
+    run_simulation,
+)
 
 
 def make_cfg():
@@ -123,6 +130,44 @@ class MortgageScheduleTests(unittest.TestCase):
 
         y = np.asarray(snap["disposable_income_i"], dtype=float)
         self.assertGreater(float(np.min(y)), -10000.0)
+
+    def test_baseline_calibration_enabled_does_not_crash_run(self):
+        cfg = make_cfg()
+        cfg["parameters"]["baseline_calibration_enabled"] = True
+
+        run = run_simulation(12, cfg)
+
+        self.assertTrue(bool(run.rows))
+        self.assertIsNotNone(run.baseline_calibration)
+        self.assertFalse(bool((run.baseline_calibration or {}).get("skipped_reason", "")))
+
+    def test_baseline_calibration_regime_preserves_income_support_and_mortgage_relief(self):
+        cfg = make_cfg()
+        cfg["parameters"]["disable_income_support"] = False
+        cfg["parameters"]["disable_mortgage_relief"] = False
+        cfg["parameters"]["dividend_payout_rate_firms"] = 0.75
+        cfg["parameters"]["gov_tax_rebate_rate"] = 0.25
+
+        regime = _baseline_calibration_regime_cfg(cfg)
+        params = regime["parameters"]
+
+        self.assertFalse(bool(params.get("disable_income_support", True)))
+        self.assertFalse(bool(params.get("disable_mortgage_relief", True)))
+        self.assertTrue(bool(params.get("automation_disabled", False)))
+        self.assertTrue(bool(params.get("disable_trust", False)))
+        self.assertEqual(float(params.get("dividend_payout_rate_firms", -1.0)), 0.0)
+        self.assertEqual(float(params.get("gov_tax_rebate_rate", -1.0)), 0.0)
+
+    def test_baseline_calibration_skip_reverts_to_uncalibrated_config(self):
+        cfg = make_cfg()
+        cfg["parameters"]["baseline_calibration_enabled"] = True
+        original = copy.deepcopy(cfg)
+
+        with mock.patch("newloop.results.NewLoop.step", side_effect=ValueError("boom")):
+            eff, report = _run_baseline_calibration(cfg)
+
+        self.assertEqual(eff, original)
+        self.assertEqual(str((report or {}).get("skipped_reason", "")), "infeasible_hidden_baseline_regime")
 
     def test_turnover_originates_new_age_zero_fixed_rate_mortgages(self):
         cfg = make_cfg()
