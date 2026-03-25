@@ -138,6 +138,9 @@ class TickResult:
     fund_dividend_inflow_per_h: float
     ums_drain_to_fund_per_h: float
     fund_tracked_inflows_per_h: float
+    ums_recycle_to_info_per_h: float
+    ums_recycle_to_phys_per_h: float
+    ums_recycle_total_per_h: float
     capex_per_h: float
     sector_capacity_info_per_h: float
     sector_capacity_physical_per_h: float
