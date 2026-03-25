@@ -48,6 +48,33 @@ class PolicyAlignmentTests(unittest.TestCase):
         expected_pct = (0.10 + phi_qtr) / (1.0 + phi_qtr)
         self.assertAlmostEqual(float(sim.history[1].trust_equity_pct), expected_pct, places=3)
 
+    def test_fund_dividends_start_after_prior_quarter_ownership(self):
+        cfg = make_cfg()
+        params = cfg["parameters"]
+        params["trust_trigger_dti"] = 0.0
+        params["trust_launch_loan"] = 15000.0
+        params["trust_launch_target_pct"] = 0.10
+        params["gov_tax_rebate_rate"] = 0.0
+        params["disable_income_support"] = True
+        params["loan_rate_per_quarter"] = 0.0
+        params["vat_rate"] = 0.0
+        params["income_tax_rate"] = 0.0
+        params["corporate_tax_rate"] = 0.0
+        params["corporate_tax_dynamic_with_wages"] = False
+        params["firm_overhead_rate_info"] = 0.0
+        params["firm_overhead_rate_phys"] = 0.0
+        params["sector_input_cost_rate_info"] = 0.0
+        params["sector_input_cost_rate_phys"] = 0.0
+
+        sim = NewLoop(cfg)
+        for _ in range(3):
+            sim.step()
+
+        self.assertAlmostEqual(float(sim.history[0].fund_dividend_inflow_per_h), 0.0, places=9)
+        self.assertTrue(bool(sim.history[1].trust_active))
+        self.assertAlmostEqual(float(sim.history[1].fund_dividend_inflow_per_h), 0.0, places=9)
+        self.assertGreater(float(sim.history[2].fund_dividend_inflow_per_h), 0.0)
+
     def test_corporate_tax_depreciation_allowance_reduces_tax(self):
         cfg_no_depr = make_cfg()
         cfg_with_depr = make_cfg()
@@ -400,11 +427,10 @@ class PolicyAlignmentTests(unittest.TestCase):
         self.assertGreater(float(sim.nodes["UMS"].get("deposits", 0.0)), 0.0)
         self.assertGreater(float(sim.state.get("sector_input_cost_total", 0.0)), 0.0)
 
-    def test_ums_drain_recycles_to_fund_when_trust_is_active(self):
+    def test_ums_recycle_flows_back_through_sectors_with_lag(self):
         cfg = make_cfg()
         cfg["parameters"]["disable_income_support"] = True
-        cfg["parameters"]["ums_drain_to_fund_rate_q"] = 1.0
-        cfg["parameters"]["ums_drain_to_gov_share"] = 0.15
+        cfg["parameters"]["ums_recycle_rate_q"] = 1.0
         cfg["parameters"]["fund_residual_to_gov_share"] = 0.0
         cfg["parameters"]["send_fund_residual_to_gov"] = False
         cfg["parameters"]["vat_rate"] = 0.0
@@ -417,20 +443,20 @@ class PolicyAlignmentTests(unittest.TestCase):
         cfg["parameters"]["sector_input_cost_rate_phys"] = 0.0
         sim = NewLoop(cfg)
 
-        sim.state["trust_active"] = True
         sim.nodes["UMS"].set("deposits", 100.0)
         sim.nodes["BANK"].add("deposit_liab", 100.0)
         sim.nodes["BANK"].add("reserves", 100.0)
-        gov_before = float(sim.nodes["GOV"].get("deposits", 0.0))
-        fund_before = float(sim.nodes["FUND"].get("deposits", 0.0))
+        sim.nodes["FA"].memo["revenue_prev"] = 60.0
+        sim.nodes["FH"].memo["revenue_prev"] = 40.0
 
         sim.step()
 
         self.assertAlmostEqual(float(sim.nodes["UMS"].get("deposits", 0.0)), 0.0, places=6)
-        self.assertAlmostEqual(float(sim.nodes["GOV"].get("deposits", 0.0)) - gov_before, 15.0, places=6)
-        self.assertGreaterEqual(float(sim.nodes["FUND"].get("deposits", 0.0)) - fund_before, 85.0)
-        self.assertAlmostEqual(float(sim.state.get("ums_drain_to_fund_total", 0.0)), 85.0, places=6)
-        self.assertAlmostEqual(float(sim.state.get("ums_drain_to_gov_total", 0.0)), 15.0, places=6)
+        self.assertAlmostEqual(float(sim.state.get("ums_recycle_to_info_total", 0.0)), 60.0, places=6)
+        self.assertAlmostEqual(float(sim.state.get("ums_recycle_to_phys_total", 0.0)), 40.0, places=6)
+        self.assertAlmostEqual(float(sim.state.get("ums_recycle_total", 0.0)), 100.0, places=6)
+        self.assertAlmostEqual(float(sim.state.get("ums_drain_to_fund_total", 0.0)), 0.0, places=6)
+        self.assertAlmostEqual(float(sim.state.get("ums_drain_to_gov_total", 0.0)), 0.0, places=6)
 
 
 if __name__ == "__main__":
