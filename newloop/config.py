@@ -137,7 +137,7 @@ config = {
         "send_fund_residual_to_gov": False, # legacy compatibility toggle for a full FUND residual sweep
         "fund_residual_to_gov_share": 0.0,  # optional share of residual FUND deposits sent to GOV after debt-first treatment
         "disable_income_support": False,
-        "income_support_mode": "UIS",       # "UIS" | "UBI"
+        "income_support_mode": "UBI",       # "UIS" | "UBI"
         "income_support_issuance_share": 0.15,  # fixed share of each quarter's income support paid via issuance
         "income_support_monotonic_floor": True, # if True, policy support cannot decline quarter-to-quarter
         "ubi_target_percentile": 30.0,      # nearest-rank percentile target used to anchor UBI per-household amount

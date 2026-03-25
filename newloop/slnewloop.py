@@ -391,7 +391,7 @@ def _build_cfg_from_state(st: Any, base_cfg: Dict[str, Any]) -> Dict[str, Any]:
 
     # Guardrail: a zero UBI percentile anchors to zero in this population (some households have zero market income).
     # Keep run config sane even if a stale UI state slips through.
-    mode = str(params.get("income_support_mode", "UIS")).strip().upper()
+    mode = str(params.get("income_support_mode", "UBI")).strip().upper()
     if mode == "UBI":
         try:
             pct_val = float(params.get("ubi_target_percentile", 30.0))
@@ -675,7 +675,7 @@ def _cached_run_payload(n_quarters: int, cfg_json: str) -> Dict[str, Any]:
     cfg = json.loads(cfg_json)
     run = run_simulation(n_quarters=int(n_quarters), cfg=cfg)
     support_debug = {
-        "mode": str(run.sim.params.get("income_support_mode", "UIS")).strip().upper(),
+        "mode": str(run.sim.params.get("income_support_mode", "UBI")).strip().upper(),
         "disabled": bool(run.sim.params.get("disable_income_support", False)),
         "ubi_anchor_real_per_h": run.sim.state.get("ubi_anchor_real_per_h", None),
         "ubi_anchor_nominal_per_h_base": run.sim.state.get("ubi_anchor_nominal_per_h_base", None),
@@ -764,9 +764,9 @@ def main() -> None:
     )
 
     support_debug = dict(st.session_state.get("support_debug", {}))
-    support_mode_cfg = str(current_cfg.get("parameters", {}).get("income_support_mode", "UIS")).strip().upper()
+    support_mode_cfg = str(current_cfg.get("parameters", {}).get("income_support_mode", "UBI")).strip().upper()
     if support_mode_cfg not in {"UIS", "UBI"}:
-        support_mode_cfg = "UIS"
+        support_mode_cfg = "UBI"
     support_mode = str(support_debug.get("mode", support_mode_cfg)).strip().upper()
     if support_mode not in {"UIS", "UBI"}:
         support_mode = support_mode_cfg

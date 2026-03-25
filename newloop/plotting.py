@@ -377,14 +377,14 @@ def plot_income_support_funding_mix(
     rows: Sequence[Mapping[str, Any]],
     ax: Any = None,
     *,
-    support_mode: str = "UIS",
+    support_mode: str = "UBI",
 ) -> Any:
     """Stacked-area chart for income-support funding channels."""
     import matplotlib.pyplot as plt
 
     rows = _require_rows(rows)
     x = [int(r.get("t", i)) for i, r in enumerate(rows)]
-    mode = _normalized_mode(support_mode) or "UIS"
+    mode = _normalized_mode(support_mode) or "UBI"
 
     fund = np.maximum(0.0, np.nan_to_num(np.asarray(_series(rows, "uis_from_fund_dep_per_h"), dtype=float), nan=0.0))
     gov = np.maximum(0.0, np.nan_to_num(np.asarray(_series(rows, "uis_from_gov_dep_per_h"), dtype=float), nan=0.0))
@@ -416,14 +416,14 @@ def plot_fund_inflows(
     rows: Sequence[Mapping[str, Any]],
     ax: Any = None,
     *,
-    support_mode: str = "UIS",
+    support_mode: str = "UBI",
 ) -> Any:
     """Stacked-area chart for FUND inflow channels."""
     import matplotlib.pyplot as plt
 
     rows = _require_rows(rows)
     x = [int(r.get("t", i)) for i, r in enumerate(rows)]
-    mode = _normalized_mode(support_mode) or "UIS"
+    mode = _normalized_mode(support_mode) or "UBI"
 
     fund_div = np.maximum(0.0, np.nan_to_num(np.asarray(_series(rows, "fund_dividend_inflow_per_h"), dtype=float), nan=0.0))
 
@@ -449,7 +449,7 @@ def plot_cumulative_income_support_funding(
     rows: Sequence[Mapping[str, Any]],
     ax: Any = None,
     *,
-    support_mode: str = "UIS",
+    support_mode: str = "UBI",
     household_count: int | None = None,
 ) -> Any:
     """Line chart for cumulative income-support funding channels over time."""
@@ -457,7 +457,7 @@ def plot_cumulative_income_support_funding(
 
     rows = _require_rows(rows)
     x = [int(r.get("t", i)) for i, r in enumerate(rows)]
-    mode = _normalized_mode(support_mode) or "UIS"
+    mode = _normalized_mode(support_mode) or "UBI"
 
     gov = np.maximum(0.0, np.nan_to_num(np.asarray(_series(rows, "uis_from_gov_dep_per_h"), dtype=float), nan=0.0))
     issued = np.maximum(0.0, np.nan_to_num(np.asarray(_series(rows, "uis_issued_per_h"), dtype=float), nan=0.0))
@@ -523,7 +523,7 @@ def plot_gini_series(
 
 def plot_default_dashboard(
     rows: Sequence[Mapping[str, Any]],
-    support_mode: str = "UIS",
+    support_mode: str = "UBI",
     *,
     household_count: int | None = None,
 ) -> Any:
@@ -531,7 +531,7 @@ def plot_default_dashboard(
     import matplotlib.pyplot as plt
 
     rows = _require_rows(rows)
-    mode = _normalized_mode(support_mode) or "UIS"
+    mode = _normalized_mode(support_mode) or "UBI"
     fig, axs = plt.subplots(2, 2, figsize=(13, 8), constrained_layout=True)
 
     automation_ax = axs[0][0]
