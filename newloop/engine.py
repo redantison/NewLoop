@@ -111,6 +111,9 @@ class NewLoop:
             "sector_input_cost_total": 0.0,
             "ums_drain_to_fund_total": 0.0,
             "ums_drain_to_gov_total": 0.0,
+            "ums_recycle_to_info_total": 0.0,
+            "ums_recycle_to_phys_total": 0.0,
+            "ums_recycle_total": 0.0,
         }
 
         self.nodes: Dict[str, Node] = {
@@ -1021,6 +1024,18 @@ class NewLoop:
         hh_share_fa = self._sector_hh_demand_share_fa()
         hh_demand_fa_real = hh_share_fa * hh_demand_total_real
         hh_demand_fh_real = (1.0 - hh_share_fa) * hh_demand_total_real
+        ums_recycle_rate = max(0.0, min(1.0, float(self.params.get("ums_recycle_rate_q", 0.0))))
+        ums_recycle_total_nom = max(0.0, float(self.nodes["UMS"].get("deposits", 0.0))) * ums_recycle_rate
+        rev_prev_fa = max(0.0, float(self.nodes["FA"].memo.get("revenue_prev", 0.0)))
+        rev_prev_fh = max(0.0, float(self.nodes["FH"].memo.get("revenue_prev", 0.0)))
+        rev_prev_total = rev_prev_fa + rev_prev_fh
+        if rev_prev_total > 1e-12:
+            ums_share_fa = rev_prev_fa / rev_prev_total
+        else:
+            ums_share_fa = hh_share_fa
+        ums_share_fa = max(0.0, min(1.0, float(ums_share_fa)))
+        ums_recycle_fa_nom = ums_recycle_total_nom * ums_share_fa
+        ums_recycle_fh_nom = ums_recycle_total_nom - ums_recycle_fa_nom
 
         self._ensure_sector_capacity_anchors(
             hh_demand_fa_real,
@@ -1080,11 +1095,14 @@ class NewLoop:
             "supplier_sales_fh_nom": float(supplier_sales_fh_nom),
             "supplier_sales_fa_real": float(supplier_sales_fa_real),
             "supplier_sales_fh_real": float(supplier_sales_fh_real),
+            "ums_recycle_fa_nom": float(ums_recycle_fa_nom),
+            "ums_recycle_fh_nom": float(ums_recycle_fh_nom),
+            "ums_recycle_total_nom": float(ums_recycle_total_nom),
             "hh_sales_fa_real": float(hh_sales_fa_real),
             "hh_sales_fh_real": float(hh_sales_fh_real),
             "hh_fulfillment_ratio": float(hh_fulfillment_ratio),
-            "rev_fa": float((p_now * hh_sales_fa_real) + supplier_sales_fa_nom),
-            "rev_fh": float((p_now * hh_sales_fh_real) + supplier_sales_fh_nom),
+            "rev_fa": float((p_now * hh_sales_fa_real) + supplier_sales_fa_nom + ums_recycle_fa_nom),
+            "rev_fh": float((p_now * hh_sales_fh_real) + supplier_sales_fh_nom + ums_recycle_fh_nom),
         }
 
     def _neutralize_stress_active(self) -> bool:
@@ -1885,6 +1903,9 @@ class NewLoop:
             supplier_sales_fh_nom = float(sector_step["supplier_sales_fh_nom"])
             supplier_sales_fa_real = float(sector_step["supplier_sales_fa_real"])
             supplier_sales_fh_real = float(sector_step["supplier_sales_fh_real"])
+            ums_recycle_fa_nom = float(sector_step["ums_recycle_fa_nom"])
+            ums_recycle_fh_nom = float(sector_step["ums_recycle_fh_nom"])
+            ums_recycle_total_nom = float(sector_step["ums_recycle_total_nom"])
             hh_sales_fa_real = float(sector_step["hh_sales_fa_real"])
             hh_sales_fh_real = float(sector_step["hh_sales_fh_real"])
             hh_fulfillment_ratio = float(sector_step["hh_fulfillment_ratio"])
@@ -2136,6 +2157,9 @@ class NewLoop:
                     "supplier_sales_fh_nom": float(supplier_sales_fh_nom),
                     "supplier_sales_fa_real": float(supplier_sales_fa_real),
                     "supplier_sales_fh_real": float(supplier_sales_fh_real),
+                    "ums_recycle_fa_nom": float(ums_recycle_fa_nom),
+                    "ums_recycle_fh_nom": float(ums_recycle_fh_nom),
+                    "ums_recycle_total_nom": float(ums_recycle_total_nom),
                     "hh_sales_fa_real": float(hh_sales_fa_real),
                     "hh_sales_fh_real": float(hh_sales_fh_real),
                     "hh_demand_fa_real": float(hh_demand_fa_real),
@@ -2280,6 +2304,9 @@ class NewLoop:
         c_total = float(sol.get("c_total", 0.0))
         supplier_sales_fa_nom = float(sol.get("supplier_sales_fa_nom", 0.0))
         supplier_sales_fh_nom = float(sol.get("supplier_sales_fh_nom", 0.0))
+        ums_recycle_fa_nom = float(sol.get("ums_recycle_fa_nom", 0.0))
+        ums_recycle_fh_nom = float(sol.get("ums_recycle_fh_nom", 0.0))
+        ums_recycle_total_nom = float(sol.get("ums_recycle_total_nom", ums_recycle_fa_nom + ums_recycle_fh_nom))
         capacity_fa_real = float(sol.get("capacity_fa_real", 0.0))
         capacity_fh_real = float(sol.get("capacity_fh_real", 0.0))
         hh_demand_fa_real = float(sol.get("hh_demand_fa_real", 0.0))
@@ -2351,6 +2378,14 @@ class NewLoop:
 
         # Diagnostics (nominal flow)
         self.state["capex_total"] = float(max(0.0, capex_total_nom))
+        self.state["ums_recycle_to_info_total"] = float(max(0.0, ums_recycle_fa_nom))
+        self.state["ums_recycle_to_phys_total"] = float(max(0.0, ums_recycle_fh_nom))
+        self.state["ums_recycle_total"] = float(max(0.0, ums_recycle_total_nom))
+
+        if ums_recycle_total_nom > 0.0:
+            self.nodes["UMS"].add("deposits", -ums_recycle_total_nom)
+            self.nodes["FA"].add("deposits", +ums_recycle_fa_nom)
+            self.nodes["FH"].add("deposits", +ums_recycle_fh_nom)
 
         # -------------------------------------------------
         # 2) Wages: firms -> households
@@ -2685,21 +2720,6 @@ class NewLoop:
 
         self.state["ums_drain_to_fund_total"] = 0.0
         self.state["ums_drain_to_gov_total"] = 0.0
-        if bool(self.state.get("trust_active", False)):
-            ums_drain_rate = max(0.0, min(1.0, float(self.params.get("ums_drain_to_fund_rate_q", 0.0))))
-            if ums_drain_rate > 0.0:
-                ums_dep = max(0.0, self.nodes["UMS"].get("deposits", 0.0))
-                ums_transfer = ums_dep * ums_drain_rate
-                if ums_transfer > 0.0:
-                    ums_gov_share = max(0.0, min(1.0, float(self.params.get("ums_drain_to_gov_share", 0.0))))
-                    ums_to_gov = ums_transfer * ums_gov_share
-                    ums_to_fund = ums_transfer - ums_to_gov
-                    if ums_to_fund > 0.0:
-                        self._xfer_deposits("UMS", "FUND", ums_to_fund)
-                    if ums_to_gov > 0.0:
-                        self._xfer_deposits("UMS", "GOV", ums_to_gov)
-                    self.state["ums_drain_to_fund_total"] = float(ums_to_fund)
-                    self.state["ums_drain_to_gov_total"] = float(ums_to_gov)
 
         # -------------------------------------------------
         # 6) Income-support payments: issuance share -> FUND dep -> GOV dep -> extra issuance
@@ -3452,15 +3472,26 @@ class NewLoop:
                 fund_tracked_inflows_per_h=(
                     float(solp.get("div_fund", 0.0)) + float(self.state.get("ums_drain_to_fund_total", 0.0))
                 ) / float(self.hh.n),
+                ums_recycle_to_info_per_h=float(self.state.get("ums_recycle_to_info_total", 0.0)) / float(self.hh.n),
+                ums_recycle_to_phys_per_h=float(self.state.get("ums_recycle_to_phys_total", 0.0)) / float(self.hh.n),
+                ums_recycle_total_per_h=float(self.state.get("ums_recycle_total", 0.0)) / float(self.hh.n),
                 capex_per_h=float(self.state.get("capex_total", 0.0)) / float(self.hh.n),
                 sector_capacity_info_per_h=float(solp.get("capacity_fa_real", 0.0)) / float(self.hh.n),
                 sector_capacity_physical_per_h=float(solp.get("capacity_fh_real", 0.0)) / float(self.hh.n),
                 sector_util_info=(
-                    float(solp.get("hh_sales_fa_real", 0.0))
+                    (
+                        float(solp.get("hh_sales_fa_real", 0.0))
+                        + float(solp.get("supplier_sales_fa_real", 0.0))
+                        + (float(solp.get("ums_recycle_fa_nom", 0.0)) / max(1e-9, float(self.state.get("price_level", 1.0))))
+                    )
                     / max(1e-9, float(solp.get("capacity_fa_real", 0.0)))
                 ),
                 sector_util_physical=(
-                    float(solp.get("hh_sales_fh_real", 0.0))
+                    (
+                        float(solp.get("hh_sales_fh_real", 0.0))
+                        + float(solp.get("supplier_sales_fh_real", 0.0))
+                        + (float(solp.get("ums_recycle_fh_nom", 0.0)) / max(1e-9, float(self.state.get("price_level", 1.0))))
+                    )
                     / max(1e-9, float(solp.get("capacity_fh_real", 0.0)))
                 ),
                 sector_demand_info_per_h=float(solp.get("hh_demand_fa_real", 0.0)) / float(self.hh.n),
