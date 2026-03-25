@@ -20,6 +20,10 @@ def make_cfg():
 
 
 class PolicyAlignmentTests(unittest.TestCase):
+    def test_default_support_mode_is_ubi(self):
+        cfg = make_cfg()
+        self.assertEqual(str(cfg["parameters"].get("income_support_mode", "")).upper(), "UBI")
+
     def test_default_run_stays_stock_flow_consistent(self):
         sim = NewLoop(make_cfg())
         for _ in range(12):
@@ -416,6 +420,24 @@ class PolicyAlignmentTests(unittest.TestCase):
         assert diag is not None
         self.assertAlmostEqual(float(diag.get("startup_op_margin_info", 0.0)), 0.25, delta=0.03)
         self.assertAlmostEqual(float(diag.get("startup_op_margin_phys", 0.0)), 0.10, delta=0.03)
+
+    def test_uis_starts_at_zero_and_anchors_from_q0_wages(self):
+        cfg = make_cfg()
+        cfg["parameters"]["income_support_mode"] = "UIS"
+
+        sim = NewLoop(cfg)
+        sim.step()
+
+        q0 = sim.history[0]
+        self.assertAlmostEqual(float(q0.uis_per_h), 0.0, places=9)
+
+        p0 = max(1e-9, float(q0.price_level))
+        expected_real_target = float(q0.wages_total) / p0
+        self.assertAlmostEqual(
+            float(sim.state.get("income_target_pool_real_pop", 0.0)),
+            expected_real_target,
+            places=6,
+        )
 
     def test_sector_input_costs_accumulate_in_ums_before_trust_runs(self):
         cfg = make_cfg()
