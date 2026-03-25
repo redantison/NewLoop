@@ -426,22 +426,16 @@ def plot_fund_inflows(
     mode = _normalized_mode(support_mode) or "UIS"
 
     fund_div = np.maximum(0.0, np.nan_to_num(np.asarray(_series(rows, "fund_dividend_inflow_per_h"), dtype=float), nan=0.0))
-    ums_to_fund = np.maximum(0.0, np.nan_to_num(np.asarray(_series(rows, "ums_drain_to_fund_per_h"), dtype=float), nan=0.0))
-    total = fund_div + ums_to_fund
 
     if ax is None:
         fig, ax = plt.subplots(figsize=(9, 4.5))
     else:
         fig = ax.figure
 
-    layers = [fund_div, ums_to_fund]
-    labels = [
-        metric_label("fund_dividend_inflow_per_h"),
-        metric_label("ums_drain_to_fund_per_h"),
-    ]
+    layers = [fund_div]
+    labels = [metric_label("fund_dividend_inflow_per_h")]
 
     ax.stackplot(x, *layers, labels=labels, alpha=0.8)
-    ax.plot(x, total, color="0.1", linewidth=2.0, linestyle="--", label=metric_label("fund_tracked_inflows_per_h"))
     ax.set_title(_title_with_mode("Fund Inflows", mode))
     ax.set_xlabel("Quarter")
     ax.set_ylabel("Per-Household")

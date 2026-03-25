@@ -84,6 +84,9 @@ class NewLoop:
             "sector_service_ratio_phys_prev": 1.0,
             "sector_payout_rate_info_prev": payout_firms_base,
             "sector_payout_rate_phys_prev": payout_firms_base,
+            "fund_dividend_ownership_fa_prev": 0.0,
+            "fund_dividend_ownership_fh_prev": 0.0,
+            "fund_dividend_ownership_bk_prev": 0.0,
             # Central-bank policy-rate diagnostics (quarterly rate).
             "policy_rate_q": base_rate_q,
             "policy_rate_target_q": base_rate_q,
@@ -1825,14 +1828,16 @@ class NewLoop:
         solver_relax = float(self.params.get("solver_relaxation", 1.0))
         solver_relax = max(1e-3, min(1.0, solver_relax))
 
-        # Trust ownership fractions (same as legacy solver)
+        # Current trust ownership fractions for balance-sheet and equity diagnostics.
         def own_frac(issuer: str, key: str) -> float:
             so = self.nodes[issuer].get("shares_outstanding", 1.0)
             return self.nodes["FUND"].get(key, 0.0) / so if so > 0 else 0.0
 
-        f_fa = own_frac("FA", "shares_FA")
-        f_fh = own_frac("FH", "shares_FH")
-        f_bk = own_frac("BANK", "shares_BANK")
+        # Dividends are lagged, so newly acquired shares should not receive the
+        # current tick's payout. Use prior-quarter ownership for dividend splits.
+        f_fa = max(0.0, min(1.0, float(self.state.get("fund_dividend_ownership_fa_prev", 0.0))))
+        f_fh = max(0.0, min(1.0, float(self.state.get("fund_dividend_ownership_fh_prev", 0.0))))
+        f_bk = max(0.0, min(1.0, float(self.state.get("fund_dividend_ownership_bk_prev", 0.0))))
 
         fund_loan = float(self.nodes["FUND"].get("loans", 0.0))
         fa_loan = float(self.nodes["FA"].get("loans", 0.0))
@@ -3009,6 +3014,9 @@ class NewLoop:
 
         self.state["sector_capacity_info_real_prev"] = float(capacity_fa_real)
         self.state["sector_capacity_phys_real_prev"] = float(capacity_fh_real)
+        self.state["fund_dividend_ownership_fa_prev"] = float(max(0.0, min(1.0, self.nodes["FUND"].get("shares_FA", 0.0) / max(1e-9, self.nodes["FA"].get("shares_outstanding", 0.0)))))
+        self.state["fund_dividend_ownership_fh_prev"] = float(max(0.0, min(1.0, self.nodes["FUND"].get("shares_FH", 0.0) / max(1e-9, self.nodes["FH"].get("shares_outstanding", 0.0)))))
+        self.state["fund_dividend_ownership_bk_prev"] = float(max(0.0, min(1.0, self.nodes["FUND"].get("shares_BANK", 0.0) / max(1e-9, self.nodes["BANK"].get("shares_outstanding", 0.0)))))
         unmet_info_real = float(max(0.0, hh_demand_fa_real - hh_sales_fa_real))
         unmet_phys_real = float(max(0.0, hh_demand_fh_real - hh_sales_fh_real))
         self.state["sector_unmet_info_real_prev"] = float(unmet_info_real)

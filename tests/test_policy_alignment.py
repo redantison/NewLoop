@@ -48,6 +48,33 @@ class PolicyAlignmentTests(unittest.TestCase):
         expected_pct = (0.10 + phi_qtr) / (1.0 + phi_qtr)
         self.assertAlmostEqual(float(sim.history[1].trust_equity_pct), expected_pct, places=3)
 
+    def test_fund_dividends_start_after_prior_quarter_ownership(self):
+        cfg = make_cfg()
+        params = cfg["parameters"]
+        params["trust_trigger_dti"] = 0.0
+        params["trust_launch_loan"] = 15000.0
+        params["trust_launch_target_pct"] = 0.10
+        params["gov_tax_rebate_rate"] = 0.0
+        params["disable_income_support"] = True
+        params["loan_rate_per_quarter"] = 0.0
+        params["vat_rate"] = 0.0
+        params["income_tax_rate"] = 0.0
+        params["corporate_tax_rate"] = 0.0
+        params["corporate_tax_dynamic_with_wages"] = False
+        params["firm_overhead_rate_info"] = 0.0
+        params["firm_overhead_rate_phys"] = 0.0
+        params["sector_input_cost_rate_info"] = 0.0
+        params["sector_input_cost_rate_phys"] = 0.0
+
+        sim = NewLoop(cfg)
+        for _ in range(3):
+            sim.step()
+
+        self.assertAlmostEqual(float(sim.history[0].fund_dividend_inflow_per_h), 0.0, places=9)
+        self.assertTrue(bool(sim.history[1].trust_active))
+        self.assertAlmostEqual(float(sim.history[1].fund_dividend_inflow_per_h), 0.0, places=9)
+        self.assertGreater(float(sim.history[2].fund_dividend_inflow_per_h), 0.0)
+
     def test_corporate_tax_depreciation_allowance_reduces_tax(self):
         cfg_no_depr = make_cfg()
         cfg_with_depr = make_cfg()
