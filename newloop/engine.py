@@ -1004,6 +1004,14 @@ class NewLoop:
         surplus_cash = max(0.0, deposits - reserve_nom)
         return float(sweep_share * maturity_signal * surplus_cash)
 
+    def _sector_maintenance_reserve_nom(self, firm_id: str, price_level: float) -> float:
+        reserve_share = max(0.0, min(1.0, float(self.params.get("sector_maintenance_reserve_share", 1.0))))
+        return float(reserve_share * self._sector_maintenance_capex_nom(firm_id, price_level))
+
+    def _sector_profit_distributable_nom(self, firm_id: str, after_tax_profit_nom: float, price_level: float) -> float:
+        maintenance_nom = self._sector_maintenance_reserve_nom(firm_id, price_level)
+        return float(max(0.0, float(after_tax_profit_nom) - maintenance_nom))
+
     def _sector_capex_plan_nom(self, firm_id: str, price_level: float) -> float:
         p_now = max(1e-9, float(price_level))
         half_sat = max(1e-9, float(self.params.get("sector_capex_gap_half_sat", 0.15)))
@@ -1051,10 +1059,13 @@ class NewLoop:
             prev_free_cash = max(0.0, float(self.state.get("sector_free_cash_phys_prev", 0.0)))
 
         maintenance_nom = self._sector_maintenance_capex_nom(firm_id, p_now)
+        maintenance_reserve_nom = self._sector_maintenance_reserve_nom(firm_id, p_now)
         gap_ratio = prev_unmet / max(prev_capacity, 1e-9) if prev_capacity > 1e-12 else 0.0
         gap_signal = gap_ratio / (gap_ratio + half_sat) if gap_ratio > 0.0 else 0.0
         capex_share = share_min + ((share_max - share_min) * gap_signal)
-        capex_budget_nom = prev_free_cash * capex_share
+        maintenance_budget_nom = min(prev_free_cash, maintenance_reserve_nom)
+        expansion_cash_nom = max(0.0, prev_free_cash - maintenance_budget_nom)
+        capex_budget_nom = maintenance_budget_nom + (expansion_cash_nom * capex_share)
 
         if capacity_per_k <= 1e-12:
             expand_need_nom = 0.0
@@ -3064,16 +3075,18 @@ class NewLoop:
         p_now = max(1e-9, float(self.state.get("price_level", 1.0)))
         payout_firms_info = self._update_sector_payout_rate("FA")
         payout_firms_phys = self._update_sector_payout_rate("FH")
-        surplus_dist_info = self._sector_surplus_distribution_nom("FA", p_now)
-        surplus_dist_phys = self._sector_surplus_distribution_nom("FH", p_now)
         payout_bank = max(0.0, min(1.0, float(self.params.get("dividend_payout_rate_bank", 1.0))))
         service_floor = max(1e-9, float(self.params.get("sector_dividend_service_floor", 0.95)))
         service_ratio_info = min(1.0, float(sol.get("hh_sales_fa_real", 0.0)) / max(1e-9, float(sol.get("hh_demand_fa_real", 0.0)))) if float(sol.get("hh_demand_fa_real", 0.0)) > 1e-12 else 1.0
         service_ratio_phys = min(1.0, float(sol.get("hh_sales_fh_real", 0.0)) / max(1e-9, float(sol.get("hh_demand_fh_real", 0.0)))) if float(sol.get("hh_demand_fh_real", 0.0)) > 1e-12 else 1.0
         stress_scale_info = max(0.0, min(1.0, service_ratio_info / service_floor))
         stress_scale_phys = max(0.0, min(1.0, service_ratio_phys / service_floor))
-        self.nodes["FA"].memo["dividend_commit_prev"] = (payout_firms_info * float(sol.get("p_fa", 0.0)) * stress_scale_info) + surplus_dist_info
-        self.nodes["FH"].memo["dividend_commit_prev"] = (payout_firms_phys * float(sol.get("p_fh", 0.0)) * stress_scale_phys) + surplus_dist_phys
+        profit_dividend_base_info = self._sector_profit_distributable_nom("FA", float(sol.get("p_fa", 0.0)), p_now)
+        profit_dividend_base_phys = self._sector_profit_distributable_nom("FH", float(sol.get("p_fh", 0.0)), p_now)
+        surplus_dist_info = self._sector_surplus_distribution_nom("FA", p_now)
+        surplus_dist_phys = self._sector_surplus_distribution_nom("FH", p_now)
+        self.nodes["FA"].memo["dividend_commit_prev"] = (payout_firms_info * profit_dividend_base_info * stress_scale_info) + surplus_dist_info
+        self.nodes["FH"].memo["dividend_commit_prev"] = (payout_firms_phys * profit_dividend_base_phys * stress_scale_phys) + surplus_dist_phys
         self.nodes["BANK"].memo["dividend_commit_prev"] = payout_bank * float(sol.get("bank_profit", 0.0))
         self.nodes["FA"].memo["revenue_prev"] = float(sol.get("rev_fa", 0.0))
         self.nodes["FH"].memo["revenue_prev"] = float(sol.get("rev_fh", 0.0))
@@ -3293,7 +3306,9 @@ class NewLoop:
             # Direct household equity claims are allocated by baseline wage weights because
             # ownership is tracked at HH aggregate. Trust value is split equally per household.
             dep_i = _as_np(self.hh.deposits, dtype=float)
-            loan_i = _as_np(self.hh.mortgage_loans, dtype=float) + _as_np(self.hh.revolving_loans, dtype=float)
+            mort_i = _as_np(self.hh.mortgage_loans, dtype=float)
+            rev_i = _as_np(self.hh.revolving_loans, dtype=float)
+            loan_i = mort_i + rev_i
 
             private_equity_total = 0.0
             if dep_i.size and (dep_i.size == loan_i.size):
@@ -3542,6 +3557,8 @@ class NewLoop:
                 private_eq_per_h=float(private_equity_total) / float(self.hh.n),
                 hh_deposits_per_h=float(np.sum(dep_i)) / float(self.hh.n),
                 hh_debt_per_h=float(np.sum(loan_i)) / float(self.hh.n),
+                hh_mortgage_debt_per_h=float(np.sum(mort_i)) / float(self.hh.n),
+                hh_revolving_debt_per_h=float(np.sum(rev_i)) / float(self.hh.n),
                 corporate_eq_info_per_h=float(fa_broad_equity_proxy_hist) / float(self.hh.n),
                 corporate_eq_physical_per_h=float(fh_broad_equity_proxy_hist) / float(self.hh.n),
                 corporate_eq_total_per_h=float(fa_broad_equity_proxy_hist + fh_broad_equity_proxy_hist) / float(self.hh.n),
