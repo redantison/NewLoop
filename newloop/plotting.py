@@ -624,6 +624,76 @@ def plot_distribution_compare(
     return fig
 
 
+def _anchored_distribution_range_and_edges(
+    before: Sequence[float],
+    after: Sequence[float],
+    *,
+    bins: int,
+) -> tuple[tuple[float, float], np.ndarray]:
+    """Build a histogram grid anchored to the before distribution, extended to cover both series."""
+    b = np.asarray(before, dtype=float)
+    a = np.asarray(after, dtype=float)
+    b = b[np.isfinite(b)]
+    a = a[np.isfinite(a)]
+
+    if b.size == 0 or a.size == 0:
+        raise ValueError("Distribution plot requires non-empty before and after arrays.")
+
+    anchor_lo = float(np.percentile(b, 1.0))
+    anchor_hi = float(np.percentile(b, 99.0))
+    if anchor_hi <= anchor_lo:
+        anchor_lo = float(np.min(b))
+        anchor_hi = float(np.max(b))
+        if anchor_hi <= anchor_lo:
+            anchor_hi = anchor_lo + 1.0
+
+    n_bins_base = int(max(20, bins))
+    bin_width = (anchor_hi - anchor_lo) / float(n_bins_base)
+    if not np.isfinite(bin_width) or bin_width <= 0.0:
+        bin_width = max(1.0, abs(anchor_hi), abs(anchor_lo), 1.0) / float(n_bins_base)
+
+    data_min = float(min(np.min(b), np.min(a)))
+    data_max = float(max(np.max(b), np.max(a)))
+
+    left_steps = int(max(0.0, np.ceil((anchor_lo - data_min) / bin_width)))
+    right_steps = int(max(0.0, np.ceil((data_max - anchor_lo) / bin_width)))
+
+    left_edge = anchor_lo - float(left_steps) * bin_width
+    right_edge = anchor_lo + float(right_steps) * bin_width
+    if right_edge <= left_edge:
+        right_edge = left_edge + bin_width
+
+    n_bins = int(max(1, round((right_edge - left_edge) / bin_width)))
+    edges = left_edge + bin_width * np.arange(n_bins + 1, dtype=float)
+    if edges.size < 2:
+        edges = np.asarray([left_edge, right_edge], dtype=float)
+    else:
+        edges[-1] = right_edge
+    return (float(left_edge), float(right_edge)), edges
+
+
+def _series_percentile_window(
+    values: Sequence[float],
+    *,
+    lo_pct: float = 2.0,
+    hi_pct: float = 95.0,
+) -> tuple[float, float]:
+    """Return a stable percentile window for one series."""
+    arr = np.asarray(values, dtype=float)
+    arr = arr[np.isfinite(arr)]
+    if arr.size == 0:
+        raise ValueError("Distribution plot requires a non-empty array.")
+
+    q_lo = float(np.percentile(arr, lo_pct))
+    q_hi = float(np.percentile(arr, hi_pct))
+    if q_hi <= q_lo:
+        q_lo = float(np.min(arr))
+        q_hi = float(np.max(arr))
+        if q_hi <= q_lo:
+            q_hi = q_lo + 1.0
+    return q_lo, q_hi
+
+
 def plot_distribution_share(
     before: Sequence[float],
     after: Sequence[float],
@@ -633,6 +703,8 @@ def plot_distribution_share(
     x_limits: tuple[float, float] | None = None,
     ax: Any = None,
     bins: int = 60,
+    edges: Sequence[float] | None = None,
+    after_edges: Sequence[float] | None = None,
 ) -> Any:
     """Overlay before/after share-per-bin histograms."""
     import matplotlib.pyplot as plt
@@ -646,29 +718,52 @@ def plot_distribution_share(
     if b.size == 0 or a.size == 0:
         raise ValueError("Distribution plot requires non-empty before and after arrays.")
 
-    if x_limits is not None:
+    if edges is not None:
+        edges_arr = np.asarray(edges, dtype=float)
+        if edges_arr.ndim != 1 or edges_arr.size < 2:
+            raise ValueError("Histogram edges must be a one-dimensional sequence with at least two entries.")
+        q_lo = float(edges_arr[0])
+        q_hi = float(edges_arr[-1])
+    elif x_limits is not None:
         q_lo = float(x_limits[0])
         q_hi = float(x_limits[1])
+        edges_arr = np.linspace(q_lo, q_hi, int(max(20, bins)) + 1)
     else:
         q_lo = float(min(np.percentile(b, 1.0), np.percentile(a, 1.0)))
         q_hi = float(max(np.percentile(b, 99.0), np.percentile(a, 99.0)))
+        edges_arr = np.linspace(q_lo, q_hi, int(max(20, bins)) + 1)
     if q_hi <= q_lo:
         q_lo = float(min(b.min(), a.min()))
         q_hi = float(max(b.max(), a.max()))
         if q_hi <= q_lo:
             q_hi = q_lo + 1.0
-
-    edges = np.linspace(q_lo, q_hi, int(max(20, bins)) + 1)
+        edges_arr = np.linspace(q_lo, q_hi, int(max(20, bins)) + 1)
 
     if ax is None:
         fig, ax = plt.subplots(figsize=(9, 4.5))
     else:
         fig = ax.figure
 
+    after_edges_arr = edges_arr
+    if after_edges is not None:
+        after_edges_arr = np.asarray(after_edges, dtype=float)
+        if after_edges_arr.ndim != 1 or after_edges_arr.size < 2:
+            raise ValueError("After-series histogram edges must be a one-dimensional sequence with at least two entries.")
+
+    if edges is not None:
+        b = b[(b >= float(edges_arr[0])) & (b <= float(edges_arr[-1]))]
+    if after_edges is not None:
+        a = a[(a >= float(after_edges_arr[0])) & (a <= float(after_edges_arr[-1]))]
+    elif edges is not None:
+        a = a[(a >= float(edges_arr[0])) & (a <= float(edges_arr[-1]))]
+
+    if b.size == 0 or a.size == 0:
+        raise ValueError("Truncated histogram window removed all observations from one series.")
+
     w_b = np.full(b.size, 1.0 / float(b.size), dtype=float)
     w_a = np.full(a.size, 1.0 / float(a.size), dtype=float)
-    before_hist = ax.hist(b, bins=edges, weights=w_b, histtype="step", linewidth=2.0, label="Before")
-    after_hist = ax.hist(a, bins=edges, weights=w_a, histtype="step", linewidth=2.0, label="After")
+    before_hist = ax.hist(b, bins=edges_arr, weights=w_b, histtype="step", linewidth=2.0, label="Before")
+    after_hist = ax.hist(a, bins=after_edges_arr, weights=w_a, histtype="step", linewidth=2.0, label="After")
     before_color = before_hist[2][0].get_edgecolor()
     after_color = after_hist[2][0].get_edgecolor()
 
@@ -678,7 +773,10 @@ def plot_distribution_share(
     ax.set_title(title)
     ax.set_xlabel(x_label)
     ax.set_ylabel("Share of Households")
-    ax.set_xlim(q_lo, q_hi)
+    if x_limits is not None:
+        ax.set_xlim(float(x_limits[0]), float(x_limits[1]))
+    else:
+        ax.set_xlim(q_lo, q_hi)
     ax.yaxis.set_major_formatter(FuncFormatter(lambda val, _: f"{100.0 * float(val):.2f}%"))
     ax.grid(alpha=0.25)
     ax.legend(loc="best")
@@ -716,12 +814,19 @@ def plot_income_distribution_dual(
     """Two-panel income distributions: cumulative + share-per-bin."""
     import matplotlib.pyplot as plt
 
+    before_lo, before_hi = _series_percentile_window(income_before, lo_pct=2.0, hi_pct=95.0)
+    after_lo, after_hi = _series_percentile_window(income_after, lo_pct=2.0, hi_pct=95.0)
+    x_limits = (before_lo, after_hi)
+    hist_edges_before = np.linspace(before_lo, before_hi, 61, dtype=float)
+    hist_edges_after = np.linspace(after_lo, after_hi, 61, dtype=float)
+
     fig, axs = plt.subplots(1, 2, figsize=(13, 4.5), constrained_layout=True)
     plot_distribution_compare(
         income_before,
         income_after,
         title=_title_with_mode("Disposable Income Distribution (Cumulative)", support_mode),
         x_label=value_label,
+        x_limits=x_limits,
         ax=axs[0],
     )
     plot_distribution_share(
@@ -729,6 +834,9 @@ def plot_income_distribution_dual(
         income_after,
         title=_title_with_mode("Disposable Income Distribution (% per Bin)", support_mode),
         x_label=value_label,
+        x_limits=x_limits,
+        edges=hist_edges_before,
+        after_edges=hist_edges_after,
         ax=axs[1],
     )
     return fig
