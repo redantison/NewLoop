@@ -173,7 +173,7 @@ class MortgageScheduleTests(unittest.TestCase):
         cfg = make_cfg()
         params = cfg["parameters"]
         params["mortgage_turnover_enabled"] = True
-        params["mortgage_turnover_replace_share"] = 1.0
+        params["mortgage_turnover_target_payment_floor_share"] = 1.0
         params["mortgage_turnover_dti_cap"] = 5.0
         params["mortgage_turnover_income_mult_cap"] = 20.0
         params["mortgage_turnover_min_wage_q"] = 0.0
@@ -216,7 +216,7 @@ class MortgageScheduleTests(unittest.TestCase):
         cfg = make_cfg()
         params = cfg["parameters"]
         params["mortgage_turnover_enabled"] = True
-        params["mortgage_turnover_replace_share"] = 1.0
+        params["mortgage_turnover_target_payment_floor_share"] = 1.0
         params["mortgage_turnover_dti_cap"] = 5.0
         params["mortgage_turnover_income_mult_cap"] = 20.0
         params["mortgage_turnover_min_wage_q"] = 0.0

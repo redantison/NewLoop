@@ -2870,13 +2870,17 @@ class NewLoop:
         rL = float(self.state.get("policy_rate_q", self.params.get("loan_rate_per_quarter", 0.0)))
         rev_rollover_share = float(self.params.get("revolving_rollover_share", 0.0))
         mort_turnover_enabled = bool(self.params.get("mortgage_turnover_enabled", False))
-        mort_turnover_replace_share = float(self.params.get("mortgage_turnover_replace_share", 0.0))
+        mort_turnover_active_min_remaining_q = float(self.params.get("mortgage_turnover_active_min_remaining_q", 3.0))
+        mort_turnover_target_payment_floor_share = float(
+            self.params.get("mortgage_turnover_target_payment_floor_share", 1.0)
+        )
         mort_turnover_dti_cap = float(self.params.get("mortgage_turnover_dti_cap", 0.40))
         mort_turnover_income_mult_cap = float(self.params.get("mortgage_turnover_income_mult_cap", 4.0))
         mort_turnover_min_wage_q = float(self.params.get("mortgage_turnover_min_wage_q", 1.0))
         rev_pay_rate = max(0.0, min(1.0, rev_pay_rate))
         rev_rollover_share = max(0.0, min(1.0, rev_rollover_share))
-        mort_turnover_replace_share = max(0.0, min(1.0, mort_turnover_replace_share))
+        mort_turnover_active_min_remaining_q = max(0.0, mort_turnover_active_min_remaining_q)
+        mort_turnover_target_payment_floor_share = max(0.0, mort_turnover_target_payment_floor_share)
         mort_turnover_dti_cap = max(0.0, mort_turnover_dti_cap)
         mort_turnover_income_mult_cap = max(0.0, mort_turnover_income_mult_cap)
         mort_turnover_min_wage_q = max(0.0, mort_turnover_min_wage_q)
@@ -2890,6 +2894,16 @@ class NewLoop:
         self.state["rev_rollover_total"] = 0.0
         self.state["mort_turnover_total"] = 0.0
         self.state["mort_turnover_households"] = 0.0
+        self.state["mortgage_turnover_active_count"] = 0.0
+        self.state["mortgage_turnover_payment_gap_total"] = 0.0
+        self.state["mortgage_turnover_payment_gap_remaining_total"] = 0.0
+        self.state["mortgage_turnover_payment_capacity_total"] = 0.0
+        self.state["mortgage_turnover_nonmort_count"] = 0.0
+        self.state["mortgage_turnover_new_eligible_count"] = 0.0
+        self.state["mortgage_turnover_dti_binding_count"] = 0.0
+        self.state["mortgage_turnover_income_binding_count"] = 0.0
+        self.state["mortgage_turnover_zero_dti_room_count"] = 0.0
+        self.state["mortgage_turnover_zero_income_room_count"] = 0.0
 
         if rev_pay_rate > 0.0:
             # desired paydown is a fraction of outstanding revolver
@@ -2924,11 +2938,14 @@ class NewLoop:
             self.nodes["BANK"].add("loan_assets", rev_rollover_total)
             self.nodes["BANK"].add("deposit_liab", rev_rollover_total)
 
-        if mort_turnover_enabled and mort_principal_paid_total > 0.0 and mort_turnover_replace_share > 0.0:
-            mort_gap_total = mort_principal_paid_total * mort_turnover_replace_share
+        if mort_turnover_enabled:
             mort_cap_i = mort_turnover_income_mult_cap * annual_wage_i
             headroom_income_i = np.maximum(0.0, mort_cap_i - mort)
             active_mort_i = mort > 1e-9
+            remaining_q_i = remaining_term(
+                np.asarray(hh.mort_term_q, dtype=float),
+                np.asarray(hh.mort_age_q, dtype=float),
+            )
 
             current_mort_payment_i = np.maximum(0.0, hh.mort_payment_sched_q)
             current_rev_interest_i = np.maximum(0.0, rev * rL)
@@ -2938,77 +2955,73 @@ class NewLoop:
                 self._mortgage_fixed_rate_q(),
                 float(self._mortgage_term_quarters()),
             )
-            headroom_dti_i = dti_room_nom / np.maximum(1e-9, new_unit_payment_q)
-            headroom_i = np.minimum(headroom_income_i, headroom_dti_i)
-            configured_target_share = self.params.get("mortgage_turnover_target_share", None)
-            if configured_target_share is None:
-                configured_target_share = pop_cfg.get("mortgage_share", None)
-            if configured_target_share is None:
-                if "mortgage_turnover_target_share" not in self.state:
-                    self.state["mortgage_turnover_target_share"] = float(np.mean(active_mort_i)) if active_mort_i.size else 0.0
-                target_share = float(self.state.get("mortgage_turnover_target_share", 0.0))
-            else:
-                target_share = float(configured_target_share)
-            target_share = max(0.0, min(1.0, target_share))
-            self.state["mortgage_turnover_target_share"] = float(target_share)
+            income_limit_payment_i = headroom_income_i * np.maximum(0.0, new_unit_payment_q)
             desired_mult = float(pop_cfg.get("mortgage_income_mult_median", mort_turnover_income_mult_cap))
             desired_mult = max(0.0, desired_mult)
-            desired_principal_i = np.minimum(headroom_i, desired_mult * annual_wage_i)
-            min_desired_principal_i = 0.25 * np.maximum(0.0, annual_wage_i)
-            active_floor_mult = float(self.params.get("mortgage_turnover_active_balance_floor_mult_min_desired", 1.0))
-            active_floor_mult = max(0.0, active_floor_mult)
-            active_balance_floor_i = active_floor_mult * min_desired_principal_i
-            active_for_target_i = mort > np.maximum(1e-9, active_balance_floor_i)
+            income_limit_principal_i = np.minimum(headroom_income_i, desired_mult * annual_wage_i)
+            income_limit_payment_i = np.minimum(
+                income_limit_payment_i,
+                income_limit_principal_i * np.maximum(0.0, new_unit_payment_q),
+            )
+            desired_payment_i = np.minimum(dti_room_nom, income_limit_payment_i)
+            desired_principal_i = desired_payment_i / np.maximum(1e-9, new_unit_payment_q)
+            min_desired_payment_i = (0.25 * np.maximum(0.0, annual_wage_i)) * np.maximum(0.0, new_unit_payment_q)
+            active_for_target_i = active_mort_i & (remaining_q_i > mort_turnover_active_min_remaining_q)
 
             allocation = np.zeros_like(mort, dtype=float)
-            remaining = float(mort_gap_total)
-            target_active_count = int(round(target_share * float(n)))
-            current_active_count = int(np.sum(active_for_target_i))
-            needed_new_count = max(0, target_active_count - current_active_count)
+            current_sched_total = float(np.sum(current_mort_payment_i))
+            if "mortgage_turnover_payment_floor_total" not in self.state:
+                self.state["mortgage_turnover_payment_floor_total"] = float(current_sched_total)
+            payment_floor_total = mort_turnover_target_payment_floor_share * float(
+                self.state.get("mortgage_turnover_payment_floor_total", current_sched_total)
+            )
+            payment_gap_total = max(0.0, payment_floor_total - current_sched_total)
+            self.state["mortgage_turnover_payment_floor_total"] = float(
+                self.state.get("mortgage_turnover_payment_floor_total", current_sched_total)
+            )
+            self.state["mortgage_turnover_payment_gap_total"] = float(payment_gap_total)
+            self.state["mortgage_turnover_active_count"] = float(np.sum(active_for_target_i))
+            nonmort_mask = ~active_mort_i
+            base_new_pool = nonmort_mask & (wages_i >= mort_turnover_min_wage_q)
+            self.state["mortgage_turnover_nonmort_count"] = float(np.sum(nonmort_mask))
+            self.state["mortgage_turnover_zero_dti_room_count"] = float(np.sum(base_new_pool & (dti_room_nom <= 1e-9)))
+            self.state["mortgage_turnover_zero_income_room_count"] = float(np.sum(base_new_pool & (income_limit_principal_i <= 1e-9)))
 
             new_eligible = (
-                (~active_for_target_i)
+                nonmort_mask
                 & (wages_i >= mort_turnover_min_wage_q)
-                & (desired_principal_i > 1e-9)
+                & (desired_payment_i > 1e-9)
             )
-            if needed_new_count > 0 and np.any(new_eligible):
+            self.state["mortgage_turnover_new_eligible_count"] = float(np.sum(new_eligible))
+            self.state["mortgage_turnover_dti_binding_count"] = float(
+                np.sum(new_eligible & (dti_room_nom <= income_limit_payment_i))
+            )
+            self.state["mortgage_turnover_income_binding_count"] = float(
+                np.sum(new_eligible & (income_limit_payment_i < dti_room_nom))
+            )
+            self.state["mortgage_turnover_payment_capacity_total"] = float(
+                np.sum(np.maximum(0.0, desired_payment_i[new_eligible]))
+            )
+            if payment_gap_total > 1e-9 and np.any(new_eligible):
                 candidate_idx = np.where(new_eligible)[0]
                 # Favor lower-income households that can support a mortgage, so
                 # stronger income support broadens access rather than concentrating
                 # credit only in the upper tail.
                 ranked_new_idx = candidate_idx[np.argsort(annual_wage_i[candidate_idx], kind="stable")]
-                new_count = 0
                 for idx in ranked_new_idx.tolist():
-                    if remaining <= 1e-9 or new_count >= needed_new_count:
+                    if payment_gap_total <= 1e-9:
                         break
-                    desired = float(desired_principal_i[idx])
-                    min_desired = float(min_desired_principal_i[idx])
-                    if desired <= 1e-9 or remaining < max(1e-9, min_desired):
+                    desired_payment = float(desired_payment_i[idx])
+                    min_desired_payment = float(min_desired_payment_i[idx])
+                    if desired_payment <= 1e-9:
                         continue
-                    add = min(desired, remaining)
+                    add_payment = min(desired_payment, payment_gap_total)
+                    if add_payment < max(1e-9, min_desired_payment):
+                        continue
+                    add = add_payment / max(1e-9, float(new_unit_payment_q[idx]))
                     allocation[idx] = add
-                    remaining = max(0.0, remaining - add)
-                    new_count += 1
-
-            # If there is still recycled principal left after filling the
-            # target-incidence gap, allow limited refinancing/top-up for
-            # existing mortgagors with the strongest room.
-            existing_eligible = active_mort_i & (headroom_i > 1e-9)
-            if remaining > 1e-9 and np.any(existing_eligible):
-                score_i = np.zeros_like(mort, dtype=float)
-                score_i[existing_eligible] = headroom_i[existing_eligible] / (1.0 + np.maximum(0.0, mort[existing_eligible]))
-                ranked_existing_idx = np.argsort(-score_i)
-                for idx in ranked_existing_idx.tolist():
-                    if remaining <= 1e-9:
-                        break
-                    if not bool(existing_eligible[idx]):
-                        continue
-                    room = float(max(0.0, headroom_i[idx] - allocation[idx]))
-                    if room <= 1e-9:
-                        continue
-                    add = min(room, remaining)
-                    allocation[idx] += add
-                    remaining = max(0.0, remaining - add)
+                    payment_gap_total = max(0.0, payment_gap_total - add_payment)
+            self.state["mortgage_turnover_payment_gap_remaining_total"] = float(payment_gap_total)
 
             mort_turnover_total = float(np.sum(np.maximum(0.0, allocation)))
             if mort_turnover_total > 0.0:
