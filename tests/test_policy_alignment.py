@@ -258,6 +258,31 @@ class PolicyAlignmentTests(unittest.TestCase):
 
         self.assertTrue(np.all(mort_pay_req_i[active] <= (cap_i[active] + 1e-9)))
 
+    def test_mortgage_gap_neutralization_funds_bank_when_gap_exists(self):
+        cfg = make_cfg()
+        params = cfg["parameters"]
+        params["mort_neutralize_trigger_mode"] = "Always"
+        params["mort_neutralize_funding_stack"] = ["ISSUANCE"]
+        params["mort_neutralize_cap_mode"] = "None"
+        params["gov_tax_rebate_rate"] = 0.0
+
+        sim = NewLoop(cfg)
+        sim.step()
+
+        self.assertGreater(float(sim.state.get("mort_gap_total", 0.0)), 0.0)
+        self.assertGreater(float(sim.state.get("bank_mort_neutralize_inflow", 0.0)), 0.0)
+        self.assertGreater(float(sim.state.get("bank_mort_neutralize_principal_inflow", 0.0)), 0.0)
+        self.assertAlmostEqual(
+            float(sim.state.get("bank_mort_neutralize_inflow", 0.0)),
+            float(sim.state.get("mort_gap_total", 0.0)),
+            places=6,
+        )
+        self.assertAlmostEqual(
+            float(sim.state.get("mort_gap_paid_by_issuance", 0.0)),
+            float(sim.state.get("mort_gap_total", 0.0)),
+            places=6,
+        )
+
     def test_mortgage_neutralization_splits_interest_from_principal(self):
         cfg = make_cfg()
         cfg["parameters"]["mort_neutralize_trigger_mode"] = "Always"

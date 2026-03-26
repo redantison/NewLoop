@@ -212,6 +212,76 @@ class MortgageScheduleTests(unittest.TestCase):
             )
         )
 
+    def test_newly_issued_mortgages_start_index_at_issue_date(self):
+        cfg = make_cfg()
+        params = cfg["parameters"]
+        params["mortgage_turnover_enabled"] = True
+        params["mortgage_turnover_replace_share"] = 1.0
+        params["mortgage_turnover_dti_cap"] = 5.0
+        params["mortgage_turnover_income_mult_cap"] = 20.0
+        params["mortgage_turnover_min_wage_q"] = 0.0
+        params["mort_index_weight_w"] = 1.0
+        params["mort_index_ewma_lambda"] = 0.5
+
+        sim = NewLoop(cfg)
+        hh = sim.hh
+        self.assertIsNotNone(hh)
+        assert hh is not None
+
+        pending_new = np.zeros(hh.n, dtype=bool)
+        for _ in range(3):
+            sim.step()
+            pending_new = (np.asarray(hh.mortgage_loans, dtype=float) > 1e-12) & (np.asarray(hh.mort_t0, dtype=int) < 0)
+            if np.any(pending_new):
+                break
+
+        self.assertTrue(bool(np.any(pending_new)))
+
+        sim.state["price_level"] = 2.0
+        sim.state["mort_price_series_prev"] = 1.0
+        sim.state["mort_income_series_prev"] = 1.0
+        rL = float(sim.state.get("policy_rate_q", sim.params.get("loan_rate_per_quarter", 0.0)))
+
+        sim._ensure_mortgage_index_anchors(2.0, 1.0, rL)
+        terms = sim._compute_mortgage_index_terms(
+            mort=np.asarray(hh.mortgage_loans, dtype=float),
+            rL=rL,
+            wages_total=1.0,
+            div_house_total=0.0,
+            uis_per_h=0.0,
+            commit_state=False,
+        )
+
+        mort_index_i = np.asarray(terms["mort_index_i"], dtype=float)
+        mort_pay_req_i = np.asarray(terms["mort_pay_req_i"], dtype=float)
+        mort_pay_ctr_i = np.asarray(terms["mort_pay_ctr_i"], dtype=float)
+        mort_dln_sm_i = np.asarray(terms["mort_dln_sm_i"], dtype=float)
+
+        self.assertTrue(np.allclose(mort_index_i[pending_new], 1.0, rtol=0.0, atol=1e-9))
+        self.assertTrue(np.allclose(mort_pay_req_i[pending_new], mort_pay_ctr_i[pending_new], rtol=0.0, atol=1e-9))
+        self.assertTrue(np.allclose(mort_dln_sm_i[pending_new], 0.0, rtol=0.0, atol=1e-9))
+
+    def test_matured_mortgages_are_cleared_from_active_pool(self):
+        sim = NewLoop(make_cfg())
+        hh = sim.hh
+        self.assertIsNotNone(hh)
+        assert hh is not None
+
+        idx = int(np.argmax(np.asarray(hh.mortgage_loans, dtype=float)))
+        hh.mortgage_loans[idx] = 25.0
+        hh.mort_term_q[idx] = 60.0
+        hh.mort_age_q[idx] = 60.0
+        hh.mort_rate_q[idx] = 0.01
+        hh.mort_payment_sched_q[idx] = 25.25
+        hh.mort_orig_principal[idx] = 1000.0
+
+        sim._refresh_mortgage_contract_state()
+
+        self.assertAlmostEqual(float(hh.mortgage_loans[idx]), 0.0, places=9)
+        self.assertAlmostEqual(float(hh.mort_age_q[idx]), 0.0, places=9)
+        self.assertAlmostEqual(float(hh.mort_term_q[idx]), 0.0, places=9)
+        self.assertAlmostEqual(float(hh.mort_payment_sched_q[idx]), 0.0, places=9)
+
     def test_revolving_credit_is_capped(self):
         cfg = make_cfg()
         run = run_simulation(120, cfg)

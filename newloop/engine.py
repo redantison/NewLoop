@@ -590,6 +590,18 @@ class NewLoop:
         hh = self.hh
         hh.ensure_memos()
         mort = _as_np(hh.mortgage_loans, dtype=float)
+        matured = (
+            (mort > 1e-12)
+            & (_as_np(hh.mort_term_q, dtype=float) > 1e-12)
+            & (_as_np(hh.mort_age_q, dtype=float) >= (_as_np(hh.mort_term_q, dtype=float) - 1e-12))
+        )
+        if np.any(matured):
+            matured_total = float(np.sum(np.maximum(0.0, mort[matured])))
+            mort[matured] = 0.0
+            if matured_total > 0.0:
+                bank = self.nodes["BANK"]
+                bank.add("loan_assets", -matured_total)
+                bank.add("equity", -matured_total)
         active = mort > 1e-12
         inactive = ~active
 
@@ -711,6 +723,8 @@ class NewLoop:
 
         enabled = bool(self.params.get("mort_index_enable", False)) and (not self._mortgage_index_disabled())
         active = (mort_vec > 1e-12) & (hh.mort_t0 >= 0)
+        current_t = int(self.state.get("t", 0))
+        just_originated = active & (hh.mort_t0 == current_t)
         max_pay_i = mort_interest_due_i + np.maximum(0.0, mort_vec)
 
         if enabled:
@@ -748,6 +762,13 @@ class NewLoop:
             i_prev = _as_np(hh.mort_index_prev, dtype=float)
             i_curr = i_prev.copy()
             i_curr[active] = i_prev[active] * np.exp(dln_i[active])
+            if np.any(just_originated):
+                # Freshly issued mortgages anchor at this quarter's series level. They
+                # should start with index 1.0 rather than inheriting the pre-issuance
+                # quarter-over-quarter move, and their EWMA state should start clean too.
+                i_curr[just_originated] = 1.0
+                dln_i[just_originated] = 0.0
+                dln_sm_i[just_originated] = 0.0
             i_curr = np.maximum(0.0, i_curr)
 
             mort_pay_req_i = np.zeros(n, dtype=float)
@@ -2198,6 +2219,8 @@ class NewLoop:
                     "mort_interest_due_i": _as_np(mort_terms.get("mort_interest_due_i", np.zeros(hh.n, dtype=float)), dtype=float),
                     "mort_interest_paid_i": _as_np(mort_terms.get("mort_interest_paid_i", np.zeros(hh.n, dtype=float)), dtype=float),
                     "mort_principal_paid_i": _as_np(mort_terms.get("mort_principal_paid_i", np.zeros(hh.n, dtype=float)), dtype=float),
+                    "mort_interest_gap_i": _as_np(mort_terms.get("mort_interest_gap_i", np.zeros(hh.n, dtype=float)), dtype=float),
+                    "mort_principal_gap_i": _as_np(mort_terms.get("mort_principal_gap_i", np.zeros(hh.n, dtype=float)), dtype=float),
                     "mort_gap_i": _as_np(mort_terms.get("mort_gap_i", np.zeros(hh.n, dtype=float)), dtype=float),
                     "mort_gap_total": float(mort_terms.get("mort_gap_total", 0.0)),
                     "mort_pay_req_total": float(mort_terms.get("mort_pay_req_total", 0.0)),
