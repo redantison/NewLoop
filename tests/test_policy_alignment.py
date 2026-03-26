@@ -10,7 +10,7 @@ sys.path.insert(0, str(ROOT))
 
 from newloop.config import get_default_config
 from newloop.engine import NewLoop
-from newloop.results import _population_distribution_snapshot, _prepare_startup_sim, _startup_diagnostics
+from newloop.results import _population_distribution_snapshot, _prepare_startup_sim, _startup_diagnostics, run_simulation
 
 
 def make_cfg():
@@ -438,6 +438,48 @@ class PolicyAlignmentTests(unittest.TestCase):
             expected_real_target,
             places=6,
         )
+
+    def test_neutral_warmup_makes_before_snapshot_common_across_support_modes(self):
+        cfg_uis = make_cfg()
+        cfg_ubi = make_cfg()
+        cfg_uis["parameters"]["income_support_mode"] = "UIS"
+        cfg_ubi["parameters"]["income_support_mode"] = "UBI"
+        cfg_uis["parameters"]["neutral_warmup_quarters"] = 2
+        cfg_ubi["parameters"]["neutral_warmup_quarters"] = 2
+        cfg_uis["parameters"]["baseline_calibration_enabled"] = False
+        cfg_ubi["parameters"]["baseline_calibration_enabled"] = False
+
+        run_uis = run_simulation(n_quarters=1, cfg=cfg_uis)
+        run_ubi = run_simulation(n_quarters=1, cfg=cfg_ubi)
+
+        before_uis = run_uis.population_distributions["before"]
+        before_ubi = run_ubi.population_distributions["before"]
+
+        self.assertTrue(np.allclose(np.asarray(before_uis["income"], dtype=float), np.asarray(before_ubi["income"], dtype=float)))
+        self.assertTrue(np.allclose(np.asarray(before_uis["wealth"], dtype=float), np.asarray(before_ubi["wealth"], dtype=float)))
+        self.assertEqual(int(run_uis.startup_diagnostics.get("neutral_warmup_quarters", 0)), 2)
+        self.assertEqual(int(run_uis.startup_diagnostics.get("neutral_warmup_quarters_completed", 0)), 2)
+        self.assertEqual(int(run_ubi.startup_diagnostics.get("neutral_warmup_quarters", 0)), 2)
+        self.assertEqual(int(run_ubi.startup_diagnostics.get("neutral_warmup_quarters_completed", 0)), 2)
+
+    def test_neutral_warmup_preserves_visible_q0_label(self):
+        cfg = make_cfg()
+        cfg["parameters"]["neutral_warmup_quarters"] = 2
+        run = run_simulation(n_quarters=2, cfg=cfg)
+
+        self.assertEqual(int(run.rows[0].get("t", -1)), 0)
+        self.assertEqual(int(run.rows[1].get("t", -1)), 1)
+
+    def test_neutral_warmup_fails_soft_when_requested_length_is_infeasible(self):
+        cfg = make_cfg()
+        cfg["parameters"]["neutral_warmup_quarters"] = 3
+
+        run = run_simulation(n_quarters=1, cfg=cfg)
+
+        self.assertEqual(int(run.startup_diagnostics.get("neutral_warmup_quarters", 0)), 3)
+        self.assertLess(int(run.startup_diagnostics.get("neutral_warmup_quarters_completed", 0)), 3)
+        self.assertFalse(bool(run.startup_diagnostics.get("neutral_warmup_completed_fully", True)))
+        self.assertTrue(str(run.startup_diagnostics.get("neutral_warmup_error", "")))
 
     def test_sector_input_costs_accumulate_in_ums_before_trust_runs(self):
         cfg = make_cfg()
