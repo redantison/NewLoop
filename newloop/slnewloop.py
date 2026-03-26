@@ -105,7 +105,7 @@ COMPACT_NUMBER_COLUMNS = {
 DECIMAL_COLUMNS = {"price_level", "private_inv_cov"}
 
 DISPLAY_VALUE_MODES: tuple[str, str] = ("nominal", "real")
-CONTROL_DEFAULTS_VERSION = 10
+CONTROL_DEFAULTS_VERSION = 11
 UBI_PERCENTILE_PARAM_KEY = "param__ubi_target_percentile"
 UBI_PERCENTILE_UI_KEY = "ui__ubi_target_percentile"
 _TITLE_MODE_SUFFIX_RE = re.compile(r"\s+\((?:UIS|UBI|Stale)\)\s*$", re.IGNORECASE)
@@ -704,7 +704,7 @@ def main() -> None:
 
     st.set_page_config(page_title="NewLoop", layout="wide")
     _inject_selectbox_chevron_fallback(st)
-    st.title("NewLoop v2")
+    st.title("NewLoop v2.1")
     st.caption("Interactive simulation with parameterized runs and reusable plotting.")
 
     base_cfg = get_default_config()
