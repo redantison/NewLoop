@@ -11,6 +11,7 @@ import numpy as np
 
 from .config import get_default_config
 from .engine import NewLoop
+from .income_support import make_income_support_policy
 from .newloop_types import TickResult
 
 
@@ -34,9 +35,9 @@ def history_to_rows(history: Sequence[TickResult]) -> List[Dict[str, Any]]:
     return [asdict(tick) for tick in history]
 
 
-def _visible_rows(history: Sequence[TickResult]) -> List[Dict[str, Any]]:
+def _visible_rows(history: Sequence[TickResult], start_idx: int = 0) -> List[Dict[str, Any]]:
     """Convert visible history rows and rebase t so visible Q0 starts at zero."""
-    rows = history_to_rows(history)
+    rows = history_to_rows(history[start_idx:])
     if not rows:
         return rows
     t0 = int(rows[0].get("t", 0))
@@ -716,23 +717,63 @@ def _prepare_startup_sim(sim: NewLoop) -> Dict[str, Any] | None:
     return reset_stats
 
 
+def _neutral_warmup_regime_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a copy of cfg with policy actions disabled for neutral warm-up."""
+    warm_cfg = copy.deepcopy(cfg)
+    params = warm_cfg["parameters"]
+    params["automation_disabled"] = True
+    params["disable_income_support"] = True
+    params["disable_trust"] = True
+    params["disable_mortgage_relief"] = True
+    params["gov_tax_rebate_rate"] = 0.0
+    params["send_fund_residual_to_gov"] = False
+    params["fund_residual_to_gov_share"] = 0.0
+    return warm_cfg
+
+
+def _build_startup_sim(cfg: Dict[str, Any]) -> tuple[NewLoop, int, Dict[str, Any]]:
+    """Create a startup sim, optionally run hidden neutral warm-up quarters, and return the visible start index plus warm-up diagnostics."""
+    warmup_quarters = max(0, int(cfg.get("parameters", {}).get("neutral_warmup_quarters", 0)))
+    startup_cfg = _neutral_warmup_regime_cfg(cfg) if warmup_quarters > 0 else copy.deepcopy(cfg)
+    sim = NewLoop(startup_cfg)
+    _prepare_startup_sim(sim)
+    warmup_report: Dict[str, Any] = {
+        "requested_quarters": int(warmup_quarters),
+        "completed_quarters": 0,
+        "completed_fully": True,
+        "error": "",
+    }
+
+    if warmup_quarters > 0:
+        for idx in range(warmup_quarters):
+            try:
+                sim.step()
+            except Exception as exc:
+                warmup_report["completed_fully"] = False
+                warmup_report["error"] = f"{type(exc).__name__}: {exc}"
+                break
+            warmup_report["completed_quarters"] = int(idx + 1)
+        sim.params = copy.deepcopy(cfg["parameters"])
+        sim.income_support_policy = make_income_support_policy(sim.params)
+
+    return sim, len(sim.history), warmup_report
+
+
 def run_simulation(n_quarters: int = 80, cfg: Dict[str, Any] | None = None) -> SimulationRun:
     """Run NewLoop for n_quarters and return structured outputs."""
     base_cfg = copy.deepcopy(get_default_config() if cfg is None else cfg)
     effective_cfg, baseline_calibration = _run_baseline_calibration(base_cfg)
 
-    startup_diag_sim = NewLoop(copy.deepcopy(effective_cfg))
-    _prepare_startup_sim(startup_diag_sim)
+    startup_diag_sim, _, warmup_report = _build_startup_sim(effective_cfg)
     startup_diag = _startup_diagnostics(startup_diag_sim)
 
-    sim = NewLoop(effective_cfg)
-    _prepare_startup_sim(sim)
+    sim, visible_history_start, _ = _build_startup_sim(effective_cfg)
     before = _population_distribution_snapshot(sim)
     quarter_diag_q0: Dict[str, Any] | None = None
     quarter_diag_q10: Dict[str, Any] | None = None
     for _ in range(int(n_quarters)):
         sim.step()
-        visible_t = len(sim.history) - 1
+        visible_t = len(sim.history) - visible_history_start - 1
         if visible_t == 0:
             quarter_diag_q0 = _quarter_state_diagnostics(sim)
         elif visible_t == 10:
@@ -740,12 +781,16 @@ def run_simulation(n_quarters: int = 80, cfg: Dict[str, Any] | None = None) -> S
     after = _population_distribution_snapshot(sim)
     pop_dist = {"before": before, "after": after} if (before is not None and after is not None) else None
     startup_diag_out = dict(startup_diag or {})
+    startup_diag_out["neutral_warmup_quarters"] = int(warmup_report.get("requested_quarters", 0))
+    startup_diag_out["neutral_warmup_quarters_completed"] = int(warmup_report.get("completed_quarters", 0))
+    startup_diag_out["neutral_warmup_completed_fully"] = bool(warmup_report.get("completed_fully", True))
+    startup_diag_out["neutral_warmup_error"] = str(warmup_report.get("error", ""))
     quarter_compare = _quarter_comparison(quarter_diag_q0, quarter_diag_q10)
     if quarter_compare is not None:
         startup_diag_out["quarter_comparison"] = quarter_compare
     return SimulationRun(
         sim=sim,
-        rows=_visible_rows(sim.history),
+        rows=_visible_rows(sim.history, start_idx=visible_history_start),
         population_distributions=pop_dist,
         startup_diagnostics=startup_diag_out,
         baseline_calibration=baseline_calibration,

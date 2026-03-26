@@ -92,6 +92,16 @@ PARAMETER_CONTROLS: tuple[ParamControl, ...] = (
         help_text="Share of starting-quarter UMS deposits recycled back into IS and PS supplier sales each quarter.",
     ),
     ParamControl(
+        ("neutral_warmup_quarters",),
+        "Neutral Warm-Up Quarters",
+        STARTUP_SECTION,
+        "int",
+        0,
+        8,
+        1,
+        help_text="Run this many hidden neutral startup quarters before visible Q0, with income support, trust, mortgage relief, and GOV rebate temporarily disabled.",
+    ),
+    ParamControl(
         ("startup_buffer_alignment_enabled",),
         "Align Startup Deposits To Runtime Buffer",
         STARTUP_SECTION,

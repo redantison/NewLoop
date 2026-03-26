@@ -163,6 +163,7 @@ config = {
         "baseline_calibration_damping": 0.30,
         "baseline_calibration_tol_pct": 0.02,
         "baseline_calibration_reset_deposits_to_runtime_target": True,
+        "neutral_warmup_quarters": 0,
         "startup_buffer_alignment_enabled": True,
         "startup_buffer_alignment_max_iters": 8,
         "population_config": {
