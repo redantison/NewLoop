@@ -258,6 +258,26 @@ class PolicyAlignmentTests(unittest.TestCase):
 
         self.assertTrue(np.all(mort_pay_req_i[active] <= (cap_i[active] + 1e-9)))
 
+    def test_sector_capex_plan_responds_to_total_load_gap_not_only_household_unmet(self):
+        cfg = make_cfg()
+        sim = NewLoop(cfg)
+
+        sim.state["price_level"] = 1.0
+        sim.state["sector_capacity_info_real_prev"] = 1000.0
+        sim.state["sector_free_cash_info_prev"] = 1000.0
+        sim.state["sector_unmet_info_real_prev"] = 0.0
+        sim.state["sector_unmet_info_real_sm_prev"] = 0.0
+        sim.state["sector_load_gap_info_real_prev"] = 0.0
+        sim.state["sector_load_gap_info_real_sm_prev"] = 0.0
+
+        capex_without_load_gap = sim._sector_capex_plan_nom("FA", 1.0)
+
+        sim.state["sector_load_gap_info_real_prev"] = 400.0
+        sim.state["sector_load_gap_info_real_sm_prev"] = 400.0
+        capex_with_load_gap = sim._sector_capex_plan_nom("FA", 1.0)
+
+        self.assertGreater(capex_with_load_gap, capex_without_load_gap)
+
     def test_mortgage_gap_neutralization_funds_bank_when_gap_exists(self):
         cfg = make_cfg()
         params = cfg["parameters"]
