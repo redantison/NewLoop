@@ -2897,23 +2897,34 @@ class NewLoop:
             )
             headroom_dti_i = dti_room_nom / np.maximum(1e-9, new_unit_payment_q)
             headroom_i = np.minimum(headroom_income_i, headroom_dti_i)
-            if "mortgage_turnover_target_share" not in self.state:
-                self.state["mortgage_turnover_target_share"] = float(np.mean(active_mort_i)) if active_mort_i.size else 0.0
-            target_share = float(pop_cfg.get("mortgage_share", self.state.get("mortgage_turnover_target_share", 0.0)))
+            configured_target_share = self.params.get("mortgage_turnover_target_share", None)
+            if configured_target_share is None:
+                configured_target_share = pop_cfg.get("mortgage_share", None)
+            if configured_target_share is None:
+                if "mortgage_turnover_target_share" not in self.state:
+                    self.state["mortgage_turnover_target_share"] = float(np.mean(active_mort_i)) if active_mort_i.size else 0.0
+                target_share = float(self.state.get("mortgage_turnover_target_share", 0.0))
+            else:
+                target_share = float(configured_target_share)
             target_share = max(0.0, min(1.0, target_share))
+            self.state["mortgage_turnover_target_share"] = float(target_share)
             desired_mult = float(pop_cfg.get("mortgage_income_mult_median", mort_turnover_income_mult_cap))
             desired_mult = max(0.0, desired_mult)
             desired_principal_i = np.minimum(headroom_i, desired_mult * annual_wage_i)
             min_desired_principal_i = 0.25 * np.maximum(0.0, annual_wage_i)
+            active_floor_mult = float(self.params.get("mortgage_turnover_active_balance_floor_mult_min_desired", 1.0))
+            active_floor_mult = max(0.0, active_floor_mult)
+            active_balance_floor_i = active_floor_mult * min_desired_principal_i
+            active_for_target_i = mort > np.maximum(1e-9, active_balance_floor_i)
 
             allocation = np.zeros_like(mort, dtype=float)
             remaining = float(mort_gap_total)
             target_active_count = int(round(target_share * float(n)))
-            current_active_count = int(np.sum(active_mort_i))
+            current_active_count = int(np.sum(active_for_target_i))
             needed_new_count = max(0, target_active_count - current_active_count)
 
             new_eligible = (
-                (~active_mort_i)
+                (~active_for_target_i)
                 & (wages_i >= mort_turnover_min_wage_q)
                 & (desired_principal_i > 1e-9)
             )

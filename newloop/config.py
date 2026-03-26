@@ -131,6 +131,8 @@ config = {
         "mortgage_principal_pay_rate_q": 0.01,   # 1%/q max paydown if cash available
         "mortgage_turnover_enabled": True,      # replace amortized mortgage stock by issuing new mortgages to eligible households
         "mortgage_turnover_replace_share": 1.0,
+        "mortgage_turnover_target_share": 0.55,  # desired share of households carrying a mortgage after turnover
+        "mortgage_turnover_active_balance_floor_mult_min_desired": 0.0,  # set >0 to treat tiny balances as inactive for turnover targeting
         "mortgage_turnover_dti_cap": 0.40,
         "mortgage_turnover_income_mult_cap": 4.0,
         "mortgage_turnover_min_wage_q": 1.0,
