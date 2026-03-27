@@ -431,7 +431,7 @@ class PolicyAlignmentTests(unittest.TestCase):
         self.assertGreater(float(sim.nodes["FA"].get("K", 0.0)), 0.0)
         self.assertGreater(float(sim.nodes["FH"].get("K", 0.0)), 0.0)
 
-    def test_population_wealth_snapshot_splits_trust_value_equally(self):
+    def test_population_wealth_snapshot_ignores_aggregate_trust_holdings(self):
         cfg = make_cfg()
         sim = NewLoop(cfg)
         assert sim.hh is not None
@@ -449,7 +449,7 @@ class PolicyAlignmentTests(unittest.TestCase):
         assert with_trust is not None
 
         delta = np.asarray(with_trust["wealth"], dtype=float) - np.asarray(baseline["wealth"], dtype=float)
-        np.testing.assert_allclose(delta, np.full(delta.shape, 200.0 / float(sim.hh.n)), rtol=0.0, atol=1e-9)
+        np.testing.assert_allclose(delta, np.zeros(delta.shape, dtype=float), rtol=0.0, atol=1e-9)
 
     def test_sector_target_payout_rate_rises_when_unmet_demand_is_low(self):
         cfg = make_cfg()

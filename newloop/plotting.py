@@ -24,6 +24,7 @@ METRIC_LABELS: Dict[str, str] = {
     "gini_wealth": "Gini (Wealth)",
     "private_eq_per_h": "Private Equity / Household",
     "hh_deposits_per_h": "Household Deposits / Household",
+    "hh_housing_value_per_h": "Household Housing Value / Household",
     "hh_debt_per_h": "Household Debt / Household",
     "hh_mortgage_debt_per_h": "Household Mortgage Debt / Household",
     "hh_revolving_debt_per_h": "Household Revolving Debt / Household",
@@ -210,6 +211,10 @@ def _line_style(metric: str, *, secondary: bool) -> Dict[str, Any]:
     style: Dict[str, Any] = {"linewidth": 2.0}
     if secondary:
         style["linestyle"] = "--"
+    if metric in {"sector_demand_info_per_h", "unmet_demand_info_per_h"}:
+        style["color"] = "tab:blue"
+    elif metric in {"sector_demand_physical_per_h", "unmet_demand_physical_per_h"}:
+        style["color"] = "tab:orange"
     if metric == "automation":
         style["linewidth"] = 2.6
         style["linestyle"] = "-"
@@ -752,12 +757,16 @@ def plot_distribution_share(
         if after_edges_arr.ndim != 1 or after_edges_arr.size < 2:
             raise ValueError("After-series histogram edges must be a one-dimensional sequence with at least two entries.")
 
+    # For zoomed views, fold observations beyond the visible window into the
+    # edge bins instead of dropping them entirely. That preserves the presence
+    # of the left/right tails while still focusing the x-axis on the requested
+    # percentile band.
     if edges is not None:
-        b = b[(b >= float(edges_arr[0])) & (b <= float(edges_arr[-1]))]
+        b = np.clip(b, float(edges_arr[0]), float(edges_arr[-1]))
     if after_edges is not None:
-        a = a[(a >= float(after_edges_arr[0])) & (a <= float(after_edges_arr[-1]))]
+        a = np.clip(a, float(after_edges_arr[0]), float(after_edges_arr[-1]))
     elif edges is not None:
-        a = a[(a >= float(edges_arr[0])) & (a <= float(edges_arr[-1]))]
+        a = np.clip(a, float(edges_arr[0]), float(edges_arr[-1]))
 
     if b.size == 0 or a.size == 0:
         raise ValueError("Truncated histogram window removed all observations from one series.")
@@ -876,29 +885,33 @@ def plot_wealth_distributions_full_zoom(
     x_full_hi = float(np.max(all_w))
     if x_full_hi <= x_full_lo:
         x_full_hi = x_full_lo + 1.0
-    x_lo = float(np.percentile(all_w, lo))
-    x_hi = float(np.percentile(all_w, hi))
+    x_lo = float(min(np.percentile(w_b, lo), np.percentile(w_a, lo)))
+    x_hi = float(max(np.percentile(w_b, hi), np.percentile(w_a, hi)))
+    if lo <= 0.0:
+        x_lo = x_full_lo
+    if hi >= 100.0:
+        x_hi = x_full_hi
     if x_hi <= x_lo:
-        x_lo = float(np.min(all_w))
-        x_hi = float(np.max(all_w))
-        if x_hi <= x_lo:
-            x_hi = x_lo + 1.0
+        x_lo = x_full_lo
+        x_hi = x_full_hi
 
     fig, axs = plt.subplots(1, 2, figsize=(13, 4.5), constrained_layout=True)
     t = [int(row.get("t", idx)) for idx, row in enumerate(rows)]
     deposits = [float(row.get("hh_deposits_per_h", 0.0)) for row in rows]
+    housing_value = [float(row.get("hh_housing_value_per_h", 0.0)) for row in rows]
     direct_equity = [float(row.get("private_eq_per_h", 0.0)) for row in rows]
     trust_value = [float(row.get("trust_value_per_h", 0.0)) for row in rows]
     debt = [-float(row.get("hh_debt_per_h", 0.0)) for row in rows]
     mortgage_debt = [-float(row.get("hh_mortgage_debt_per_h", 0.0)) for row in rows]
     revolving_debt = [-float(row.get("hh_revolving_debt_per_h", 0.0)) for row in rows]
     net_worth = [
-        float(dep + eq + trust + debt_val)
-        for dep, eq, trust, debt_val in zip(deposits, direct_equity, trust_value, debt)
+        float(dep + hv + eq + trust + debt_val)
+        for dep, hv, eq, trust, debt_val in zip(deposits, housing_value, direct_equity, trust_value, debt)
     ]
 
     ax_left = axs[0]
     ax_left.plot(t, deposits, label="Deposits", color="#1f77b4", linewidth=2.0)
+    ax_left.plot(t, housing_value, label="Housing Value", color="#17becf", linewidth=2.0)
     ax_left.plot(t, direct_equity, label="Direct Equity", color="#ff7f0e", linewidth=2.0)
     ax_left.plot(t, trust_value, label="Trust Value", color="#2ca02c", linewidth=2.0)
     ax_left.plot(t, debt, label="Debt", color="#d62728", linewidth=2.0)
@@ -912,15 +925,27 @@ def plot_wealth_distributions_full_zoom(
     ax_left.grid(True, alpha=0.25)
     ax_left.legend(loc="best")
 
-    plot_distribution_share(
-        w_b,
-        w_a,
-        title=_title_with_mode(f"Wealth Distribution (Histogram, Zoomed p{int(round(lo))} to p{int(round(hi))})", support_mode),
-        x_label=value_label,
-        x_limits=(x_lo, x_hi),
-        ax=axs[1],
-        bins=70,
-    )
+    ax_right = axs[1]
+    edges = np.linspace(x_lo, x_hi, 81, dtype=float)
+    before_vals = w_b[(w_b >= x_lo) & (w_b <= x_hi)]
+    after_vals = w_a[(w_a >= x_lo) & (w_a <= x_hi)]
+    before_counts, _ = np.histogram(before_vals, bins=edges)
+    after_counts, _ = np.histogram(after_vals, bins=edges)
+    before_share = before_counts.astype(float) / max(1.0, float(before_vals.size))
+    after_share = after_counts.astype(float) / max(1.0, float(after_vals.size))
+
+    ax_right.step(edges[:-1], before_share, where="post", color="#1f77b4", linewidth=2.0, label="Before")
+    ax_right.step(edges[:-1], after_share, where="post", color="#ff7f0e", linewidth=2.0, label="After")
+    ax_right.axvline(float(np.median(w_b)), color="#1f77b4", linestyle=":", linewidth=1.8, alpha=0.9)
+    ax_right.axvline(float(np.median(w_a)), color="#ff7f0e", linestyle=":", linewidth=1.8, alpha=0.9)
+    ax_right.set_title(_title_with_mode(f"Wealth Distribution (Bucketed Lines, Zoomed p{int(round(lo))} to p{int(round(hi))})", support_mode))
+    ax_right.set_xlabel(value_label)
+    ax_right.set_ylabel("Share of Households")
+    ax_right.set_xlim(x_lo, x_hi)
+    from matplotlib.ticker import FuncFormatter
+    ax_right.yaxis.set_major_formatter(FuncFormatter(lambda val, _: f"{100.0 * float(val):.2f}%"))
+    ax_right.grid(alpha=0.25)
+    ax_right.legend(loc="best")
     return fig
 
 

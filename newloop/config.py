@@ -135,6 +135,7 @@ config = {
         "mortgage_turnover_target_payment_floor_share": 1.0,  # target aggregate scheduled mortgage payments as share of startup level
         "mortgage_turnover_dti_cap": 0.40,
         "mortgage_turnover_income_mult_cap": 4.0,
+        "mortgage_turnover_support_income_weight": 0.25,
         "mortgage_turnover_min_wage_q": 1.0,
         "send_fund_residual_to_gov": False, # legacy compatibility toggle for a full FUND residual sweep
         "fund_residual_to_gov_share": 0.0,  # optional share of residual FUND deposits sent to GOV after debt-first treatment
@@ -164,10 +165,11 @@ config = {
         "baseline_calibration_alpha": 0.92,
         "baseline_calibration_damping": 0.30,
         "baseline_calibration_tol_pct": 0.02,
-        "baseline_calibration_reset_deposits_to_runtime_target": True,
+        "baseline_calibration_reset_deposits_to_runtime_target": False,
         "neutral_warmup_quarters": 2,
         "startup_buffer_alignment_enabled": True,
         "startup_buffer_alignment_max_iters": 8,
+        "startup_buffer_alignment_deposit_blend": 0.35,
         "population_config": {
             "n_families": 20000,
             "seed": 7919,
@@ -201,8 +203,21 @@ config = {
             # Debt distribution
             "mortgage_income_mult_median": 3.25,
             "mortgage_income_mult_sigma": 0.55,
+            "outright_owner_share": 0.15,
+            "owner_home_value_income_mult_median": 3.00,
+            "owner_home_value_income_mult_sigma": 0.45,
+            "mortgage_startup_ltv_median": 0.90,
+            "mortgage_startup_ltv_sigma": 0.12,
+            "mortgage_startup_ltv_min": 0.60,
+            "mortgage_startup_ltv_max": 1.15,
             "revolving_income_mult_median": 0.06,
             "revolving_income_mult_sigma": 0.80,
+            "renter_deposit_target_mult_median": 0.70,
+            "renter_deposit_target_mult_sigma": 0.65,
+            "mortgagor_deposit_target_mult_median": 1.00,
+            "mortgagor_deposit_target_mult_sigma": 0.45,
+            "owner_deposit_target_mult_median": 2.00,
+            "owner_deposit_target_mult_sigma": 0.55,
             "revolving_cap_income_mult": 0.50,
             "revolving_cap_deposits_mult": 2.0,
         },

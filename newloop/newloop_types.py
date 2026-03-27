@@ -34,6 +34,7 @@ class HouseholdState:
     n: int
     wages0_q: np.ndarray
     deposits: np.ndarray
+    housing_escrow: np.ndarray
     mortgage_loans: np.ndarray
     revolving_loans: np.ndarray
     mpc_q: np.ndarray
@@ -62,6 +63,8 @@ class HouseholdState:
             self.liquid_buffer_months_target = np.zeros(self.n, dtype=float)
         if (self.prev_income.size == 0) or (self.prev_income.shape[0] != self.n):
             self.prev_income = np.asarray(self.wages0_q, dtype=float).copy()
+        if (self.housing_escrow.size == 0) or (self.housing_escrow.shape[0] != self.n):
+            self.housing_escrow = np.zeros(self.n, dtype=float)
         if (self.mort_rate_q.size == 0) or (self.mort_rate_q.shape[0] != self.n):
             self.mort_rate_q = np.zeros(self.n, dtype=float)
         if (self.mort_age_q.size == 0) or (self.mort_age_q.shape[0] != self.n):
@@ -113,6 +116,7 @@ class TickResult:
     gini_wealth: float
     private_eq_per_h: float
     hh_deposits_per_h: float
+    hh_housing_value_per_h: float
     hh_debt_per_h: float
     hh_mortgage_debt_per_h: float
     hh_revolving_debt_per_h: float

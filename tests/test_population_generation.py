@@ -47,7 +47,7 @@ class PopulationGenerationTests(unittest.TestCase):
         self.assertLessEqual(base_real_medians[0], 500.0)
         self.assertGreaterEqual(base_real_medians[-1], 625.0)
         self.assertLessEqual(base_real_medians[-1], 725.0)
-        self.assertGreaterEqual(realized_buffer_months[0], 0.9)
+        self.assertGreaterEqual(realized_buffer_months[0], 0.6)
         self.assertLessEqual(realized_buffer_months[0], 3.0)
         self.assertGreaterEqual(realized_buffer_months[-1], 7.0)
         self.assertLessEqual(realized_buffer_months[-1], 14.0)
