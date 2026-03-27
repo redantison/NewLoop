@@ -206,11 +206,24 @@ class PopulationConfig:
 
     # Debt (loan principal) mixture
     mortgage_share: float = 0.55      # fraction with mortgage-like debt
+    outright_owner_share: float = 0.15  # fraction with owned housing and no mortgage
     revolving_share: float = 0.25     # fraction with revolving debt
     mortgage_income_mult_median: float = 3.25   # median mortgage principal as multiple of annual wage
     mortgage_income_mult_sigma: float = 0.55
+    owner_home_value_income_mult_median: float = 3.00
+    owner_home_value_income_mult_sigma: float = 0.45
+    mortgage_startup_ltv_median: float = 0.90
+    mortgage_startup_ltv_sigma: float = 0.12
+    mortgage_startup_ltv_min: float = 0.60
+    mortgage_startup_ltv_max: float = 1.15
     revolving_income_mult_median: float = 0.06  # revolving principal as multiple of annual wage
     revolving_income_mult_sigma: float = 0.80
+    renter_deposit_target_mult_median: float = 0.70
+    renter_deposit_target_mult_sigma: float = 0.65
+    mortgagor_deposit_target_mult_median: float = 1.00
+    mortgagor_deposit_target_mult_sigma: float = 0.45
+    owner_deposit_target_mult_median: float = 2.00
+    owner_deposit_target_mult_sigma: float = 0.55
 
     # Revolving balance caps (to prevent extreme tails in interest burden)
     revolving_cap_income_mult: float = 0.50   # cap revolving principal at this multiple of annual wage
@@ -249,6 +262,7 @@ class PopulationConfig:
 class Population:
     wages_q: List[float]
     deposits: List[float]
+    housing_values: List[float]
     loans: List[float]
     mortgage_loans: List[float]
     revolving_loans: List[float]
@@ -534,12 +548,17 @@ def generate_population(cfg: PopulationConfig) -> Population:
 
     p = pct_rank
 
-    # Mortgage probability schedule by deposits percentile. The config share
-    # then rescales this schedule so the active-group mean matches the target.
+    # Tenure assignment: explicit mortgagors, outright owners, and renters.
+    # Mortgage incidence peaks in the broad middle/upper-middle and then fades
+    # a bit at the very top where outright owners become more common.
     mort_p = np.zeros(n, dtype=float)
     mort_p = np.where((p > 10.0) & (p <= 70.0), 0.65 * (p - 10.0) / 60.0, mort_p)
     mort_p = np.where((p > 70.0) & (p <= 95.0), 0.65 + (0.45 - 0.65) * (p - 70.0) / 25.0, mort_p)
     mort_p = np.where(p > 95.0, 0.45 + (0.25 - 0.45) * (p - 95.0) / 5.0, mort_p)
+
+    owner_p = np.zeros(n, dtype=float)
+    owner_p = np.where((p > 45.0) & (p <= 85.0), 0.30 * (p - 45.0) / 40.0, owner_p)
+    owner_p = np.where((p > 85.0) & (p <= 100.0), 0.30 + (0.70 - 0.30) * (p - 85.0) / 15.0, owner_p)
 
     # Revolving probability schedule by deposits percentile. The config share
     # then rescales this schedule so the active-group mean matches the target.
@@ -552,17 +571,70 @@ def generate_population(cfg: PopulationConfig) -> Population:
 
     has_wage = wages_annual > 0.0
     mort_p = _rescale_probabilities_to_target(mort_p, has_wage, float(cfg.mortgage_share))
+    mort_mask = has_wage & (rng.random(n) < mort_p)
+    owner_active = ~mort_mask
+    owner_target_share = clamp(
+        float(cfg.outright_owner_share) / max(1e-9, float(np.mean(owner_active.astype(float)))),
+        0.0,
+        1.0,
+    )
+    owner_p = _rescale_probabilities_to_target(owner_p, owner_active, owner_target_share)
+    owner_mask = owner_active & (rng.random(n) < owner_p)
+    renter_mask = ~(mort_mask | owner_mask)
+
+    # Rebuild spendable deposits around each household's own precautionary
+    # buffer target so startup liquidity differs meaningfully by tenure.
+    if deposit_mode != "legacy_mixture":
+        target_buffer = np.maximum(0.0, (target_months / 3.0) * np.maximum(0.0, base_real))
+        dep_mult = np.ones(n, dtype=float)
+        if np.any(renter_mask):
+            dep_mult[renter_mask] = rng.lognormal(
+                mean=math.log(max(cfg.renter_deposit_target_mult_median, 1e-12)),
+                sigma=float(cfg.renter_deposit_target_mult_sigma),
+                size=int(renter_mask.sum()),
+            )
+        if np.any(mort_mask):
+            dep_mult[mort_mask] = rng.lognormal(
+                mean=math.log(max(cfg.mortgagor_deposit_target_mult_median, 1e-12)),
+                sigma=float(cfg.mortgagor_deposit_target_mult_sigma),
+                size=int(mort_mask.sum()),
+            )
+        if np.any(owner_mask):
+            dep_mult[owner_mask] = rng.lognormal(
+                mean=math.log(max(cfg.owner_deposit_target_mult_median, 1e-12)),
+                sigma=float(cfg.owner_deposit_target_mult_sigma),
+                size=int(owner_mask.sum()),
+            )
+        deposits = np.maximum(0.0, target_buffer * dep_mult)
+
+        order = np.argsort(deposits)
+        rank = np.empty(n, dtype=np.int32)
+        rank[order] = np.arange(n, dtype=np.int32)
+        pct_rank = 100.0 * (rank.astype(float) / float(denom))
+        p = pct_rank
+        rev_p = np.empty(n, dtype=float)
+        rev_p = np.where(p <= 20.0, 0.50, np.nan)
+        rev_p = np.where((p > 20.0) & (p <= 50.0), 0.50 + (0.40 - 0.50) * (p - 20.0) / 30.0, rev_p)
+        rev_p = np.where((p > 50.0) & (p <= 80.0), 0.40 + (0.25 - 0.40) * (p - 50.0) / 30.0, rev_p)
+        rev_p = np.where((p > 80.0) & (p <= 95.0), 0.25 + (0.15 - 0.25) * (p - 80.0) / 15.0, rev_p)
+        rev_p = np.where(p > 95.0, 0.15 + (0.10 - 0.15) * (p - 95.0) / 5.0, rev_p)
+
+    rev_tenure_factor = np.ones(n, dtype=float)
+    rev_tenure_factor[renter_mask] = 1.40
+    rev_tenure_factor[mort_mask] = 0.90
+    rev_tenure_factor[owner_mask] = 0.35
+    rev_p = np.clip(rev_p * rev_tenure_factor, 0.0, 1.0)
     rev_p = _rescale_probabilities_to_target(rev_p, has_wage, float(cfg.revolving_share))
 
     mortgage_loans = np.zeros(n, dtype=float)
     revolving_loans = np.zeros(n, dtype=float)
+    housing_values = np.zeros(n, dtype=float)
     mortgage_rate_q = np.zeros(n, dtype=float)
     mortgage_age_q = np.zeros(n, dtype=float)
     mortgage_term_q = np.zeros(n, dtype=float)
     mortgage_payment_sched_q = np.zeros(n, dtype=float)
     mortgage_orig_principal = np.zeros(n, dtype=float)
 
-    mort_mask = has_wage & (rng.random(n) < mort_p)
     if mort_mask.any():
         mort_mult = rng.lognormal(
             mean=math.log(max(cfg.mortgage_income_mult_median, 1e-12)),
@@ -581,6 +653,28 @@ def generate_population(cfg: PopulationConfig) -> Population:
         mortgage_term_q[mort_mask] = term_q
         mortgage_payment_sched_q[mort_mask] = payment_q
         mortgage_orig_principal[mort_mask] = orig_principal
+        ltv_draw = rng.normal(
+            loc=float(cfg.mortgage_startup_ltv_median),
+            scale=float(cfg.mortgage_startup_ltv_sigma),
+            size=int(mort_mask.sum()),
+        )
+        ltv_draw = np.clip(
+            ltv_draw,
+            float(cfg.mortgage_startup_ltv_min),
+            float(cfg.mortgage_startup_ltv_max),
+        )
+        housing_values[mort_mask] = np.maximum(
+            current_balance,
+            np.maximum(0.0, current_balance / np.maximum(ltv_draw, 1e-9)),
+        )
+
+    if owner_mask.any():
+        owner_mult = rng.lognormal(
+            mean=math.log(max(cfg.owner_home_value_income_mult_median, 1e-12)),
+            sigma=float(cfg.owner_home_value_income_mult_sigma),
+            size=int(owner_mask.sum()),
+        )
+        housing_values[owner_mask] = np.maximum(0.0, owner_mult * wage_potential[owner_mask] * 4.0)
 
     rev_mask = has_wage & (rng.random(n) < rev_p)
     if rev_mask.any():
@@ -599,6 +693,7 @@ def generate_population(cfg: PopulationConfig) -> Population:
     return Population(
         wages_q=wages.astype(float).tolist(),
         deposits=deposits.astype(float).tolist(),
+        housing_values=housing_values.astype(float).tolist(),
         loans=loans.astype(float).tolist(),
         mortgage_loans=mortgage_loans.astype(float).tolist(),
         revolving_loans=revolving_loans.astype(float).tolist(),

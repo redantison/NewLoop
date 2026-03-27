@@ -42,6 +42,9 @@ class NewLoop:
     def __init__(self, config: Dict[str, Any]) -> None:
         self._validate_config(config)
         self.params = config["parameters"]
+        pop_cfg = self.params.get("population_config", {}) if isinstance(self.params.get("population_config", {}), dict) else {}
+        rng_seed = int(pop_cfg.get("seed", 7919))
+        self.rng = np.random.Generator(np.random.PCG64(rng_seed))
         self.income_support_policy = make_income_support_policy(self.params)
         p0 = float(config["parameters"].get("price_level_initial", 1.0))
         base_rate_q = max(0.0, float(config["parameters"].get("loan_rate_per_quarter", 0.0)))
@@ -167,6 +170,7 @@ class NewLoop:
             try:
                 wages0_q_raw = getattr(pop, "wages_q")
                 deposits_raw = getattr(pop, "deposits")
+                housing_values_raw = getattr(pop, "housing_values")
                 mortgage_loans_raw = getattr(pop, "mortgage_loans")
                 revolving_loans_raw = getattr(pop, "revolving_loans")
                 mort_rate_q_raw = getattr(pop, "mortgage_rate_q")
@@ -179,6 +183,7 @@ class NewLoop:
             except Exception:
                 wages0_q_raw = []
                 deposits_raw = []
+                housing_values_raw = []
                 mortgage_loans_raw = []
                 revolving_loans_raw = []
                 mort_rate_q_raw = []
@@ -191,6 +196,7 @@ class NewLoop:
 
             wages0_q = _as_np(wages0_q_raw, dtype=float)
             deposits = _as_np(deposits_raw, dtype=float)
+            housing_values = _as_np(housing_values_raw, dtype=float)
             mortgage_loans = _as_np(mortgage_loans_raw, dtype=float)
             revolving_loans = _as_np(revolving_loans_raw, dtype=float)
             mort_rate_q = _as_np(mort_rate_q_raw, dtype=float)
@@ -198,7 +204,10 @@ class NewLoop:
             mort_term_q = _as_np(mort_term_q_raw, dtype=float)
             mort_payment_sched_q = _as_np(mort_payment_sched_q_raw, dtype=float)
             mort_orig_principal = _as_np(mort_orig_principal_raw, dtype=float)
-            housing_escrow = mort_orig_principal.copy() if mort_orig_principal.size else mortgage_loans.copy()
+            if housing_values.size:
+                housing_escrow = housing_values.copy()
+            else:
+                housing_escrow = mort_orig_principal.copy() if mort_orig_principal.size else mortgage_loans.copy()
             mpc_q = _as_np(mpc_q_raw, dtype=float)
             base_real_cons_q = _as_np(base_real_cons_q_raw, dtype=float)
             liquid_buffer_months_target_raw = getattr(pop, "liquid_buffer_months_target", np.zeros(base_real_cons_q.shape[0], dtype=float))
@@ -207,6 +216,7 @@ class NewLoop:
             n = int(min(
                 wages0_q.shape[0],
                 deposits.shape[0],
+                housing_escrow.shape[0],
                 mortgage_loans.shape[0],
                 revolving_loans.shape[0],
                 mort_rate_q.shape[0] if mort_rate_q.size else mortgage_loans.shape[0],
@@ -2997,10 +3007,7 @@ class NewLoop:
             )
             if payment_gap_total > 1e-9 and np.any(new_eligible):
                 candidate_idx = np.where(new_eligible)[0]
-                # Favor lower-income households that can support a mortgage, so
-                # stronger income support broadens access rather than concentrating
-                # credit only in the upper tail.
-                ranked_new_idx = candidate_idx[np.argsort(annual_wage_i[candidate_idx], kind="stable")]
+                ranked_new_idx = self.rng.permutation(candidate_idx)
                 for idx in ranked_new_idx.tolist():
                     if payment_gap_total <= 1e-9:
                         break

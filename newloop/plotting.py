@@ -881,19 +881,15 @@ def plot_wealth_distributions_full_zoom(
     x_full_hi = float(np.max(all_w))
     if x_full_hi <= x_full_lo:
         x_full_hi = x_full_lo + 1.0
-    # Use the outer envelope of each distribution's percentile window so the
-    # zoom does not lop off one side simply because the other distribution
-    # shifted over time.
-    # Keep the full lower bound visible so the left tail is not hidden when the
-    # user asks for a zoomed percentile window. The upper bound still uses the
-    # requested percentile envelope so the main mass remains readable.
-    x_lo = x_full_lo
+    x_lo = float(min(np.percentile(w_b, lo), np.percentile(w_a, lo)))
     x_hi = float(max(np.percentile(w_b, hi), np.percentile(w_a, hi)))
+    if lo <= 0.0:
+        x_lo = x_full_lo
+    if hi >= 100.0:
+        x_hi = x_full_hi
     if x_hi <= x_lo:
-        x_lo = float(np.min(all_w))
-        x_hi = float(np.max(all_w))
-        if x_hi <= x_lo:
-            x_hi = x_lo + 1.0
+        x_lo = x_full_lo
+        x_hi = x_full_hi
 
     fig, axs = plt.subplots(1, 2, figsize=(13, 4.5), constrained_layout=True)
     t = [int(row.get("t", idx)) for idx, row in enumerate(rows)]
@@ -925,15 +921,27 @@ def plot_wealth_distributions_full_zoom(
     ax_left.grid(True, alpha=0.25)
     ax_left.legend(loc="best")
 
-    plot_distribution_share(
-        w_b,
-        w_a,
-        title=_title_with_mode(f"Wealth Distribution (Histogram, Zoomed p{int(round(lo))} to p{int(round(hi))})", support_mode),
-        x_label=value_label,
-        x_limits=(x_lo, x_hi),
-        ax=axs[1],
-        bins=70,
-    )
+    ax_right = axs[1]
+    edges = np.linspace(x_lo, x_hi, 81, dtype=float)
+    before_vals = w_b[(w_b >= x_lo) & (w_b <= x_hi)]
+    after_vals = w_a[(w_a >= x_lo) & (w_a <= x_hi)]
+    before_counts, _ = np.histogram(before_vals, bins=edges)
+    after_counts, _ = np.histogram(after_vals, bins=edges)
+    before_share = before_counts.astype(float) / max(1.0, float(before_vals.size))
+    after_share = after_counts.astype(float) / max(1.0, float(after_vals.size))
+
+    ax_right.step(edges[:-1], before_share, where="post", color="#1f77b4", linewidth=2.0, label="Before")
+    ax_right.step(edges[:-1], after_share, where="post", color="#ff7f0e", linewidth=2.0, label="After")
+    ax_right.axvline(float(np.median(w_b)), color="#1f77b4", linestyle=":", linewidth=1.8, alpha=0.9)
+    ax_right.axvline(float(np.median(w_a)), color="#ff7f0e", linestyle=":", linewidth=1.8, alpha=0.9)
+    ax_right.set_title(_title_with_mode(f"Wealth Distribution (Bucketed Lines, Zoomed p{int(round(lo))} to p{int(round(hi))})", support_mode))
+    ax_right.set_xlabel(value_label)
+    ax_right.set_ylabel("Share of Households")
+    ax_right.set_xlim(x_lo, x_hi)
+    from matplotlib.ticker import FuncFormatter
+    ax_right.yaxis.set_major_formatter(FuncFormatter(lambda val, _: f"{100.0 * float(val):.2f}%"))
+    ax_right.grid(alpha=0.25)
+    ax_right.legend(loc="best")
     return fig
 
 

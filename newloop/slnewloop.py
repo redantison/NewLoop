@@ -489,9 +489,18 @@ def _population_dist_for_value_mode(
         scale = p0_eff / p
         income = [float(v) * scale for v in snapshot.get("income", [])]
         wealth = [float(v) * scale for v in snapshot.get("wealth", [])]
+        wealth_groups_raw = snapshot.get("wealth_groups", {})
+        wealth_groups = {}
+        if isinstance(wealth_groups_raw, dict):
+            wealth_groups = {
+                str(k): [float(v) * scale for v in vals]
+                for k, vals in wealth_groups_raw.items()
+                if isinstance(vals, list)
+            }
         out = dict(snapshot)
         out["income"] = income
         out["wealth"] = wealth
+        out["wealth_groups"] = wealth_groups
         return out
 
     return {"before": _scaled(before), "after": _scaled(after)}
@@ -982,7 +991,7 @@ def main() -> None:
                 "Wealth zoom percentile window",
                 min_value=0,
                 max_value=100,
-                value=(2, 98),
+                value=(0, 80),
                 step=1,
                 help="Zooms the right-hand wealth histogram to this percentile band while keeping the left-hand household wealth reservoirs plot for context.",
             )
