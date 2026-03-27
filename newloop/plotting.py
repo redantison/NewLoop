@@ -753,12 +753,16 @@ def plot_distribution_share(
         if after_edges_arr.ndim != 1 or after_edges_arr.size < 2:
             raise ValueError("After-series histogram edges must be a one-dimensional sequence with at least two entries.")
 
+    # For zoomed views, fold observations beyond the visible window into the
+    # edge bins instead of dropping them entirely. That preserves the presence
+    # of the left/right tails while still focusing the x-axis on the requested
+    # percentile band.
     if edges is not None:
-        b = b[(b >= float(edges_arr[0])) & (b <= float(edges_arr[-1]))]
+        b = np.clip(b, float(edges_arr[0]), float(edges_arr[-1]))
     if after_edges is not None:
-        a = a[(a >= float(after_edges_arr[0])) & (a <= float(after_edges_arr[-1]))]
+        a = np.clip(a, float(after_edges_arr[0]), float(after_edges_arr[-1]))
     elif edges is not None:
-        a = a[(a >= float(edges_arr[0])) & (a <= float(edges_arr[-1]))]
+        a = np.clip(a, float(edges_arr[0]), float(edges_arr[-1]))
 
     if b.size == 0 or a.size == 0:
         raise ValueError("Truncated histogram window removed all observations from one series.")
@@ -877,8 +881,14 @@ def plot_wealth_distributions_full_zoom(
     x_full_hi = float(np.max(all_w))
     if x_full_hi <= x_full_lo:
         x_full_hi = x_full_lo + 1.0
-    x_lo = float(np.percentile(all_w, lo))
-    x_hi = float(np.percentile(all_w, hi))
+    # Use the outer envelope of each distribution's percentile window so the
+    # zoom does not lop off one side simply because the other distribution
+    # shifted over time.
+    # Keep the full lower bound visible so the left tail is not hidden when the
+    # user asks for a zoomed percentile window. The upper bound still uses the
+    # requested percentile envelope so the main mass remains readable.
+    x_lo = x_full_lo
+    x_hi = float(max(np.percentile(w_b, hi), np.percentile(w_a, hi)))
     if x_hi <= x_lo:
         x_lo = float(np.min(all_w))
         x_hi = float(np.max(all_w))
