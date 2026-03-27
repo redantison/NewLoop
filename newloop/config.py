@@ -63,7 +63,7 @@ config = {
         "sector_capex_gap_half_sat": 0.08,
         "sector_capex_gap_close_rate": 0.40,
         "sector_capex_growth_cap_rate_q": 0.08,
-        "sector_capex_unmet_ewma_alpha": 0.50,
+        "sector_capex_unmet_ewma_alpha": 0.10,
         "sector_install_rate_q": 0.07,
         "sector_maintenance_reserve_share": 0.75,
         "sector_dividend_cash_buffer_q": 0.00,

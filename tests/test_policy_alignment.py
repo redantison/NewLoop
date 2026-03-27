@@ -258,7 +258,7 @@ class PolicyAlignmentTests(unittest.TestCase):
 
         self.assertTrue(np.all(mort_pay_req_i[active] <= (cap_i[active] + 1e-9)))
 
-    def test_sector_capex_plan_responds_to_total_load_gap_not_only_household_unmet(self):
+    def test_sector_capex_plan_ignores_internal_load_gap_when_household_unmet_is_zero(self):
         cfg = make_cfg()
         sim = NewLoop(cfg)
 
@@ -276,7 +276,7 @@ class PolicyAlignmentTests(unittest.TestCase):
         sim.state["sector_load_gap_info_real_sm_prev"] = 400.0
         capex_with_load_gap = sim._sector_capex_plan_nom("FA", 1.0)
 
-        self.assertGreater(capex_with_load_gap, capex_without_load_gap)
+        self.assertAlmostEqual(capex_with_load_gap, capex_without_load_gap, places=9)
 
     def test_sector_capex_plan_funds_maintenance_before_expansion(self):
         cfg = make_cfg()

@@ -1027,14 +1027,8 @@ class NewLoop:
                 0.0,
                 float(
                     self.state.get(
-                        "sector_load_gap_info_real_sm_prev",
-                        self.state.get(
-                            "sector_load_gap_info_real_prev",
-                            self.state.get(
-                                "sector_unmet_info_real_sm_prev",
-                                self.state.get("sector_unmet_info_real_prev", 0.0),
-                            ),
-                        ),
+                        "sector_unmet_info_real_sm_prev",
+                        self.state.get("sector_unmet_info_real_prev", 0.0),
                     )
                 ),
             )
@@ -1045,14 +1039,8 @@ class NewLoop:
                 0.0,
                 float(
                     self.state.get(
-                        "sector_load_gap_phys_real_sm_prev",
-                        self.state.get(
-                            "sector_load_gap_phys_real_prev",
-                            self.state.get(
-                                "sector_unmet_phys_real_sm_prev",
-                                self.state.get("sector_unmet_phys_real_prev", 0.0),
-                            ),
-                        ),
+                        "sector_unmet_phys_real_sm_prev",
+                        self.state.get("sector_unmet_phys_real_prev", 0.0),
                     )
                 ),
             )
