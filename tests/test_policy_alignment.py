@@ -258,6 +258,85 @@ class PolicyAlignmentTests(unittest.TestCase):
 
         self.assertTrue(np.all(mort_pay_req_i[active] <= (cap_i[active] + 1e-9)))
 
+    def test_sector_capex_plan_ignores_internal_load_gap_when_household_unmet_is_zero(self):
+        cfg = make_cfg()
+        sim = NewLoop(cfg)
+
+        sim.state["price_level"] = 1.0
+        sim.state["sector_capacity_info_real_prev"] = 1000.0
+        sim.state["sector_free_cash_info_prev"] = 1000.0
+        sim.state["sector_unmet_info_real_prev"] = 0.0
+        sim.state["sector_unmet_info_real_sm_prev"] = 0.0
+        sim.state["sector_load_gap_info_real_prev"] = 0.0
+        sim.state["sector_load_gap_info_real_sm_prev"] = 0.0
+
+        capex_without_load_gap = sim._sector_capex_plan_nom("FA", 1.0)
+
+        sim.state["sector_load_gap_info_real_prev"] = 400.0
+        sim.state["sector_load_gap_info_real_sm_prev"] = 400.0
+        capex_with_load_gap = sim._sector_capex_plan_nom("FA", 1.0)
+
+        self.assertAlmostEqual(capex_with_load_gap, capex_without_load_gap, places=9)
+
+    def test_sector_capex_plan_funds_maintenance_before_expansion(self):
+        cfg = make_cfg()
+        sim = NewLoop(cfg)
+
+        sim.state["price_level"] = 1.0
+        sim.nodes["FH"].set("K", 1000.0)
+        sim.state["sector_base_capacity_phys_real"] = 1000.0
+        sim.state["sector_capacity_phys_real_prev"] = sim._sector_capacity_real("FH")
+        maintenance_nom = sim._sector_maintenance_capex_nom("FH", 1.0)
+        reserve_share = float(cfg["parameters"].get("sector_maintenance_reserve_share", 1.0))
+        sim.state["sector_free_cash_phys_prev"] = maintenance_nom + 100.0
+        sim.state["sector_unmet_phys_real_prev"] = 0.0
+        sim.state["sector_unmet_phys_real_sm_prev"] = 0.0
+        sim.state["sector_load_gap_phys_real_prev"] = 0.0
+        sim.state["sector_load_gap_phys_real_sm_prev"] = 0.0
+
+        capex_plan_nom = sim._sector_capex_plan_nom("FH", 1.0)
+
+        self.assertGreaterEqual(capex_plan_nom, (reserve_share * maintenance_nom) - 1e-9)
+
+    def test_sector_dividend_commit_reserves_maintenance_profit_first(self):
+        cfg = make_cfg()
+        sim = NewLoop(cfg)
+
+        sim.state["price_level"] = 1.0
+        sim.nodes["FH"].set("K", 1000.0)
+        sim.state["sector_base_capacity_phys_real"] = 1000.0
+
+        maintenance_nom = sim._sector_maintenance_capex_nom("FH", 1.0)
+        reserve_share = float(cfg["parameters"].get("sector_maintenance_reserve_share", 1.0))
+        distributable = sim._sector_profit_distributable_nom("FH", maintenance_nom + 50.0, 1.0)
+
+        self.assertAlmostEqual(distributable, ((1.0 - reserve_share) * maintenance_nom) + 50.0, places=6)
+
+    def test_mortgage_gap_neutralization_funds_bank_when_gap_exists(self):
+        cfg = make_cfg()
+        params = cfg["parameters"]
+        params["mort_neutralize_trigger_mode"] = "Always"
+        params["mort_neutralize_funding_stack"] = ["ISSUANCE"]
+        params["mort_neutralize_cap_mode"] = "None"
+        params["gov_tax_rebate_rate"] = 0.0
+
+        sim = NewLoop(cfg)
+        sim.step()
+
+        self.assertGreater(float(sim.state.get("mort_gap_total", 0.0)), 0.0)
+        self.assertGreater(float(sim.state.get("bank_mort_neutralize_inflow", 0.0)), 0.0)
+        self.assertGreater(float(sim.state.get("bank_mort_neutralize_principal_inflow", 0.0)), 0.0)
+        self.assertAlmostEqual(
+            float(sim.state.get("bank_mort_neutralize_inflow", 0.0)),
+            float(sim.state.get("mort_gap_total", 0.0)),
+            places=6,
+        )
+        self.assertAlmostEqual(
+            float(sim.state.get("mort_gap_paid_by_issuance", 0.0)),
+            float(sim.state.get("mort_gap_total", 0.0)),
+            places=6,
+        )
+
     def test_mortgage_neutralization_splits_interest_from_principal(self):
         cfg = make_cfg()
         cfg["parameters"]["mort_neutralize_trigger_mode"] = "Always"

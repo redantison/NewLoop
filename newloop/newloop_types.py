@@ -114,6 +114,8 @@ class TickResult:
     private_eq_per_h: float
     hh_deposits_per_h: float
     hh_debt_per_h: float
+    hh_mortgage_debt_per_h: float
+    hh_revolving_debt_per_h: float
     corporate_eq_info_per_h: float
     corporate_eq_physical_per_h: float
     corporate_eq_total_per_h: float

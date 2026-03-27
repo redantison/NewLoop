@@ -76,6 +76,10 @@ class NewLoop:
             "sector_unmet_phys_real_prev": 0.0,
             "sector_unmet_info_real_sm_prev": 0.0,
             "sector_unmet_phys_real_sm_prev": 0.0,
+            "sector_load_gap_info_real_prev": 0.0,
+            "sector_load_gap_phys_real_prev": 0.0,
+            "sector_load_gap_info_real_sm_prev": 0.0,
+            "sector_load_gap_phys_real_sm_prev": 0.0,
             "sector_free_cash_info_prev": 0.0,
             "sector_free_cash_phys_prev": 0.0,
             "sector_capex_queue_info_nom": 0.0,
@@ -590,6 +594,18 @@ class NewLoop:
         hh = self.hh
         hh.ensure_memos()
         mort = _as_np(hh.mortgage_loans, dtype=float)
+        matured = (
+            (mort > 1e-12)
+            & (_as_np(hh.mort_term_q, dtype=float) > 1e-12)
+            & (_as_np(hh.mort_age_q, dtype=float) >= (_as_np(hh.mort_term_q, dtype=float) - 1e-12))
+        )
+        if np.any(matured):
+            matured_total = float(np.sum(np.maximum(0.0, mort[matured])))
+            mort[matured] = 0.0
+            if matured_total > 0.0:
+                bank = self.nodes["BANK"]
+                bank.add("loan_assets", -matured_total)
+                bank.add("equity", -matured_total)
         active = mort > 1e-12
         inactive = ~active
 
@@ -711,6 +727,8 @@ class NewLoop:
 
         enabled = bool(self.params.get("mort_index_enable", False)) and (not self._mortgage_index_disabled())
         active = (mort_vec > 1e-12) & (hh.mort_t0 >= 0)
+        current_t = int(self.state.get("t", 0))
+        just_originated = active & (hh.mort_t0 == current_t)
         max_pay_i = mort_interest_due_i + np.maximum(0.0, mort_vec)
 
         if enabled:
@@ -748,6 +766,13 @@ class NewLoop:
             i_prev = _as_np(hh.mort_index_prev, dtype=float)
             i_curr = i_prev.copy()
             i_curr[active] = i_prev[active] * np.exp(dln_i[active])
+            if np.any(just_originated):
+                # Freshly issued mortgages anchor at this quarter's series level. They
+                # should start with index 1.0 rather than inheriting the pre-issuance
+                # quarter-over-quarter move, and their EWMA state should start clean too.
+                i_curr[just_originated] = 1.0
+                dln_i[just_originated] = 0.0
+                dln_sm_i[just_originated] = 0.0
             i_curr = np.maximum(0.0, i_curr)
 
             mort_pay_req_i = np.zeros(n, dtype=float)
@@ -979,6 +1004,14 @@ class NewLoop:
         surplus_cash = max(0.0, deposits - reserve_nom)
         return float(sweep_share * maturity_signal * surplus_cash)
 
+    def _sector_maintenance_reserve_nom(self, firm_id: str, price_level: float) -> float:
+        reserve_share = max(0.0, min(1.0, float(self.params.get("sector_maintenance_reserve_share", 1.0))))
+        return float(reserve_share * self._sector_maintenance_capex_nom(firm_id, price_level))
+
+    def _sector_profit_distributable_nom(self, firm_id: str, after_tax_profit_nom: float, price_level: float) -> float:
+        maintenance_nom = self._sector_maintenance_reserve_nom(firm_id, price_level)
+        return float(max(0.0, float(after_tax_profit_nom) - maintenance_nom))
+
     def _sector_capex_plan_nom(self, firm_id: str, price_level: float) -> float:
         p_now = max(1e-9, float(price_level))
         half_sat = max(1e-9, float(self.params.get("sector_capex_gap_half_sat", 0.15)))
@@ -990,18 +1023,37 @@ class NewLoop:
 
         if firm_id == "FA":
             prev_capacity = max(0.0, float(self.state.get("sector_capacity_info_real_prev", 0.0)))
-            prev_unmet = max(0.0, float(self.state.get("sector_unmet_info_real_sm_prev", self.state.get("sector_unmet_info_real_prev", 0.0))))
+            prev_unmet = max(
+                0.0,
+                float(
+                    self.state.get(
+                        "sector_unmet_info_real_sm_prev",
+                        self.state.get("sector_unmet_info_real_prev", 0.0),
+                    )
+                ),
+            )
             prev_free_cash = max(0.0, float(self.state.get("sector_free_cash_info_prev", 0.0)))
         else:
             prev_capacity = max(0.0, float(self.state.get("sector_capacity_phys_real_prev", 0.0)))
-            prev_unmet = max(0.0, float(self.state.get("sector_unmet_phys_real_sm_prev", self.state.get("sector_unmet_phys_real_prev", 0.0))))
+            prev_unmet = max(
+                0.0,
+                float(
+                    self.state.get(
+                        "sector_unmet_phys_real_sm_prev",
+                        self.state.get("sector_unmet_phys_real_prev", 0.0),
+                    )
+                ),
+            )
             prev_free_cash = max(0.0, float(self.state.get("sector_free_cash_phys_prev", 0.0)))
 
         maintenance_nom = self._sector_maintenance_capex_nom(firm_id, p_now)
+        maintenance_reserve_nom = self._sector_maintenance_reserve_nom(firm_id, p_now)
         gap_ratio = prev_unmet / max(prev_capacity, 1e-9) if prev_capacity > 1e-12 else 0.0
         gap_signal = gap_ratio / (gap_ratio + half_sat) if gap_ratio > 0.0 else 0.0
         capex_share = share_min + ((share_max - share_min) * gap_signal)
-        capex_budget_nom = prev_free_cash * capex_share
+        maintenance_budget_nom = min(prev_free_cash, maintenance_reserve_nom)
+        expansion_cash_nom = max(0.0, prev_free_cash - maintenance_budget_nom)
+        capex_budget_nom = maintenance_budget_nom + (expansion_cash_nom * capex_share)
 
         if capacity_per_k <= 1e-12:
             expand_need_nom = 0.0
@@ -2198,6 +2250,8 @@ class NewLoop:
                     "mort_interest_due_i": _as_np(mort_terms.get("mort_interest_due_i", np.zeros(hh.n, dtype=float)), dtype=float),
                     "mort_interest_paid_i": _as_np(mort_terms.get("mort_interest_paid_i", np.zeros(hh.n, dtype=float)), dtype=float),
                     "mort_principal_paid_i": _as_np(mort_terms.get("mort_principal_paid_i", np.zeros(hh.n, dtype=float)), dtype=float),
+                    "mort_interest_gap_i": _as_np(mort_terms.get("mort_interest_gap_i", np.zeros(hh.n, dtype=float)), dtype=float),
+                    "mort_principal_gap_i": _as_np(mort_terms.get("mort_principal_gap_i", np.zeros(hh.n, dtype=float)), dtype=float),
                     "mort_gap_i": _as_np(mort_terms.get("mort_gap_i", np.zeros(hh.n, dtype=float)), dtype=float),
                     "mort_gap_total": float(mort_terms.get("mort_gap_total", 0.0)),
                     "mort_pay_req_total": float(mort_terms.get("mort_pay_req_total", 0.0)),
@@ -2804,13 +2858,17 @@ class NewLoop:
         rL = float(self.state.get("policy_rate_q", self.params.get("loan_rate_per_quarter", 0.0)))
         rev_rollover_share = float(self.params.get("revolving_rollover_share", 0.0))
         mort_turnover_enabled = bool(self.params.get("mortgage_turnover_enabled", False))
-        mort_turnover_replace_share = float(self.params.get("mortgage_turnover_replace_share", 0.0))
+        mort_turnover_active_min_remaining_q = float(self.params.get("mortgage_turnover_active_min_remaining_q", 3.0))
+        mort_turnover_target_payment_floor_share = float(
+            self.params.get("mortgage_turnover_target_payment_floor_share", 1.0)
+        )
         mort_turnover_dti_cap = float(self.params.get("mortgage_turnover_dti_cap", 0.40))
         mort_turnover_income_mult_cap = float(self.params.get("mortgage_turnover_income_mult_cap", 4.0))
         mort_turnover_min_wage_q = float(self.params.get("mortgage_turnover_min_wage_q", 1.0))
         rev_pay_rate = max(0.0, min(1.0, rev_pay_rate))
         rev_rollover_share = max(0.0, min(1.0, rev_rollover_share))
-        mort_turnover_replace_share = max(0.0, min(1.0, mort_turnover_replace_share))
+        mort_turnover_active_min_remaining_q = max(0.0, mort_turnover_active_min_remaining_q)
+        mort_turnover_target_payment_floor_share = max(0.0, mort_turnover_target_payment_floor_share)
         mort_turnover_dti_cap = max(0.0, mort_turnover_dti_cap)
         mort_turnover_income_mult_cap = max(0.0, mort_turnover_income_mult_cap)
         mort_turnover_min_wage_q = max(0.0, mort_turnover_min_wage_q)
@@ -2824,6 +2882,16 @@ class NewLoop:
         self.state["rev_rollover_total"] = 0.0
         self.state["mort_turnover_total"] = 0.0
         self.state["mort_turnover_households"] = 0.0
+        self.state["mortgage_turnover_active_count"] = 0.0
+        self.state["mortgage_turnover_payment_gap_total"] = 0.0
+        self.state["mortgage_turnover_payment_gap_remaining_total"] = 0.0
+        self.state["mortgage_turnover_payment_capacity_total"] = 0.0
+        self.state["mortgage_turnover_nonmort_count"] = 0.0
+        self.state["mortgage_turnover_new_eligible_count"] = 0.0
+        self.state["mortgage_turnover_dti_binding_count"] = 0.0
+        self.state["mortgage_turnover_income_binding_count"] = 0.0
+        self.state["mortgage_turnover_zero_dti_room_count"] = 0.0
+        self.state["mortgage_turnover_zero_income_room_count"] = 0.0
 
         if rev_pay_rate > 0.0:
             # desired paydown is a fraction of outstanding revolver
@@ -2858,11 +2926,14 @@ class NewLoop:
             self.nodes["BANK"].add("loan_assets", rev_rollover_total)
             self.nodes["BANK"].add("deposit_liab", rev_rollover_total)
 
-        if mort_turnover_enabled and mort_principal_paid_total > 0.0 and mort_turnover_replace_share > 0.0:
-            mort_gap_total = mort_principal_paid_total * mort_turnover_replace_share
+        if mort_turnover_enabled:
             mort_cap_i = mort_turnover_income_mult_cap * annual_wage_i
             headroom_income_i = np.maximum(0.0, mort_cap_i - mort)
             active_mort_i = mort > 1e-9
+            remaining_q_i = remaining_term(
+                np.asarray(hh.mort_term_q, dtype=float),
+                np.asarray(hh.mort_age_q, dtype=float),
+            )
 
             current_mort_payment_i = np.maximum(0.0, hh.mort_payment_sched_q)
             current_rev_interest_i = np.maximum(0.0, rev * rL)
@@ -2872,66 +2943,73 @@ class NewLoop:
                 self._mortgage_fixed_rate_q(),
                 float(self._mortgage_term_quarters()),
             )
-            headroom_dti_i = dti_room_nom / np.maximum(1e-9, new_unit_payment_q)
-            headroom_i = np.minimum(headroom_income_i, headroom_dti_i)
-            if "mortgage_turnover_target_share" not in self.state:
-                self.state["mortgage_turnover_target_share"] = float(np.mean(active_mort_i)) if active_mort_i.size else 0.0
-            target_share = float(pop_cfg.get("mortgage_share", self.state.get("mortgage_turnover_target_share", 0.0)))
-            target_share = max(0.0, min(1.0, target_share))
+            income_limit_payment_i = headroom_income_i * np.maximum(0.0, new_unit_payment_q)
             desired_mult = float(pop_cfg.get("mortgage_income_mult_median", mort_turnover_income_mult_cap))
             desired_mult = max(0.0, desired_mult)
-            desired_principal_i = np.minimum(headroom_i, desired_mult * annual_wage_i)
-            min_desired_principal_i = 0.25 * np.maximum(0.0, annual_wage_i)
+            income_limit_principal_i = np.minimum(headroom_income_i, desired_mult * annual_wage_i)
+            income_limit_payment_i = np.minimum(
+                income_limit_payment_i,
+                income_limit_principal_i * np.maximum(0.0, new_unit_payment_q),
+            )
+            desired_payment_i = np.minimum(dti_room_nom, income_limit_payment_i)
+            desired_principal_i = desired_payment_i / np.maximum(1e-9, new_unit_payment_q)
+            min_desired_payment_i = (0.25 * np.maximum(0.0, annual_wage_i)) * np.maximum(0.0, new_unit_payment_q)
+            active_for_target_i = active_mort_i & (remaining_q_i > mort_turnover_active_min_remaining_q)
 
             allocation = np.zeros_like(mort, dtype=float)
-            remaining = float(mort_gap_total)
-            target_active_count = int(round(target_share * float(n)))
-            current_active_count = int(np.sum(active_mort_i))
-            needed_new_count = max(0, target_active_count - current_active_count)
+            current_sched_total = float(np.sum(current_mort_payment_i))
+            if "mortgage_turnover_payment_floor_total" not in self.state:
+                self.state["mortgage_turnover_payment_floor_total"] = float(current_sched_total)
+            payment_floor_total = mort_turnover_target_payment_floor_share * float(
+                self.state.get("mortgage_turnover_payment_floor_total", current_sched_total)
+            )
+            payment_gap_total = max(0.0, payment_floor_total - current_sched_total)
+            self.state["mortgage_turnover_payment_floor_total"] = float(
+                self.state.get("mortgage_turnover_payment_floor_total", current_sched_total)
+            )
+            self.state["mortgage_turnover_payment_gap_total"] = float(payment_gap_total)
+            self.state["mortgage_turnover_active_count"] = float(np.sum(active_for_target_i))
+            nonmort_mask = ~active_mort_i
+            base_new_pool = nonmort_mask & (wages_i >= mort_turnover_min_wage_q)
+            self.state["mortgage_turnover_nonmort_count"] = float(np.sum(nonmort_mask))
+            self.state["mortgage_turnover_zero_dti_room_count"] = float(np.sum(base_new_pool & (dti_room_nom <= 1e-9)))
+            self.state["mortgage_turnover_zero_income_room_count"] = float(np.sum(base_new_pool & (income_limit_principal_i <= 1e-9)))
 
             new_eligible = (
-                (~active_mort_i)
+                nonmort_mask
                 & (wages_i >= mort_turnover_min_wage_q)
-                & (desired_principal_i > 1e-9)
+                & (desired_payment_i > 1e-9)
             )
-            if needed_new_count > 0 and np.any(new_eligible):
+            self.state["mortgage_turnover_new_eligible_count"] = float(np.sum(new_eligible))
+            self.state["mortgage_turnover_dti_binding_count"] = float(
+                np.sum(new_eligible & (dti_room_nom <= income_limit_payment_i))
+            )
+            self.state["mortgage_turnover_income_binding_count"] = float(
+                np.sum(new_eligible & (income_limit_payment_i < dti_room_nom))
+            )
+            self.state["mortgage_turnover_payment_capacity_total"] = float(
+                np.sum(np.maximum(0.0, desired_payment_i[new_eligible]))
+            )
+            if payment_gap_total > 1e-9 and np.any(new_eligible):
                 candidate_idx = np.where(new_eligible)[0]
                 # Favor lower-income households that can support a mortgage, so
                 # stronger income support broadens access rather than concentrating
                 # credit only in the upper tail.
                 ranked_new_idx = candidate_idx[np.argsort(annual_wage_i[candidate_idx], kind="stable")]
-                new_count = 0
                 for idx in ranked_new_idx.tolist():
-                    if remaining <= 1e-9 or new_count >= needed_new_count:
+                    if payment_gap_total <= 1e-9:
                         break
-                    desired = float(desired_principal_i[idx])
-                    min_desired = float(min_desired_principal_i[idx])
-                    if desired <= 1e-9 or remaining < max(1e-9, min_desired):
+                    desired_payment = float(desired_payment_i[idx])
+                    min_desired_payment = float(min_desired_payment_i[idx])
+                    if desired_payment <= 1e-9:
                         continue
-                    add = min(desired, remaining)
+                    add_payment = min(desired_payment, payment_gap_total)
+                    if add_payment < max(1e-9, min_desired_payment):
+                        continue
+                    add = add_payment / max(1e-9, float(new_unit_payment_q[idx]))
                     allocation[idx] = add
-                    remaining = max(0.0, remaining - add)
-                    new_count += 1
-
-            # If there is still recycled principal left after filling the
-            # target-incidence gap, allow limited refinancing/top-up for
-            # existing mortgagors with the strongest room.
-            existing_eligible = active_mort_i & (headroom_i > 1e-9)
-            if remaining > 1e-9 and np.any(existing_eligible):
-                score_i = np.zeros_like(mort, dtype=float)
-                score_i[existing_eligible] = headroom_i[existing_eligible] / (1.0 + np.maximum(0.0, mort[existing_eligible]))
-                ranked_existing_idx = np.argsort(-score_i)
-                for idx in ranked_existing_idx.tolist():
-                    if remaining <= 1e-9:
-                        break
-                    if not bool(existing_eligible[idx]):
-                        continue
-                    room = float(max(0.0, headroom_i[idx] - allocation[idx]))
-                    if room <= 1e-9:
-                        continue
-                    add = min(room, remaining)
-                    allocation[idx] += add
-                    remaining = max(0.0, remaining - add)
+                    payment_gap_total = max(0.0, payment_gap_total - add_payment)
+            self.state["mortgage_turnover_payment_gap_remaining_total"] = float(payment_gap_total)
 
             mort_turnover_total = float(np.sum(np.maximum(0.0, allocation)))
             if mort_turnover_total > 0.0:
@@ -2998,16 +3076,18 @@ class NewLoop:
         p_now = max(1e-9, float(self.state.get("price_level", 1.0)))
         payout_firms_info = self._update_sector_payout_rate("FA")
         payout_firms_phys = self._update_sector_payout_rate("FH")
-        surplus_dist_info = self._sector_surplus_distribution_nom("FA", p_now)
-        surplus_dist_phys = self._sector_surplus_distribution_nom("FH", p_now)
         payout_bank = max(0.0, min(1.0, float(self.params.get("dividend_payout_rate_bank", 1.0))))
         service_floor = max(1e-9, float(self.params.get("sector_dividend_service_floor", 0.95)))
         service_ratio_info = min(1.0, float(sol.get("hh_sales_fa_real", 0.0)) / max(1e-9, float(sol.get("hh_demand_fa_real", 0.0)))) if float(sol.get("hh_demand_fa_real", 0.0)) > 1e-12 else 1.0
         service_ratio_phys = min(1.0, float(sol.get("hh_sales_fh_real", 0.0)) / max(1e-9, float(sol.get("hh_demand_fh_real", 0.0)))) if float(sol.get("hh_demand_fh_real", 0.0)) > 1e-12 else 1.0
         stress_scale_info = max(0.0, min(1.0, service_ratio_info / service_floor))
         stress_scale_phys = max(0.0, min(1.0, service_ratio_phys / service_floor))
-        self.nodes["FA"].memo["dividend_commit_prev"] = (payout_firms_info * float(sol.get("p_fa", 0.0)) * stress_scale_info) + surplus_dist_info
-        self.nodes["FH"].memo["dividend_commit_prev"] = (payout_firms_phys * float(sol.get("p_fh", 0.0)) * stress_scale_phys) + surplus_dist_phys
+        profit_dividend_base_info = self._sector_profit_distributable_nom("FA", float(sol.get("p_fa", 0.0)), p_now)
+        profit_dividend_base_phys = self._sector_profit_distributable_nom("FH", float(sol.get("p_fh", 0.0)), p_now)
+        surplus_dist_info = self._sector_surplus_distribution_nom("FA", p_now)
+        surplus_dist_phys = self._sector_surplus_distribution_nom("FH", p_now)
+        self.nodes["FA"].memo["dividend_commit_prev"] = (payout_firms_info * profit_dividend_base_info * stress_scale_info) + surplus_dist_info
+        self.nodes["FH"].memo["dividend_commit_prev"] = (payout_firms_phys * profit_dividend_base_phys * stress_scale_phys) + surplus_dist_phys
         self.nodes["BANK"].memo["dividend_commit_prev"] = payout_bank * float(sol.get("bank_profit", 0.0))
         self.nodes["FA"].memo["revenue_prev"] = float(sol.get("rev_fa", 0.0))
         self.nodes["FH"].memo["revenue_prev"] = float(sol.get("rev_fh", 0.0))
@@ -3019,19 +3099,41 @@ class NewLoop:
         self.state["fund_dividend_ownership_bk_prev"] = float(max(0.0, min(1.0, self.nodes["FUND"].get("shares_BANK", 0.0) / max(1e-9, self.nodes["BANK"].get("shares_outstanding", 0.0)))))
         unmet_info_real = float(max(0.0, hh_demand_fa_real - hh_sales_fa_real))
         unmet_phys_real = float(max(0.0, hh_demand_fh_real - hh_sales_fh_real))
+        load_info_real = (
+            float(sol.get("hh_demand_fa_real", 0.0))
+            + float(sol.get("supplier_sales_fa_real", 0.0))
+            + (float(sol.get("ums_recycle_fa_nom", 0.0)) / p_now)
+        )
+        load_phys_real = (
+            float(sol.get("hh_demand_fh_real", 0.0))
+            + float(sol.get("supplier_sales_fh_real", 0.0))
+            + (float(sol.get("ums_recycle_fh_nom", 0.0)) / p_now)
+        )
+        load_gap_info_real = float(max(0.0, load_info_real - capacity_fa_real))
+        load_gap_phys_real = float(max(0.0, load_phys_real - capacity_fh_real))
         self.state["sector_unmet_info_real_prev"] = float(unmet_info_real)
         self.state["sector_unmet_phys_real_prev"] = float(unmet_phys_real)
+        self.state["sector_load_gap_info_real_prev"] = float(load_gap_info_real)
+        self.state["sector_load_gap_phys_real_prev"] = float(load_gap_phys_real)
         unmet_alpha = max(0.0, min(1.0, float(self.params.get("sector_capex_unmet_ewma_alpha", 1.0))))
         prev_unmet_info_sm = float(self.state.get("sector_unmet_info_real_sm_prev", unmet_info_real))
         prev_unmet_phys_sm = float(self.state.get("sector_unmet_phys_real_sm_prev", unmet_phys_real))
+        prev_load_gap_info_sm = float(self.state.get("sector_load_gap_info_real_sm_prev", load_gap_info_real))
+        prev_load_gap_phys_sm = float(self.state.get("sector_load_gap_phys_real_sm_prev", load_gap_phys_real))
         if int(self.state.get("t", 0)) <= 0:
             next_unmet_info_sm = unmet_info_real
             next_unmet_phys_sm = unmet_phys_real
+            next_load_gap_info_sm = load_gap_info_real
+            next_load_gap_phys_sm = load_gap_phys_real
         else:
             next_unmet_info_sm = (unmet_alpha * unmet_info_real) + ((1.0 - unmet_alpha) * prev_unmet_info_sm)
             next_unmet_phys_sm = (unmet_alpha * unmet_phys_real) + ((1.0 - unmet_alpha) * prev_unmet_phys_sm)
+            next_load_gap_info_sm = (unmet_alpha * load_gap_info_real) + ((1.0 - unmet_alpha) * prev_load_gap_info_sm)
+            next_load_gap_phys_sm = (unmet_alpha * load_gap_phys_real) + ((1.0 - unmet_alpha) * prev_load_gap_phys_sm)
         self.state["sector_unmet_info_real_sm_prev"] = float(max(0.0, next_unmet_info_sm))
         self.state["sector_unmet_phys_real_sm_prev"] = float(max(0.0, next_unmet_phys_sm))
+        self.state["sector_load_gap_info_real_sm_prev"] = float(max(0.0, next_load_gap_info_sm))
+        self.state["sector_load_gap_phys_real_sm_prev"] = float(max(0.0, next_load_gap_phys_sm))
         self.state["sector_service_ratio_info_prev"] = float(service_ratio_info)
         self.state["sector_service_ratio_phys_prev"] = float(service_ratio_phys)
         self.state["sector_free_cash_info_prev"] = float(max(0.0, self.nodes["FA"].get("deposits", 0.0)))
@@ -3205,7 +3307,9 @@ class NewLoop:
             # Direct household equity claims are allocated by baseline wage weights because
             # ownership is tracked at HH aggregate. Trust value is split equally per household.
             dep_i = _as_np(self.hh.deposits, dtype=float)
-            loan_i = _as_np(self.hh.mortgage_loans, dtype=float) + _as_np(self.hh.revolving_loans, dtype=float)
+            mort_i = _as_np(self.hh.mortgage_loans, dtype=float)
+            rev_i = _as_np(self.hh.revolving_loans, dtype=float)
+            loan_i = mort_i + rev_i
 
             private_equity_total = 0.0
             if dep_i.size and (dep_i.size == loan_i.size):
@@ -3454,6 +3558,8 @@ class NewLoop:
                 private_eq_per_h=float(private_equity_total) / float(self.hh.n),
                 hh_deposits_per_h=float(np.sum(dep_i)) / float(self.hh.n),
                 hh_debt_per_h=float(np.sum(loan_i)) / float(self.hh.n),
+                hh_mortgage_debt_per_h=float(np.sum(mort_i)) / float(self.hh.n),
+                hh_revolving_debt_per_h=float(np.sum(rev_i)) / float(self.hh.n),
                 corporate_eq_info_per_h=float(fa_broad_equity_proxy_hist) / float(self.hh.n),
                 corporate_eq_physical_per_h=float(fh_broad_equity_proxy_hist) / float(self.hh.n),
                 corporate_eq_total_per_h=float(fa_broad_equity_proxy_hist + fh_broad_equity_proxy_hist) / float(self.hh.n),

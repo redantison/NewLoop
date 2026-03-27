@@ -25,6 +25,8 @@ METRIC_LABELS: Dict[str, str] = {
     "private_eq_per_h": "Private Equity / Household",
     "hh_deposits_per_h": "Household Deposits / Household",
     "hh_debt_per_h": "Household Debt / Household",
+    "hh_mortgage_debt_per_h": "Household Mortgage Debt / Household",
+    "hh_revolving_debt_per_h": "Household Revolving Debt / Household",
     "private_roe_q": "Private Payout Yield / Quarter",
     "private_broad_roe_q": "Private Broad ROE (Annualized %)",
     "bank_broad_roe_q": "Bank Broad ROE (Annualized %)",
@@ -888,6 +890,8 @@ def plot_wealth_distributions_full_zoom(
     direct_equity = [float(row.get("private_eq_per_h", 0.0)) for row in rows]
     trust_value = [float(row.get("trust_value_per_h", 0.0)) for row in rows]
     debt = [-float(row.get("hh_debt_per_h", 0.0)) for row in rows]
+    mortgage_debt = [-float(row.get("hh_mortgage_debt_per_h", 0.0)) for row in rows]
+    revolving_debt = [-float(row.get("hh_revolving_debt_per_h", 0.0)) for row in rows]
     net_worth = [
         float(dep + eq + trust + debt_val)
         for dep, eq, trust, debt_val in zip(deposits, direct_equity, trust_value, debt)
@@ -898,6 +902,8 @@ def plot_wealth_distributions_full_zoom(
     ax_left.plot(t, direct_equity, label="Direct Equity", color="#ff7f0e", linewidth=2.0)
     ax_left.plot(t, trust_value, label="Trust Value", color="#2ca02c", linewidth=2.0)
     ax_left.plot(t, debt, label="Debt", color="#d62728", linewidth=2.0)
+    ax_left.plot(t, mortgage_debt, label="Mortgage Debt", color="#d62728", linewidth=1.8, linestyle=":")
+    ax_left.plot(t, revolving_debt, label="Revolving Debt", color="#8c564b", linewidth=1.8, linestyle=":")
     ax_left.plot(t, net_worth, label="Net Worth", color="#9467bd", linewidth=2.4, linestyle="--")
     ax_left.axhline(0.0, color="0.4", linewidth=1.0, alpha=0.6)
     ax_left.set_title(_title_with_mode("Household Wealth Reservoirs", support_mode))

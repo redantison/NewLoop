@@ -59,12 +59,13 @@ config = {
         "sector_supplier_share_info_for_info_capex": 0.55,
         "sector_supplier_share_info_for_phys_capex": 0.15,
         "sector_capex_share_min": 0.05,
-        "sector_capex_share_max": 0.35,
-        "sector_capex_gap_half_sat": 0.15,
-        "sector_capex_gap_close_rate": 0.25,
+        "sector_capex_share_max": 0.50,
+        "sector_capex_gap_half_sat": 0.08,
+        "sector_capex_gap_close_rate": 0.40,
         "sector_capex_growth_cap_rate_q": 0.08,
-        "sector_capex_unmet_ewma_alpha": 0.25,
-        "sector_install_rate_q": 0.05,
+        "sector_capex_unmet_ewma_alpha": 0.10,
+        "sector_install_rate_q": 0.07,
+        "sector_maintenance_reserve_share": 0.75,
         "sector_dividend_cash_buffer_q": 0.00,
         "sector_dividend_service_floor": 0.95,
         "firm_overhead_rate_info": 0.15,
@@ -130,7 +131,8 @@ config = {
         "mortgage_term_quarters": 60,           # 15-year fixed mortgage
         "mortgage_principal_pay_rate_q": 0.01,   # 1%/q max paydown if cash available
         "mortgage_turnover_enabled": True,      # replace amortized mortgage stock by issuing new mortgages to eligible households
-        "mortgage_turnover_replace_share": 1.0,
+        "mortgage_turnover_active_min_remaining_q": 3,  # active mortgage means > this many payments remain
+        "mortgage_turnover_target_payment_floor_share": 1.0,  # target aggregate scheduled mortgage payments as share of startup level
         "mortgage_turnover_dti_cap": 0.40,
         "mortgage_turnover_income_mult_cap": 4.0,
         "mortgage_turnover_min_wage_q": 1.0,

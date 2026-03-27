@@ -850,18 +850,6 @@ def main() -> None:
         "(economy totals, in the currently selected nominal/real display mode)."
     )
 
-    fund_flow_fig, (ax_fund_inflows, ax_fund_blank) = plt.subplots(1, 2, figsize=(13, 4.5), constrained_layout=True)
-    plot_fund_inflows(
-        rows,
-        support_mode=support_mode,
-        ax=ax_fund_inflows,
-    )
-    ax_fund_blank.axis("off")
-    if config_stale:
-        _mark_figure_stale(fund_flow_fig)
-    st.pyplot(fund_flow_fig, clear_figure=False)
-    plt.close(fund_flow_fig)
-
     equity_fig, (ax_equity, ax_recycling) = plt.subplots(1, 2, figsize=(13, 4.5), constrained_layout=True)
     plot_metric_lines(
         rows,
