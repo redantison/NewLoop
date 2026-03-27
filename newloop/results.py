@@ -55,6 +55,7 @@ def _population_distribution_snapshot(sim: NewLoop) -> Dict[str, Any] | None:
     n = int(hh.n)
 
     dep_i = np.asarray(hh.deposits, dtype=float)
+    housing_i = np.asarray(hh.housing_escrow, dtype=float)
     loan_i = np.asarray(hh.mortgage_loans, dtype=float) + np.asarray(hh.revolving_loans, dtype=float)
     income_i = np.asarray(hh.prev_income, dtype=float)
     if income_i.shape[0] != n:
@@ -100,7 +101,7 @@ def _population_distribution_snapshot(sim: NewLoop) -> Dict[str, Any] | None:
     )
     equity_i = weights * hh_equity_total
     trust_i = np.full(n, trust_value_total / float(n), dtype=float)
-    wealth_i = dep_i + equity_i + trust_i - loan_i
+    wealth_i = dep_i + housing_i + equity_i + trust_i - loan_i
 
     return {
         "price_level": float(p_now),
@@ -461,6 +462,7 @@ def _sync_startup_household_state(sim: NewLoop) -> None:
         sim.population.mpc_q = np.asarray(hh.mpc_q, dtype=float).astype(float).tolist()
 
     sim.nodes["HH"].set("deposits", hh.sum_deposits())
+    sim.nodes["HOUSING"].set("deposits", float(sim.state.get("housing_financing_deposits_total", 0.0)))
     bank = sim.nodes["BANK"]
     dep_liab = float(sim._sum_deposits_all())
     bank.set("deposit_liab", dep_liab)
@@ -725,6 +727,7 @@ def _neutral_warmup_regime_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
     params["disable_income_support"] = True
     params["disable_trust"] = True
     params["disable_mortgage_relief"] = True
+    params["mortgage_turnover_enabled"] = False
     params["gov_tax_rebate_rate"] = 0.0
     params["send_fund_residual_to_gov"] = False
     params["fund_residual_to_gov_share"] = 0.0
@@ -753,6 +756,7 @@ def _build_startup_sim(cfg: Dict[str, Any]) -> tuple[NewLoop, int, Dict[str, Any
                 warmup_report["error"] = f"{type(exc).__name__}: {exc}"
                 break
             warmup_report["completed_quarters"] = int(idx + 1)
+        _prepare_startup_sim(sim)
         sim.params = copy.deepcopy(cfg["parameters"])
         sim.income_support_policy = make_income_support_policy(sim.params)
 

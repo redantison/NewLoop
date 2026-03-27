@@ -831,7 +831,7 @@ def main() -> None:
 
     st.caption(
         "Gini labels: Disposable is the model's post-policy household income measure. "
-        "Wealth is deposits plus allocated household equity claims minus loans."
+        "Wealth is deposits plus household housing value plus allocated household equity claims minus loans."
     )
     st.caption(
         "Mortgage-burden metrics use required mortgage payment divided by pre-debt disposable income "

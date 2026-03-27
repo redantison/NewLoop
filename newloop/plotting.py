@@ -24,6 +24,7 @@ METRIC_LABELS: Dict[str, str] = {
     "gini_wealth": "Gini (Wealth)",
     "private_eq_per_h": "Private Equity / Household",
     "hh_deposits_per_h": "Household Deposits / Household",
+    "hh_housing_value_per_h": "Household Housing Value / Household",
     "hh_debt_per_h": "Household Debt / Household",
     "hh_mortgage_debt_per_h": "Household Mortgage Debt / Household",
     "hh_revolving_debt_per_h": "Household Revolving Debt / Household",
@@ -887,18 +888,20 @@ def plot_wealth_distributions_full_zoom(
     fig, axs = plt.subplots(1, 2, figsize=(13, 4.5), constrained_layout=True)
     t = [int(row.get("t", idx)) for idx, row in enumerate(rows)]
     deposits = [float(row.get("hh_deposits_per_h", 0.0)) for row in rows]
+    housing_value = [float(row.get("hh_housing_value_per_h", 0.0)) for row in rows]
     direct_equity = [float(row.get("private_eq_per_h", 0.0)) for row in rows]
     trust_value = [float(row.get("trust_value_per_h", 0.0)) for row in rows]
     debt = [-float(row.get("hh_debt_per_h", 0.0)) for row in rows]
     mortgage_debt = [-float(row.get("hh_mortgage_debt_per_h", 0.0)) for row in rows]
     revolving_debt = [-float(row.get("hh_revolving_debt_per_h", 0.0)) for row in rows]
     net_worth = [
-        float(dep + eq + trust + debt_val)
-        for dep, eq, trust, debt_val in zip(deposits, direct_equity, trust_value, debt)
+        float(dep + hv + eq + trust + debt_val)
+        for dep, hv, eq, trust, debt_val in zip(deposits, housing_value, direct_equity, trust_value, debt)
     ]
 
     ax_left = axs[0]
     ax_left.plot(t, deposits, label="Deposits", color="#1f77b4", linewidth=2.0)
+    ax_left.plot(t, housing_value, label="Housing Value", color="#17becf", linewidth=2.0)
     ax_left.plot(t, direct_equity, label="Direct Equity", color="#ff7f0e", linewidth=2.0)
     ax_left.plot(t, trust_value, label="Trust Value", color="#2ca02c", linewidth=2.0)
     ax_left.plot(t, debt, label="Debt", color="#d62728", linewidth=2.0)
