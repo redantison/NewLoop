@@ -135,7 +135,7 @@ config = {
         "mortgage_turnover_target_payment_floor_share": 1.0,  # target aggregate scheduled mortgage payments as share of startup level
         "mortgage_turnover_dti_cap": 0.40,
         "mortgage_turnover_income_mult_cap": 4.0,
-        "mortgage_turnover_support_income_weight": 0.0,
+        "mortgage_turnover_support_income_weight": 0.25,
         "mortgage_turnover_min_wage_q": 1.0,
         "send_fund_residual_to_gov": False, # legacy compatibility toggle for a full FUND residual sweep
         "fund_residual_to_gov_share": 0.0,  # optional share of residual FUND deposits sent to GOV after debt-first treatment

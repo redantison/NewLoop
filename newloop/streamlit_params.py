@@ -31,6 +31,7 @@ class ParamControl:
 POLICY_SWITCHES_SECTION = "Policy Switches"
 STARTUP_SECTION = "Startup"
 INCOME_SUPPORT_SECTION = "Income Support"
+MORTGAGES_SECTION = "Mortgages"
 INCOME_SUPPORT_MODE_PATH: tuple[str, ...] = ("income_support_mode",)
 INCOME_SUPPORT_MODE_WIDGET_KEY = "param__income_support_mode"
 
@@ -41,6 +42,7 @@ SECTION_ORDER: tuple[str, ...] = (
     "Trust",
     "Taxes",
     INCOME_SUPPORT_SECTION,
+    MORTGAGES_SECTION,
     "Automation",
     "Price & Capital",
     "Population",
@@ -203,6 +205,12 @@ PARAMETER_CONTROLS: tuple[ParamControl, ...] = (
     ParamControl(("ubi_target_percentile",), "UBI Target Percentile", INCOME_SUPPORT_SECTION, "float", 0.0, 100.0, 0.5, support_modes=("UBI",)),
     ParamControl(("ubi_anchor_income_basis",), "UBI Anchor Income Basis", INCOME_SUPPORT_SECTION, "select", options=("market_income", "wages_only"), support_modes=("UBI",)),
     ParamControl(("ubi_index_series",), "UBI Index Series", INCOME_SUPPORT_SECTION, "select", options=("P_producer", "C_consumer"), support_modes=("UBI",)),
+    ParamControl(("mortgage_turnover_target_payment_floor_share",), "Turnover Payment Floor Share", MORTGAGES_SECTION, "float", 0.0, 2.0, 0.01, help_text="Target aggregate scheduled mortgage-payment flow as a share of the startup baseline."),
+    ParamControl(("mortgage_turnover_dti_cap",), "Turnover DTI Cap", MORTGAGES_SECTION, "float", 0.0, 1.0, 0.01, help_text="Maximum quarterly debt-service share of underwriting income used for new mortgage turnover originations."),
+    ParamControl(("mortgage_turnover_income_mult_cap",), "Turnover Income Multiple Cap", MORTGAGES_SECTION, "float", 0.0, 10.0, 0.25, help_text="Maximum mortgage principal as a multiple of annual underwriting income."),
+    ParamControl(("mortgage_turnover_support_income_weight",), "Support Income Weight", MORTGAGES_SECTION, "float", 0.0, 1.0, 0.05, help_text="Share of current per-household income support counted toward mortgage turnover underwriting income."),
+    ParamControl(("mortgage_turnover_min_wage_q",), "Turnover Minimum Income (q)", MORTGAGES_SECTION, "float", 0.0, 20.0, 0.25, help_text="Minimum quarterly underwriting income required for a mortgage-free household to enter the new-origination pool."),
+    ParamControl(("mortgage_turnover_active_min_remaining_q",), "Active Mortgage Min Remaining (q)", MORTGAGES_SECTION, "int", 0, 20, 1, help_text="Mortgages with this many or fewer payments remaining no longer count as active for turnover targeting."),
     ParamControl(("automation_path",), "Automation Path", "Automation", "select", options=("two_hump", "linear")),
     ParamControl(("hh_demand_info_share",), "HH Demand Share: Info", "Automation", "float", 0.0, 1.0, 0.01, help_text="Fixed household demand share allocated to the Info sector before any fulfillment rationing."),
     ParamControl(("automation_horizon_quarters",), "Automation Horizon Quarters", "Automation", "float", 4.0, 240.0, 1.0),
