@@ -693,6 +693,48 @@ def _prepare_startup_sim(sim: NewLoop) -> Dict[str, Any] | None:
     return reset_stats
 
 
+def _reseed_visible_start_capacity(sim: NewLoop) -> Dict[str, Any] | None:
+    """Re-anchor sector capacity after neutral warmup using visible-regime demand."""
+    snapshot = _startup_solver_snapshot(sim)
+    if snapshot is None:
+        return None
+
+    sol = snapshot.get("sol")
+    if not isinstance(sol, dict):
+        return None
+
+    p_now = max(float(sim.state.get("price_level", 1.0)), 1e-9)
+    hh_demand_fa_real = float(sol.get("hh_demand_fa_real", 0.0))
+    hh_demand_fh_real = float(sol.get("hh_demand_fh_real", 0.0))
+    supplier_fa_real = float(sol.get("supplier_sales_fa_real", 0.0))
+    supplier_fh_real = float(sol.get("supplier_sales_fh_real", 0.0))
+    ums_fa_real = float(sol.get("ums_recycle_fa_nom", 0.0)) / p_now
+    ums_fh_real = float(sol.get("ums_recycle_fh_nom", 0.0)) / p_now
+
+    sim.state.pop("sector_base_capacity_info_real", None)
+    sim.state.pop("sector_base_capacity_phys_real", None)
+    sim._ensure_sector_capacity_anchors(
+        hh_demand_fa_real,
+        hh_demand_fh_real,
+        supplier_fa_real=supplier_fa_real,
+        supplier_fh_real=supplier_fh_real,
+        ums_fa_real=ums_fa_real,
+        ums_fh_real=ums_fh_real,
+    )
+    sim.state["sector_capacity_info_real_prev"] = float(sim._sector_capacity_real("FA"))
+    sim.state["sector_capacity_phys_real_prev"] = float(sim._sector_capacity_real("FH"))
+    return {
+        "hh_demand_fa_real": float(hh_demand_fa_real),
+        "hh_demand_fh_real": float(hh_demand_fh_real),
+        "supplier_fa_real": float(supplier_fa_real),
+        "supplier_fh_real": float(supplier_fh_real),
+        "ums_fa_real": float(ums_fa_real),
+        "ums_fh_real": float(ums_fh_real),
+        "capacity_info_real": float(sim._sector_capacity_real("FA")),
+        "capacity_phys_real": float(sim._sector_capacity_real("FH")),
+    }
+
+
 def _neutral_warmup_regime_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
     """Return a copy of cfg with policy actions disabled for neutral warm-up."""
     warm_cfg = copy.deepcopy(cfg)
@@ -733,6 +775,9 @@ def _build_startup_sim(cfg: Dict[str, Any]) -> tuple[NewLoop, int, Dict[str, Any
         _prepare_startup_sim(sim)
         sim.params = copy.deepcopy(cfg["parameters"])
         sim.income_support_policy = make_income_support_policy(sim.params)
+        reseed_stats = _reseed_visible_start_capacity(sim)
+        if reseed_stats is not None:
+            warmup_report["visible_start_capacity_reseed"] = dict(reseed_stats)
 
     return sim, len(sim.history), warmup_report
 

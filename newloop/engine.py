@@ -897,13 +897,15 @@ class NewLoop:
         hh_demand_fh_real: float,
         supplier_fa_real: float = 0.0,
         supplier_fh_real: float = 0.0,
+        ums_fa_real: float = 0.0,
+        ums_fh_real: float = 0.0,
     ) -> None:
         if ("sector_base_capacity_info_real" in self.state) and ("sector_base_capacity_phys_real" in self.state):
             return
 
         buffer = max(0.0, float(self.params.get("sector_capacity_initial_buffer", 0.05)))
-        target_fa = max(0.0, float(hh_demand_fa_real) + float(supplier_fa_real))
-        target_fh = max(0.0, float(hh_demand_fh_real) + float(supplier_fh_real))
+        target_fa = max(0.0, float(hh_demand_fa_real) + float(supplier_fa_real) + float(ums_fa_real))
+        target_fh = max(0.0, float(hh_demand_fh_real) + float(supplier_fh_real) + float(ums_fh_real))
         if target_fa <= 1e-12 and target_fh <= 1e-12 and self.hh is not None and self.hh.n > 0:
             base_real = _as_np(self.hh.base_real_cons_q, dtype=float)
             target_total = float(np.sum(np.maximum(0.0, base_real)))
@@ -1106,20 +1108,35 @@ class NewLoop:
         ums_share_fa = max(0.0, min(1.0, float(ums_share_fa)))
         ums_recycle_fa_nom = ums_recycle_total_nom * ums_share_fa
         ums_recycle_fh_nom = ums_recycle_total_nom - ums_recycle_fa_nom
+        ums_recycle_fa_real = ums_recycle_fa_nom / p_now
+        ums_recycle_fh_real = ums_recycle_fh_nom / p_now
+
+        capex_fa_request_nom = self._sector_capex_plan_nom("FA", p_now)
+        capex_fh_request_nom = self._sector_capex_plan_nom("FH", p_now)
+        supplier_share_info_for_info = self._sector_supplier_share_info("FA")
+        supplier_share_info_for_phys = self._sector_supplier_share_info("FH")
+        supplier_fa_seed_nom = (
+            (supplier_share_info_for_info * capex_fa_request_nom)
+            + (supplier_share_info_for_phys * capex_fh_request_nom)
+        )
+        supplier_fh_seed_nom = (
+            ((1.0 - supplier_share_info_for_info) * capex_fa_request_nom)
+            + ((1.0 - supplier_share_info_for_phys) * capex_fh_request_nom)
+        )
 
         self._ensure_sector_capacity_anchors(
             hh_demand_fa_real,
             hh_demand_fh_real,
+            supplier_fa_real=(supplier_fa_seed_nom / p_now),
+            supplier_fh_real=(supplier_fh_seed_nom / p_now),
+            ums_fa_real=ums_recycle_fa_real,
+            ums_fh_real=ums_recycle_fh_real,
         )
         capacity_fa_real = self._sector_capacity_real("FA")
         capacity_fh_real = self._sector_capacity_real("FH")
 
-        capex_fa_request_nom = self._sector_capex_plan_nom("FA", p_now)
-        capex_fh_request_nom = self._sector_capex_plan_nom("FH", p_now)
         capex_queue_info_prev = max(0.0, float(self.state.get("sector_capex_queue_info_nom", 0.0)))
         capex_queue_phys_prev = max(0.0, float(self.state.get("sector_capex_queue_phys_nom", 0.0)))
-        supplier_share_info_for_info = self._sector_supplier_share_info("FA")
-        supplier_share_info_for_phys = self._sector_supplier_share_info("FH")
 
         install_limit_fa_nom = self._sector_installation_limit_nom("FA", p_now, capacity_fa_real)
         install_limit_fh_nom = self._sector_installation_limit_nom("FH", p_now, capacity_fh_real)
