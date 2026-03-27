@@ -105,9 +105,11 @@ COMPACT_NUMBER_COLUMNS = {
 DECIMAL_COLUMNS = {"price_level", "private_inv_cov"}
 
 DISPLAY_VALUE_MODES: tuple[str, str] = ("nominal", "real")
-CONTROL_DEFAULTS_VERSION = 11
+CONTROL_DEFAULTS_VERSION = 12
 UBI_PERCENTILE_PARAM_KEY = "param__ubi_target_percentile"
 UBI_PERCENTILE_UI_KEY = "ui__ubi_target_percentile"
+MORTGAGE_RATE_PARAM_PATH: tuple[str, ...] = ("mortgage_fixed_rate_q",)
+MORTGAGE_TERM_PARAM_PATH: tuple[str, ...] = ("mortgage_term_quarters",)
 _TITLE_MODE_SUFFIX_RE = re.compile(r"\s+\((?:UIS|UBI|Stale)\)\s*$", re.IGNORECASE)
 STARTUP_ALIGNMENT_PATH: tuple[str, ...] = ("startup_buffer_alignment_enabled",)
 
@@ -117,6 +119,11 @@ def _annualize_quarterly_rate(value: float) -> float:
     if q <= -1.0:
         return float("nan")
     return (1.0 + q) ** 4 - 1.0
+
+
+def _quarterly_rate_from_annual(value: float) -> float:
+    annual = max(-0.999999, float(value))
+    return (1.0 + annual) ** 0.25 - 1.0
 
 
 # Columns to deflate when display mode is "real".
@@ -343,6 +350,10 @@ def _apply_control_defaults(st: Any, base_params: Dict[str, Any]) -> None:
     for control in PARAMETER_CONTROLS:
         key = control_widget_key(control)
         default_value = resolve_control_default(control, base_params)
+        if tuple(control.path) == MORTGAGE_RATE_PARAM_PATH and default_value is not None:
+            default_value = _annualize_quarterly_rate(float(default_value))
+        elif tuple(control.path) == MORTGAGE_TERM_PARAM_PATH and default_value is not None:
+            default_value = max(1, int(round(float(default_value) / 4.0)))
         st.session_state[key] = default_value
     st.session_state["run__quarters"] = RUN_DEFAULT_QUARTERS
     raw_mode = str(base_params.get("dashboard_value_mode", "nominal")).strip().lower()
@@ -360,6 +371,10 @@ def _ensure_control_defaults(st: Any, base_params: Dict[str, Any]) -> None:
     for control in PARAMETER_CONTROLS:
         key = control_widget_key(control)
         default_value = resolve_control_default(control, base_params)
+        if tuple(control.path) == MORTGAGE_RATE_PARAM_PATH and default_value is not None:
+            default_value = _annualize_quarterly_rate(float(default_value))
+        elif tuple(control.path) == MORTGAGE_TERM_PARAM_PATH and default_value is not None:
+            default_value = max(1, int(round(float(default_value) / 4.0)))
         if key not in st.session_state or st.session_state.get(key) is None:
             st.session_state[key] = default_value
     if "run__quarters" not in st.session_state:
@@ -387,7 +402,12 @@ def _build_cfg_from_state(st: Any, base_cfg: Dict[str, Any]) -> Dict[str, Any]:
     for control in PARAMETER_CONTROLS:
         key = control_widget_key(control)
         raw = st.session_state.get(key, resolve_control_default(control, params))
-        set_by_path(params, control.path, _coerce_value(raw, control.kind))
+        if tuple(control.path) == MORTGAGE_RATE_PARAM_PATH:
+            set_by_path(params, control.path, _quarterly_rate_from_annual(float(raw)))
+        elif tuple(control.path) == MORTGAGE_TERM_PARAM_PATH:
+            set_by_path(params, control.path, max(1, int(raw) * 4))
+        else:
+            set_by_path(params, control.path, _coerce_value(raw, control.kind))
 
     # Guardrail: a zero UBI percentile anchors to zero in this population (some households have zero market income).
     # Keep run config sane even if a stale UI state slips through.

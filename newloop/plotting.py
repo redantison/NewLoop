@@ -211,6 +211,10 @@ def _line_style(metric: str, *, secondary: bool) -> Dict[str, Any]:
     style: Dict[str, Any] = {"linewidth": 2.0}
     if secondary:
         style["linestyle"] = "--"
+    if metric in {"sector_demand_info_per_h", "unmet_demand_info_per_h"}:
+        style["color"] = "tab:blue"
+    elif metric in {"sector_demand_physical_per_h", "unmet_demand_physical_per_h"}:
+        style["color"] = "tab:orange"
     if metric == "automation":
         style["linewidth"] = 2.6
         style["linestyle"] = "-"
