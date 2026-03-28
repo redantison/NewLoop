@@ -432,7 +432,10 @@ def _sync_startup_household_state(sim: NewLoop) -> None:
         sim.population.mpc_q = np.asarray(hh.mpc_q, dtype=float).astype(float).tolist()
 
     sim.nodes["HH"].set("deposits", hh.sum_deposits())
-    sim.nodes["HOUSING"].set("deposits", float(sim.state.get("housing_financing_deposits_total", 0.0)))
+    sim.nodes["HOUSING"].set(
+        "deposits",
+        float(sim.state.get("housing_financing_deposits_total", 0.0)),
+    )
     bank = sim.nodes["BANK"]
     dep_liab = float(sim._sum_deposits_all())
     bank.set("deposit_liab", dep_liab)

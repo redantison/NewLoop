@@ -885,12 +885,20 @@ def plot_wealth_distributions_full_zoom(
     x_full_hi = float(np.max(all_w))
     if x_full_hi <= x_full_lo:
         x_full_hi = x_full_lo + 1.0
-    x_lo = float(min(np.percentile(w_b, lo), np.percentile(w_a, lo)))
-    x_hi = float(max(np.percentile(w_b, hi), np.percentile(w_a, hi)))
-    if lo <= 0.0:
-        x_lo = x_full_lo
-    if hi >= 100.0:
-        x_hi = x_full_hi
+
+    def _robust_sigma(arr: np.ndarray) -> float:
+        q25 = float(np.percentile(arr, 25.0))
+        q75 = float(np.percentile(arr, 75.0))
+        return max(1e-9, (q75 - q25) / 1.349)
+
+    med_b = float(np.median(w_b))
+    med_a = float(np.median(w_a))
+    sig_b = _robust_sigma(w_b)
+    sig_a = _robust_sigma(w_a)
+    x_lo = float(min(med_b - (3.0 * sig_b), med_a - (3.0 * sig_a)))
+    x_hi = float(max(med_b + (3.0 * sig_b), med_a + (3.0 * sig_a)))
+    x_lo = max(x_lo, x_full_lo)
+    x_hi = min(x_hi, x_full_hi)
     if x_hi <= x_lo:
         x_lo = x_full_lo
         x_hi = x_full_hi
@@ -931,14 +939,14 @@ def plot_wealth_distributions_full_zoom(
     after_vals = w_a[(w_a >= x_lo) & (w_a <= x_hi)]
     before_counts, _ = np.histogram(before_vals, bins=edges)
     after_counts, _ = np.histogram(after_vals, bins=edges)
-    before_share = before_counts.astype(float) / max(1.0, float(before_vals.size))
-    after_share = after_counts.astype(float) / max(1.0, float(after_vals.size))
+    before_share = before_counts.astype(float) / max(1.0, float(w_b.size))
+    after_share = after_counts.astype(float) / max(1.0, float(w_a.size))
 
     ax_right.step(edges[:-1], before_share, where="post", color="#1f77b4", linewidth=2.0, label="Before")
     ax_right.step(edges[:-1], after_share, where="post", color="#ff7f0e", linewidth=2.0, label="After")
     ax_right.axvline(float(np.median(w_b)), color="#1f77b4", linestyle=":", linewidth=1.8, alpha=0.9)
     ax_right.axvline(float(np.median(w_a)), color="#ff7f0e", linestyle=":", linewidth=1.8, alpha=0.9)
-    ax_right.set_title(_title_with_mode(f"Wealth Distribution (Bucketed Lines, Zoomed p{int(round(lo))} to p{int(round(hi))})", support_mode))
+    ax_right.set_title(_title_with_mode("Wealth Distribution (Bucketed Lines, Median +/- 3 Robust Sigma)", support_mode))
     ax_right.set_xlabel(value_label)
     ax_right.set_ylabel("Share of Households")
     ax_right.set_xlim(x_lo, x_hi)
@@ -946,6 +954,16 @@ def plot_wealth_distributions_full_zoom(
     ax_right.yaxis.set_major_formatter(FuncFormatter(lambda val, _: f"{100.0 * float(val):.2f}%"))
     ax_right.grid(alpha=0.25)
     ax_right.legend(loc="best")
+    n_before_below = int(np.sum(w_b < x_lo))
+    n_after_below = int(np.sum(w_a < x_lo))
+    n_before_above = int(np.sum(w_b > x_hi))
+    n_after_above = int(np.sum(w_a > x_hi))
+    if n_before_below > 0 or n_after_below > 0 or n_before_above > 0 or n_after_above > 0:
+        note = (
+            f"Clipped tails: below Before {n_before_below}, After {n_after_below}; "
+            f"above Before {n_before_above}, After {n_after_above}"
+        )
+        ax_right.text(0.01, 0.99, note, transform=ax_right.transAxes, ha="left", va="top", fontsize=9, color="0.35")
     return fig
 
 

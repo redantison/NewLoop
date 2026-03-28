@@ -35,6 +35,7 @@ class HouseholdState:
     wages0_q: np.ndarray
     deposits: np.ndarray
     housing_escrow: np.ndarray
+    renter_rent_q: np.ndarray
     mortgage_loans: np.ndarray
     revolving_loans: np.ndarray
     mpc_q: np.ndarray
@@ -65,6 +66,8 @@ class HouseholdState:
             self.prev_income = np.asarray(self.wages0_q, dtype=float).copy()
         if (self.housing_escrow.size == 0) or (self.housing_escrow.shape[0] != self.n):
             self.housing_escrow = np.zeros(self.n, dtype=float)
+        if (self.renter_rent_q.size == 0) or (self.renter_rent_q.shape[0] != self.n):
+            self.renter_rent_q = np.zeros(self.n, dtype=float)
         if (self.mort_rate_q.size == 0) or (self.mort_rate_q.shape[0] != self.n):
             self.mort_rate_q = np.zeros(self.n, dtype=float)
         if (self.mort_age_q.size == 0) or (self.mort_age_q.shape[0] != self.n):

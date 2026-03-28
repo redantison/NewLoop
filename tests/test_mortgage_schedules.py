@@ -132,6 +132,7 @@ class MortgageScheduleTests(unittest.TestCase):
         mort = np.asarray(hh.mortgage_loans, dtype=float)
         housing = np.asarray(hh.housing_escrow, dtype=float)
         deposits = np.asarray(hh.deposits, dtype=float)
+        rent = np.asarray(hh.renter_rent_q, dtype=float)
 
         mortgagors = mort > 1e-12
         outright_owners = (mort <= 1e-12) & (housing > 1e-12)
@@ -142,6 +143,9 @@ class MortgageScheduleTests(unittest.TestCase):
         self.assertTrue(bool(np.any(renters)))
         self.assertLess(float(np.median(deposits[renters])), float(np.median(deposits[mortgagors])))
         self.assertLess(float(np.median(deposits[mortgagors])), float(np.median(deposits[outright_owners])))
+        self.assertGreater(float(np.median(rent[renters])), 0.0)
+        self.assertTrue(bool(np.all(rent[mortgagors] <= 1e-12)))
+        self.assertTrue(bool(np.all(rent[outright_owners] <= 1e-12)))
 
     def test_startup_alignment_preserves_buffer_shortfalls(self):
         sim = NewLoop(make_cfg())
@@ -260,7 +264,7 @@ class MortgageScheduleTests(unittest.TestCase):
         )
         self.assertAlmostEqual(
             float(sim.nodes["HOUSING"].get("deposits", 0.0)) - deposits_before,
-            float(sim.state.get("mort_turnover_total", 0.0)),
+            float(sim.state.get("housing_financing_deposits_total", 0.0)),
             places=7,
         )
 

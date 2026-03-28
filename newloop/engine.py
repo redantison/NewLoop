@@ -171,6 +171,7 @@ class NewLoop:
                 wages0_q_raw = getattr(pop, "wages_q")
                 deposits_raw = getattr(pop, "deposits")
                 housing_values_raw = getattr(pop, "housing_values")
+                renter_rent_q_raw = getattr(pop, "renter_rent_q", [])
                 mortgage_loans_raw = getattr(pop, "mortgage_loans")
                 revolving_loans_raw = getattr(pop, "revolving_loans")
                 mort_rate_q_raw = getattr(pop, "mortgage_rate_q")
@@ -184,6 +185,7 @@ class NewLoop:
                 wages0_q_raw = []
                 deposits_raw = []
                 housing_values_raw = []
+                renter_rent_q_raw = []
                 mortgage_loans_raw = []
                 revolving_loans_raw = []
                 mort_rate_q_raw = []
@@ -197,6 +199,7 @@ class NewLoop:
             wages0_q = _as_np(wages0_q_raw, dtype=float)
             deposits = _as_np(deposits_raw, dtype=float)
             housing_values = _as_np(housing_values_raw, dtype=float)
+            renter_rent_q = _as_np(renter_rent_q_raw, dtype=float)
             mortgage_loans = _as_np(mortgage_loans_raw, dtype=float)
             revolving_loans = _as_np(revolving_loans_raw, dtype=float)
             mort_rate_q = _as_np(mort_rate_q_raw, dtype=float)
@@ -227,6 +230,7 @@ class NewLoop:
                 mpc_q.shape[0],
                 base_real_cons_q.shape[0],
                 liquid_buffer_months_target.shape[0],
+                renter_rent_q.shape[0] if renter_rent_q.size else base_real_cons_q.shape[0],
             ))
 
             if n > 0:
@@ -235,6 +239,7 @@ class NewLoop:
                     wages0_q=wages0_q[:n].copy(),
                     deposits=deposits[:n].copy(),
                     housing_escrow=housing_escrow[:n].copy(),
+                    renter_rent_q=(renter_rent_q[:n].copy() if renter_rent_q.size else np.zeros(n, dtype=float)),
                     mortgage_loans=mortgage_loans[:n].copy(),
                     revolving_loans=revolving_loans[:n].copy(),
                     mpc_q=mpc_q[:n].copy(),
@@ -1898,6 +1903,9 @@ class NewLoop:
         mpc = hh.mpc_q
         mort = hh.mortgage_loans
         rev = hh.revolving_loans
+        renter_rent_q = np.maximum(0.0, _as_np(hh.renter_rent_q, dtype=float))
+        if renter_rent_q.shape[0] != hh.n:
+            renter_rent_q = np.zeros(hh.n, dtype=float)
         liquid_buffer_months_target = hh.liquid_buffer_months_target
         if liquid_buffer_months_target.shape[0] != hh.n:
             liquid_buffer_months_target = np.zeros(hh.n, dtype=float)
@@ -2196,7 +2204,7 @@ class NewLoop:
             # Households service the full required mortgage payment plus revolving interest
             # in both indexed and non-indexed mortgage regimes so solver income matches
             # the actual cash-settlement path.
-            y_new = wages_i + float(uis) + div_i + vat_credit_i - rev_interest - mort_pay_req_i - income_tax_i
+            y_new = wages_i + float(uis) + div_i + vat_credit_i - rev_interest - mort_pay_req_i - renter_rent_q - income_tax_i
             max_delta = float(np.max(np.abs(y_new - y_guess)))
 
             if max_delta < tol:
@@ -2278,6 +2286,7 @@ class NewLoop:
                     "buffer_gap_shortfall_total": float(np.maximum(0.0, -buffer_gap_nom).sum()),
                     "mort_index_enable": bool(mort_index_enable),
                     "mort_pay_req_i": mort_pay_req_i,
+                    "renter_rent_q": renter_rent_q,
                     "mort_pay_ctr_i": _as_np(mort_terms.get("mort_pay_ctr_i", np.zeros(hh.n, dtype=float)), dtype=float),
                     "mort_interest_due_i": _as_np(mort_terms.get("mort_interest_due_i", np.zeros(hh.n, dtype=float)), dtype=float),
                     "mort_interest_paid_i": _as_np(mort_terms.get("mort_interest_paid_i", np.zeros(hh.n, dtype=float)), dtype=float),
@@ -2340,6 +2349,7 @@ class NewLoop:
         interest_hh = _as_np(sol.get("interest_hh", []), dtype=float)
         rev_interest_i = _as_np(sol.get("rev_interest_i", []), dtype=float)
         mort_pay_req_i = _as_np(sol.get("mort_pay_req_i", []), dtype=float)
+        renter_rent_q = _as_np(sol.get("renter_rent_q", []), dtype=float)
         mort_pay_ctr_i = _as_np(sol.get("mort_pay_ctr_i", []), dtype=float)
         mort_interest_due_i = _as_np(sol.get("mort_interest_due_i", []), dtype=float)
         mort_interest_paid_i = _as_np(sol.get("mort_interest_paid_i", []), dtype=float)
@@ -2371,6 +2381,8 @@ class NewLoop:
             rev_interest_i = np.maximum(0.0, interest_hh - np.maximum(0.0, mort_interest_due_i if mort_interest_due_i.shape[0] == n else np.zeros(n, dtype=float)))
         if mort_pay_req_i.shape[0] != n:
             mort_pay_req_i = np.zeros(n, dtype=float)
+        if renter_rent_q.shape[0] != n:
+            renter_rent_q = np.zeros(n, dtype=float)
         if mort_pay_ctr_i.shape[0] != n:
             mort_pay_ctr_i = np.zeros(n, dtype=float)
         if mort_interest_due_i.shape[0] != n:
@@ -2743,6 +2755,20 @@ class NewLoop:
             bank.add("equity", +trust_interest)
 
         # -------------------------------------------------
+        # 4a) Rent: renter households -> HOUSING reservoir
+        # -------------------------------------------------
+        rent_total = float(np.sum(np.maximum(0.0, renter_rent_q)))
+        if rent_total > 0.0:
+            deposits[:] = deposits - renter_rent_q
+            rent_to_fa = rent_total * self._sector_hh_demand_share_fa()
+            rent_to_fh = rent_total - rent_to_fa
+            self.nodes["FA"].add("deposits", rent_to_fa)
+            self.nodes["FH"].add("deposits", rent_to_fh)
+            self.state["renter_rent_to_info_total"] = float(max(0.0, rent_to_fa))
+            self.state["renter_rent_to_phys_total"] = float(max(0.0, rent_to_fh))
+        self.state["renter_rent_total"] = float(max(0.0, rent_total))
+
+        # -------------------------------------------------
         # 5) Taxes + VAT credit (before income support)
         # -------------------------------------------------
         income_tax_i = _as_np(sol.get("income_tax_i", []), dtype=float)
@@ -3100,7 +3126,10 @@ class NewLoop:
         hh_total_loan = float(mort.sum() + rev.sum())
 
         self.nodes["HH"].set("deposits", hh_total_dep)
-        self.nodes["HOUSING"].set("deposits", float(self.state.get("housing_financing_deposits_total", 0.0)))
+        self.nodes["HOUSING"].set(
+            "deposits",
+            float(self.state.get("housing_financing_deposits_total", 0.0)),
+        )
         self.nodes["HH"].set("loans", hh_total_loan)
 
         if y_vec.shape[0] == n:

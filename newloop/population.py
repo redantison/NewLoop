@@ -216,6 +216,10 @@ class PopulationConfig:
     mortgage_startup_ltv_sigma: float = 0.12
     mortgage_startup_ltv_min: float = 0.60
     mortgage_startup_ltv_max: float = 1.15
+    renter_housing_income_mult_median: float = 5.00
+    renter_housing_income_mult_sigma: float = 0.40
+    renter_rent_payment_mult_median: float = 0.95
+    renter_rent_payment_mult_sigma: float = 0.15
     revolving_income_mult_median: float = 0.06  # revolving principal as multiple of annual wage
     revolving_income_mult_sigma: float = 0.80
     renter_deposit_target_mult_median: float = 0.70
@@ -263,6 +267,7 @@ class Population:
     wages_q: List[float]
     deposits: List[float]
     housing_values: List[float]
+    renter_rent_q: List[float]
     loans: List[float]
     mortgage_loans: List[float]
     revolving_loans: List[float]
@@ -629,11 +634,14 @@ def generate_population(cfg: PopulationConfig) -> Population:
     mortgage_loans = np.zeros(n, dtype=float)
     revolving_loans = np.zeros(n, dtype=float)
     housing_values = np.zeros(n, dtype=float)
+    renter_rent_q = np.zeros(n, dtype=float)
     mortgage_rate_q = np.zeros(n, dtype=float)
     mortgage_age_q = np.zeros(n, dtype=float)
     mortgage_term_q = np.zeros(n, dtype=float)
     mortgage_payment_sched_q = np.zeros(n, dtype=float)
     mortgage_orig_principal = np.zeros(n, dtype=float)
+    term_q = float(max(1, int(getattr(cfg, "mortgage_term_quarters", 60))))
+    rate_q = float(max(0.0, float(cfg.mortgage_rate_effective) / 4.0))
 
     if mort_mask.any():
         mort_mult = rng.lognormal(
@@ -642,8 +650,6 @@ def generate_population(cfg: PopulationConfig) -> Population:
             size=int(mort_mask.sum()),
         )
         orig_principal = np.maximum(0.0, mort_mult * wages_annual[mort_mask])
-        term_q = float(max(1, int(getattr(cfg, "mortgage_term_quarters", 60))))
-        rate_q = float(max(0.0, float(cfg.mortgage_rate_effective) / 4.0))
         ages = rng.integers(0, int(term_q), size=int(mort_mask.sum()), endpoint=False).astype(float)
         payment_q = payment_from_orig_principal(orig_principal, rate_q, term_q)
         current_balance = balance_from_orig_principal(orig_principal, rate_q, term_q, ages)
@@ -676,6 +682,21 @@ def generate_population(cfg: PopulationConfig) -> Population:
         )
         housing_values[owner_mask] = np.maximum(0.0, owner_mult * wage_potential[owner_mask] * 4.0)
 
+    if renter_mask.any():
+        renter_home_mult = rng.lognormal(
+            mean=math.log(max(cfg.renter_housing_income_mult_median, 1e-12)),
+            sigma=float(cfg.renter_housing_income_mult_sigma),
+            size=int(renter_mask.sum()),
+        )
+        renter_principal = np.maximum(0.0, renter_home_mult * wage_potential[renter_mask] * 4.0)
+        renter_owner_equiv_payment_q = payment_from_orig_principal(renter_principal, rate_q, term_q)
+        rent_mult = rng.lognormal(
+            mean=math.log(max(cfg.renter_rent_payment_mult_median, 1e-12)),
+            sigma=float(cfg.renter_rent_payment_mult_sigma),
+            size=int(renter_mask.sum()),
+        )
+        renter_rent_q[renter_mask] = np.maximum(0.0, renter_owner_equiv_payment_q * rent_mult)
+
     rev_mask = has_wage & (rng.random(n) < rev_p)
     if rev_mask.any():
         rev_mult = rng.lognormal(
@@ -694,6 +715,7 @@ def generate_population(cfg: PopulationConfig) -> Population:
         wages_q=wages.astype(float).tolist(),
         deposits=deposits.astype(float).tolist(),
         housing_values=housing_values.astype(float).tolist(),
+        renter_rent_q=renter_rent_q.astype(float).tolist(),
         loans=loans.astype(float).tolist(),
         mortgage_loans=mortgage_loans.astype(float).tolist(),
         revolving_loans=revolving_loans.astype(float).tolist(),
