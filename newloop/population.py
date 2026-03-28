@@ -669,9 +669,11 @@ def generate_population(cfg: PopulationConfig) -> Population:
             float(cfg.mortgage_startup_ltv_min),
             float(cfg.mortgage_startup_ltv_max),
         )
+        # Let startup LTV above 1.0 create modest negative home equity instead of
+        # flooring mortgagors at zero housing equity.
         housing_values[mort_mask] = np.maximum(
-            current_balance,
-            np.maximum(0.0, current_balance / np.maximum(ltv_draw, 1e-9)),
+            0.0,
+            current_balance / np.maximum(ltv_draw, 1e-9),
         )
 
     if owner_mask.any():
