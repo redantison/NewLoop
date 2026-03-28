@@ -3666,6 +3666,14 @@ class NewLoop:
                 capex_per_h=float(self.state.get("capex_total", 0.0)) / float(self.hh.n),
                 sector_capacity_info_per_h=float(solp.get("capacity_fa_real", 0.0)) / float(self.hh.n),
                 sector_capacity_physical_per_h=float(solp.get("capacity_fh_real", 0.0)) / float(self.hh.n),
+                sector_hh_util_info=(
+                    float(solp.get("hh_sales_fa_real", 0.0))
+                    / max(1e-9, float(solp.get("capacity_fa_real", 0.0)))
+                ),
+                sector_hh_util_physical=(
+                    float(solp.get("hh_sales_fh_real", 0.0))
+                    / max(1e-9, float(solp.get("capacity_fh_real", 0.0)))
+                ),
                 sector_util_info=(
                     (
                         float(solp.get("hh_sales_fa_real", 0.0))

@@ -746,11 +746,38 @@ def _neutral_warmup_regime_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
     params["disable_income_support"] = True
     params["disable_trust"] = True
     params["disable_mortgage_relief"] = True
+    # Keep hidden startup warm-up from pre-building visible-quarter capacity.
+    params["ums_recycle_rate_q"] = 0.0
+    params["sector_capex_share_min"] = 0.0
+    params["sector_capex_share_max"] = 0.0
+    params["sector_capex_gap_close_rate"] = 0.0
+    params["sector_capex_growth_cap_rate_q"] = 0.0
+    params["sector_install_rate_q"] = 0.0
     params["mortgage_turnover_enabled"] = False
     params["gov_tax_rebate_rate"] = 0.0
     params["send_fund_residual_to_gov"] = False
     params["fund_residual_to_gov_share"] = 0.0
     return warm_cfg
+
+
+def _reset_post_warmup_sector_planner_state(sim: NewLoop) -> None:
+    """Clear hidden warm-up CAPEX planner carry-over before visible Q0."""
+    for key in (
+        "sector_free_cash_info_prev",
+        "sector_free_cash_phys_prev",
+        "sector_capex_queue_info_nom",
+        "sector_capex_queue_phys_nom",
+        "sector_unmet_info_real_prev",
+        "sector_unmet_phys_real_prev",
+        "sector_unmet_info_real_sm_prev",
+        "sector_unmet_phys_real_sm_prev",
+        "sector_load_gap_info_real_prev",
+        "sector_load_gap_phys_real_prev",
+        "sector_load_gap_info_real_sm_prev",
+        "sector_load_gap_phys_real_sm_prev",
+    ):
+        sim.state[key] = 0.0
+    sim.nodes["UMS"].set("deposits", 0.0)
 
 
 def _build_startup_sim(cfg: Dict[str, Any]) -> tuple[NewLoop, int, Dict[str, Any]]:
@@ -778,6 +805,7 @@ def _build_startup_sim(cfg: Dict[str, Any]) -> tuple[NewLoop, int, Dict[str, Any
         _prepare_startup_sim(sim)
         sim.params = copy.deepcopy(cfg["parameters"])
         sim.income_support_policy = make_income_support_policy(sim.params)
+        _reset_post_warmup_sector_planner_state(sim)
         reseed_stats = _reseed_visible_start_capacity(sim)
         if reseed_stats is not None:
             warmup_report["visible_start_capacity_reseed"] = dict(reseed_stats)

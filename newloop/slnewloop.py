@@ -64,6 +64,8 @@ PERCENT_COLUMNS = {
     "corp_tax_rate_eff",
     "sector_op_margin_info",
     "sector_op_margin_phys",
+    "sector_hh_util_info",
+    "sector_hh_util_physical",
     "sector_util_info",
     "sector_util_physical",
     "pop_dti_med",
@@ -916,21 +918,34 @@ def main() -> None:
     st.pyplot(equity_fig, clear_figure=False)
     plt.close(equity_fig)
 
-    sector_fig, (ax_capacity, ax_shortfall) = plt.subplots(1, 2, figsize=(13, 4.5), constrained_layout=True)
+    sector_fig, (ax_capacity, ax_total_util, ax_shortfall) = plt.subplots(1, 3, figsize=(18, 4.5), constrained_layout=True)
     plot_metric_lines(
         rows,
         [
             "sector_capacity_info_per_h",
             "sector_capacity_physical_per_h",
+            "sector_hh_util_info",
+            "sector_hh_util_physical",
+        ],
+        title="Sector Capacity And Household Utilization",
+        primary_ylabel="Capacity / Household",
+        secondary_metrics=["sector_hh_util_info", "sector_hh_util_physical"],
+        secondary_ylabel="Household Utilization",
+        support_mode=support_mode,
+        ax=ax_capacity,
+    )
+    plot_metric_lines(
+        rows,
+        [
             "sector_util_info",
             "sector_util_physical",
         ],
-        title="Sector Capacity And Total Utilization",
-        primary_ylabel="Capacity / Household",
+        title="Sector Total Utilization",
+        primary_ylabel="Total Utilization",
         secondary_metrics=["sector_util_info", "sector_util_physical"],
         secondary_ylabel="Total Utilization",
         support_mode=support_mode,
-        ax=ax_capacity,
+        ax=ax_total_util,
     )
     plot_metric_lines(
         rows,
@@ -1007,21 +1022,11 @@ def main() -> None:
             st.pyplot(income_fig, clear_figure=False)
             plt.close(income_fig)
 
-            zoom_window = st.slider(
-                "Wealth zoom percentile window",
-                min_value=0,
-                max_value=100,
-                value=(0, 80),
-                step=1,
-                help="Zooms the right-hand wealth histogram to this percentile band while keeping the left-hand household wealth reservoirs plot for context.",
-            )
             wealth_fig = plot_wealth_distributions_full_zoom(
                 rows,
                 wealth_before,
                 wealth_after,
                 value_label=value_label,
-                zoom_lo_pct=float(zoom_window[0]),
-                zoom_hi_pct=float(zoom_window[1]),
                 support_mode=support_mode,
             )
             if config_stale:

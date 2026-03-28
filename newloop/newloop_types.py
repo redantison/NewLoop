@@ -153,6 +153,8 @@ class TickResult:
     capex_per_h: float
     sector_capacity_info_per_h: float
     sector_capacity_physical_per_h: float
+    sector_hh_util_info: float
+    sector_hh_util_physical: float
     sector_util_info: float
     sector_util_physical: float
     sector_demand_info_per_h: float

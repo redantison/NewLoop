@@ -59,6 +59,8 @@ METRIC_LABELS: Dict[str, str] = {
     "ums_recycle_total_per_h": "Total UMS Recycled / Household",
     "sector_capacity_info_per_h": "Sector Capacity (Info) / Household",
     "sector_capacity_physical_per_h": "Sector Capacity (Physical) / Household",
+    "sector_hh_util_info": "Household Utilization (Info)",
+    "sector_hh_util_physical": "Household Utilization (Physical)",
     "sector_util_info": "Total Utilization (Info)",
     "sector_util_physical": "Total Utilization (Physical)",
     "sector_demand_info_per_h": "Sector Demand (Info) / Household",

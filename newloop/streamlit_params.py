@@ -455,6 +455,21 @@ NON_GINI_METRIC_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "ums_recycle_total_per_h",
         ),
     ),
+    (
+        "Sectors",
+        (
+            "sector_capacity_info_per_h",
+            "sector_capacity_physical_per_h",
+            "sector_hh_util_info",
+            "sector_hh_util_physical",
+            "sector_util_info",
+            "sector_util_physical",
+            "sector_demand_info_per_h",
+            "sector_demand_physical_per_h",
+            "unmet_demand_info_per_h",
+            "unmet_demand_physical_per_h",
+        ),
+    ),
     ("Stress", ("pop_dti_med", "pop_dti_p90", "pop_dti_w_med", "pop_dti_w_p90")),
 )
 
