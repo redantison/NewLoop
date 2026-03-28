@@ -21,6 +21,7 @@ from .plotting import (
     plot_fund_inflows,
     plot_income_distribution_by_group,
     plot_income_distribution_dual,
+    plot_mortgage_stock_over_time,
     plot_metric_lines,
     plot_wealth_distributions_full_zoom,
 )
@@ -1054,12 +1055,21 @@ def main() -> None:
                         "no_vat_credit_and_income_tax",
                     ),
                     title="Disposable Income Distribution By Tax And VAT-Credit Status (After)",
+                    figsize=(6.4, 4.8),
                 )
                 if config_stale:
                     _mark_figure_stale(income_group_policy_fig)
                 policy_left_col, policy_right_col = st.columns(2)
                 with policy_left_col:
-                    st.empty()
+                    mortgage_stock_fig = plot_mortgage_stock_over_time(
+                        rows,
+                        value_label=value_label,
+                        support_mode=support_mode,
+                    )
+                    if config_stale:
+                        _mark_figure_stale(mortgage_stock_fig)
+                    st.pyplot(mortgage_stock_fig, clear_figure=False)
+                    plt.close(mortgage_stock_fig)
                 with policy_right_col:
                     st.pyplot(income_group_policy_fig, clear_figure=False)
                     st.caption(

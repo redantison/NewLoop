@@ -131,6 +131,9 @@ class TickResult:
     hh_debt_per_h: float
     hh_mortgage_debt_per_h: float
     hh_revolving_debt_per_h: float
+    hh_mortgage_balance_total: float
+    hh_mortgage_orig_principal_total: float
+    hh_mortgage_active_count: float
     corporate_eq_info_per_h: float
     corporate_eq_physical_per_h: float
     corporate_eq_total_per_h: float

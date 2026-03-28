@@ -3393,6 +3393,13 @@ class NewLoop:
             mort_i = _as_np(self.hh.mortgage_loans, dtype=float)
             rev_i = _as_np(self.hh.revolving_loans, dtype=float)
             loan_i = mort_i + rev_i
+            active_mort_i = mort_i > 1e-9
+            mort_orig_principal_i = _as_np(self.hh.mort_orig_principal, dtype=float)
+            active_mort_orig_principal_total = (
+                float(np.sum(mort_orig_principal_i[active_mort_i]))
+                if mort_orig_principal_i.shape[0] == mort_i.shape[0]
+                else float(np.sum(mort_i[active_mort_i]))
+            )
 
             private_equity_total = 0.0
             if dep_i.size and (dep_i.size == loan_i.size):
@@ -3644,6 +3651,9 @@ class NewLoop:
                 hh_debt_per_h=float(np.sum(loan_i)) / float(self.hh.n),
                 hh_mortgage_debt_per_h=float(np.sum(mort_i)) / float(self.hh.n),
                 hh_revolving_debt_per_h=float(np.sum(rev_i)) / float(self.hh.n),
+                hh_mortgage_balance_total=float(np.sum(mort_i)),
+                hh_mortgage_orig_principal_total=float(active_mort_orig_principal_total),
+                hh_mortgage_active_count=float(np.sum(active_mort_i)),
                 corporate_eq_info_per_h=float(fa_broad_equity_proxy_hist) / float(self.hh.n),
                 corporate_eq_physical_per_h=float(fh_broad_equity_proxy_hist) / float(self.hh.n),
                 corporate_eq_total_per_h=float(fa_broad_equity_proxy_hist + fh_broad_equity_proxy_hist) / float(self.hh.n),

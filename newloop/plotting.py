@@ -28,6 +28,9 @@ METRIC_LABELS: Dict[str, str] = {
     "hh_debt_per_h": "Household Debt / Household",
     "hh_mortgage_debt_per_h": "Household Mortgage Debt / Household",
     "hh_revolving_debt_per_h": "Household Revolving Debt / Household",
+    "hh_mortgage_balance_total": "Outstanding Mortgage Balance",
+    "hh_mortgage_orig_principal_total": "Outstanding Mortgage Original Principal",
+    "hh_mortgage_active_count": "Active Mortgages",
     "private_roe_q": "Private Payout Yield / Quarter",
     "private_broad_roe_q": "Private Broad ROE (Annualized %)",
     "bank_broad_roe_q": "Bank Broad ROE (Annualized %)",
@@ -904,6 +907,7 @@ def plot_income_distribution_by_group(
     color_map: Mapping[str, str] | None = None,
     ordered_keys: Sequence[str] | None = None,
     title: str | None = None,
+    figsize: tuple[float, float] | None = None,
 ) -> Any:
     """Show the after-income histogram split by a supplied household grouping."""
     import matplotlib.pyplot as plt
@@ -958,7 +962,7 @@ def plot_income_distribution_by_group(
     edges = np.linspace(x_lo, x_hi, 61, dtype=float)
     total_n = max(1.0, float(overall_vals.size))
 
-    fig, ax = plt.subplots(figsize=(13, 4.5), constrained_layout=True)
+    fig, ax = plt.subplots(figsize=figsize or (13, 4.5), constrained_layout=True)
     overall_clip = overall_vals[(overall_vals >= x_lo) & (overall_vals <= x_hi)]
     overall_counts, _ = np.histogram(overall_clip, bins=edges)
     overall_share = overall_counts.astype(float) / total_n
@@ -1104,6 +1108,57 @@ def plot_wealth_distributions_full_zoom(
             f"above Before {n_before_above}, After {n_after_above}"
         )
         ax_right.text(0.01, 0.99, note, transform=ax_right.transAxes, ha="left", va="top", fontsize=9, color="0.35")
+    return fig
+
+
+def plot_mortgage_stock_over_time(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    value_label: str,
+    support_mode: str | None = None,
+) -> Any:
+    """Plot mortgage stock values and active mortgage count over time."""
+    import matplotlib.pyplot as plt
+
+    rows = _require_rows(rows)
+    t = [int(row.get("t", idx)) for idx, row in enumerate(rows)]
+    active_count = [float(row.get("hh_mortgage_active_count", 0.0)) for row in rows]
+    balance_total = [float(row.get("hh_mortgage_balance_total", 0.0)) for row in rows]
+    principal_total = [float(row.get("hh_mortgage_orig_principal_total", 0.0)) for row in rows]
+
+    fig, ax_left = plt.subplots(figsize=(6.4, 4.5), constrained_layout=True)
+    ax_right = ax_left.twinx()
+
+    left_line = ax_left.plot(
+        t,
+        active_count,
+        color="#2ca02c",
+        linewidth=2.2,
+        label="Active Mortgages",
+    )[0]
+    right_balance = ax_right.plot(
+        t,
+        balance_total,
+        color="#1f77b4",
+        linewidth=2.0,
+        label="Outstanding Mortgage Value",
+    )[0]
+    right_principal = ax_right.plot(
+        t,
+        principal_total,
+        color="#ff7f0e",
+        linewidth=2.0,
+        label="Outstanding Principal Value",
+    )[0]
+
+    ax_left.set_title(_title_with_mode("Mortgage Stock And Count", support_mode))
+    ax_left.set_xlabel("Quarter")
+    ax_left.set_ylabel("Active Mortgages")
+    ax_right.set_ylabel(value_label)
+    ax_left.grid(alpha=0.25)
+
+    lines = [left_line, right_balance, right_principal]
+    ax_left.legend(lines, [line.get_label() for line in lines], loc="best")
     return fig
 
 
