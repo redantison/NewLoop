@@ -824,12 +824,45 @@ def plot_income_distribution_dual(
 ) -> Any:
     """Two-panel income distributions: cumulative + share-per-bin."""
     import matplotlib.pyplot as plt
+    from matplotlib.ticker import FuncFormatter
 
-    before_lo, before_hi = _series_percentile_window(income_before, lo_pct=2.0, hi_pct=95.0)
-    after_lo, after_hi = _series_percentile_window(income_after, lo_pct=2.0, hi_pct=95.0)
-    x_limits = (before_lo, after_hi)
-    hist_edges_before = np.linspace(before_lo, before_hi, 61, dtype=float)
-    hist_edges_after = np.linspace(after_lo, after_hi, 61, dtype=float)
+    b = np.asarray(income_before, dtype=float)
+    a = np.asarray(income_after, dtype=float)
+    b = b[np.isfinite(b)]
+    a = a[np.isfinite(a)]
+    if b.size == 0 or a.size == 0:
+        raise ValueError("Distribution plot requires non-empty before and after arrays.")
+
+    def _robust_sigma(arr: np.ndarray) -> float:
+        q25 = float(np.percentile(arr, 25.0))
+        q75 = float(np.percentile(arr, 75.0))
+        return max(1e-9, (q75 - q25) / 1.349)
+
+    med_b = float(np.median(b))
+    med_a = float(np.median(a))
+    sig_b = _robust_sigma(b)
+    sig_a = _robust_sigma(a)
+    x_lo = float(min(med_b - (3.0 * sig_b), med_a - (3.0 * sig_a)))
+    x_hi = float(max(med_b + (3.0 * sig_b), med_a + (3.0 * sig_a)))
+    x_lo = max(x_lo, float(min(np.min(b), np.min(a))))
+    x_hi = min(x_hi, float(max(np.max(b), np.max(a))))
+    if x_hi <= x_lo:
+        x_lo = float(min(np.min(b), np.min(a)))
+        x_hi = float(max(np.max(b), np.max(a)))
+        if x_hi <= x_lo:
+            x_hi = x_lo + 1.0
+    x_limits = (x_lo, x_hi)
+    edges = np.linspace(x_lo, x_hi, 61, dtype=float)
+    before_vals = b[(b >= x_lo) & (b <= x_hi)]
+    after_vals = a[(a >= x_lo) & (a <= x_hi)]
+    before_counts, _ = np.histogram(before_vals, bins=edges)
+    after_counts, _ = np.histogram(after_vals, bins=edges)
+    before_share = before_counts.astype(float) / max(1.0, float(b.size))
+    after_share = after_counts.astype(float) / max(1.0, float(a.size))
+    below_b = int(np.sum(b < x_lo))
+    below_a = int(np.sum(a < x_lo))
+    above_b = int(np.sum(b > x_hi))
+    above_a = int(np.sum(a > x_hi))
 
     fig, axs = plt.subplots(1, 2, figsize=(13, 4.5), constrained_layout=True)
     plot_distribution_compare(
@@ -840,16 +873,22 @@ def plot_income_distribution_dual(
         x_limits=x_limits,
         ax=axs[0],
     )
-    plot_distribution_share(
-        income_before,
-        income_after,
-        title=_title_with_mode("Disposable Income Distribution (% per Bin)", support_mode),
-        x_label=value_label,
-        x_limits=x_limits,
-        edges=hist_edges_before,
-        after_edges=hist_edges_after,
-        ax=axs[1],
+    axs[1].step(edges[:-1], before_share, where="post", color="#1f77b4", linewidth=2.0, label="Before")
+    axs[1].step(edges[:-1], after_share, where="post", color="#ff7f0e", linewidth=2.0, label="After")
+    axs[1].axvline(med_b, color="#1f77b4", linestyle=":", linewidth=1.8, alpha=0.9)
+    axs[1].axvline(med_a, color="#ff7f0e", linestyle=":", linewidth=1.8, alpha=0.9)
+    axs[1].set_title(_title_with_mode("Disposable Income Distribution (% per Bin, Median +/- 3 Robust Sigma)", support_mode))
+    axs[1].set_xlabel(value_label)
+    axs[1].set_ylabel("Share of Households")
+    axs[1].set_xlim(x_lo, x_hi)
+    axs[1].yaxis.set_major_formatter(FuncFormatter(lambda val, _: f"{100.0 * float(val):.2f}%"))
+    axs[1].grid(alpha=0.25)
+    axs[1].legend(loc="best")
+    note = (
+        f"Clipped tails: below Before {below_b}, After {below_a}; "
+        f"above Before {above_b}, After {above_a}"
     )
+    axs[1].text(0.01, 0.99, note, transform=axs[1].transAxes, ha="left", va="top", fontsize=9, color="0.35")
     return fig
 
 
