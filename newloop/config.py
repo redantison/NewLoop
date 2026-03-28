@@ -130,13 +130,16 @@ config = {
         "mortgage_fixed_rate_q": 0.01125,       # 4.5% annual fixed coupon for new mortgages
         "mortgage_term_quarters": 60,           # 15-year fixed mortgage
         "mortgage_principal_pay_rate_q": 0.01,   # 1%/q max paydown if cash available
-        "mortgage_turnover_enabled": True,      # replace amortized mortgage stock by issuing new mortgages to eligible households
-        "mortgage_turnover_active_min_remaining_q": 3,  # active mortgage means > this many payments remain
-        "mortgage_turnover_target_payment_floor_share": 1.0,  # target aggregate scheduled mortgage payments as share of startup level
+        "mortgage_turnover_enabled": True,      # turn over a share of housed households and issue fresh mortgages on those housing-finance events
+        "mortgage_turnover_active_min_remaining_q": 3,  # only mortgagors with > this many payments remaining are eligible for turnover
+        "mortgage_turnover_target_payment_floor_share": 1.0,  # legacy diagnostic knob; no longer the primary issuance target
         "mortgage_turnover_dti_cap": 0.40,
         "mortgage_turnover_income_mult_cap": 4.0,
         "mortgage_turnover_support_income_weight": 0.25,
         "mortgage_turnover_min_wage_q": 1.0,
+        "housing_turnover_rate_mortgagor_q": 0.015,
+        "housing_turnover_rate_owner_q": 0.005,
+        "housing_turnover_owner_mortgage_share": 0.25,
         "send_fund_residual_to_gov": False, # legacy compatibility toggle for a full FUND residual sweep
         "fund_residual_to_gov_share": 0.0,  # optional share of residual FUND deposits sent to GOV after debt-first treatment
         "disable_income_support": False,
