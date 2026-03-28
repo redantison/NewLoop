@@ -59,12 +59,13 @@ config = {
         "sector_supplier_share_info_for_info_capex": 0.55,
         "sector_supplier_share_info_for_phys_capex": 0.15,
         "sector_capex_share_min": 0.05,
-        "sector_capex_share_max": 0.35,
-        "sector_capex_gap_half_sat": 0.15,
-        "sector_capex_gap_close_rate": 0.25,
+        "sector_capex_share_max": 0.50,
+        "sector_capex_gap_half_sat": 0.08,
+        "sector_capex_gap_close_rate": 0.40,
         "sector_capex_growth_cap_rate_q": 0.08,
-        "sector_capex_unmet_ewma_alpha": 0.25,
-        "sector_install_rate_q": 0.05,
+        "sector_capex_unmet_ewma_alpha": 0.10,
+        "sector_install_rate_q": 0.07,
+        "sector_maintenance_reserve_share": 0.75,
         "sector_dividend_cash_buffer_q": 0.00,
         "sector_dividend_service_floor": 0.95,
         "firm_overhead_rate_info": 0.15,
@@ -129,15 +130,20 @@ config = {
         "mortgage_fixed_rate_q": 0.01125,       # 4.5% annual fixed coupon for new mortgages
         "mortgage_term_quarters": 60,           # 15-year fixed mortgage
         "mortgage_principal_pay_rate_q": 0.01,   # 1%/q max paydown if cash available
-        "mortgage_turnover_enabled": True,      # replace amortized mortgage stock by issuing new mortgages to eligible households
-        "mortgage_turnover_replace_share": 1.0,
+        "mortgage_turnover_enabled": True,      # turn over a share of housed households and issue fresh mortgages on those housing-finance events
+        "mortgage_turnover_active_min_remaining_q": 3,  # only mortgagors with > this many payments remaining are eligible for turnover
+        "mortgage_turnover_target_payment_floor_share": 1.0,  # legacy diagnostic knob; no longer the primary issuance target
         "mortgage_turnover_dti_cap": 0.40,
         "mortgage_turnover_income_mult_cap": 4.0,
+        "mortgage_turnover_support_income_weight": 0.25,
         "mortgage_turnover_min_wage_q": 1.0,
+        "housing_turnover_rate_mortgagor_q": 0.015,
+        "housing_turnover_rate_owner_q": 0.005,
+        "housing_turnover_owner_mortgage_share": 0.25,
         "send_fund_residual_to_gov": False, # legacy compatibility toggle for a full FUND residual sweep
         "fund_residual_to_gov_share": 0.0,  # optional share of residual FUND deposits sent to GOV after debt-first treatment
         "disable_income_support": False,
-        "income_support_mode": "UIS",       # "UIS" | "UBI"
+        "income_support_mode": "UBI",       # "UIS" | "UBI"
         "income_support_issuance_share": 0.15,  # fixed share of each quarter's income support paid via issuance
         "income_support_monotonic_floor": True, # if True, policy support cannot decline quarter-to-quarter
         "ubi_target_percentile": 30.0,      # nearest-rank percentile target used to anchor UBI per-household amount
@@ -162,9 +168,11 @@ config = {
         "baseline_calibration_alpha": 0.92,
         "baseline_calibration_damping": 0.30,
         "baseline_calibration_tol_pct": 0.02,
-        "baseline_calibration_reset_deposits_to_runtime_target": True,
+        "baseline_calibration_reset_deposits_to_runtime_target": False,
+        "neutral_warmup_quarters": 2,
         "startup_buffer_alignment_enabled": True,
         "startup_buffer_alignment_max_iters": 8,
+        "startup_buffer_alignment_deposit_blend": 0.35,
         "population_config": {
             "n_families": 20000,
             "seed": 7919,
@@ -198,10 +206,35 @@ config = {
             # Debt distribution
             "mortgage_income_mult_median": 3.25,
             "mortgage_income_mult_sigma": 0.55,
+            "outright_owner_share": 0.15,
+            "owner_home_value_income_mult_median": 3.00,
+            "owner_home_value_income_mult_sigma": 0.45,
+            "mortgage_startup_ltv_median": 0.90,
+            "mortgage_startup_ltv_sigma": 0.12,
+            "mortgage_startup_ltv_min": 0.60,
+            "mortgage_startup_ltv_max": 1.15,
+            "renter_housing_income_mult_median": 5.00,
+            "renter_housing_income_mult_sigma": 0.40,
+            "renter_rent_payment_mult_median": 0.95,
+            "renter_rent_payment_mult_sigma": 0.15,
             "revolving_income_mult_median": 0.06,
             "revolving_income_mult_sigma": 0.80,
+            "revolving_balance_mult_by_wealth_pct": (
+                (20.0, 2.50),
+                (50.0, 1.75),
+                (80.0, 1.00),
+                (95.0, 0.70),
+                (100.0, 0.50),
+            ),
+            "renter_deposit_target_mult_median": 0.70,
+            "renter_deposit_target_mult_sigma": 0.65,
+            "mortgagor_deposit_target_mult_median": 1.00,
+            "mortgagor_deposit_target_mult_sigma": 0.45,
+            "owner_deposit_target_mult_median": 2.00,
+            "owner_deposit_target_mult_sigma": 0.55,
             "revolving_cap_income_mult": 0.50,
             "revolving_cap_deposits_mult": 2.0,
+            "revolving_cap_deposit_floor_income_mult": 0.25,
         },
 
         # Price level

@@ -11,6 +11,7 @@ import numpy as np
 
 from .config import get_default_config
 from .engine import NewLoop
+from .income_support import make_income_support_policy
 from .newloop_types import TickResult
 
 
@@ -34,9 +35,9 @@ def history_to_rows(history: Sequence[TickResult]) -> List[Dict[str, Any]]:
     return [asdict(tick) for tick in history]
 
 
-def _visible_rows(history: Sequence[TickResult]) -> List[Dict[str, Any]]:
+def _visible_rows(history: Sequence[TickResult], start_idx: int = 0) -> List[Dict[str, Any]]:
     """Convert visible history rows and rebase t so visible Q0 starts at zero."""
-    rows = history_to_rows(history)
+    rows = history_to_rows(history[start_idx:])
     if not rows:
         return rows
     t0 = int(rows[0].get("t", 0))
@@ -46,7 +47,7 @@ def _visible_rows(history: Sequence[TickResult]) -> List[Dict[str, Any]]:
 
 
 def _population_distribution_snapshot(sim: NewLoop) -> Dict[str, Any] | None:
-    """Capture household income/wealth vectors for before/after distribution plotting."""
+    """Capture household income and net-worth vectors for before/after plotting."""
     if sim.hh is None or sim.hh.n <= 0:
         return None
 
@@ -54,57 +55,58 @@ def _population_distribution_snapshot(sim: NewLoop) -> Dict[str, Any] | None:
     n = int(hh.n)
 
     dep_i = np.asarray(hh.deposits, dtype=float)
-    loan_i = np.asarray(hh.mortgage_loans, dtype=float) + np.asarray(hh.revolving_loans, dtype=float)
+    housing_i = np.asarray(hh.housing_escrow, dtype=float)
+    mort_i = np.asarray(hh.mortgage_loans, dtype=float)
+    rev_i = np.asarray(hh.revolving_loans, dtype=float)
+    loan_i = mort_i + rev_i
     income_i = np.asarray(hh.prev_income, dtype=float)
     if income_i.shape[0] != n:
         income_i = np.asarray(hh.wages0_q, dtype=float)
 
-    w0 = np.asarray(hh.wages0_q, dtype=float)
-    w0_sum = float(w0.sum()) if w0.shape[0] == n else 0.0
-    if w0_sum > 0.0:
-        weights = w0 / w0_sum
-    else:
-        weights = np.full(n, 1.0 / float(n), dtype=float)
-
-    p_now = float(sim.state.get("price_level", 1.0))
-    if p_now <= 0.0:
-        p_now = 1e-9
-
-    def _node_share_frac(holder: str, issuer: str, key: str) -> float:
-        shares_out = float(sim.nodes[issuer].get("shares_outstanding", 0.0))
-        if shares_out <= 0.0:
-            return 0.0
-        frac = float(sim.nodes[holder].get(key, 0.0)) / shares_out
-        return max(0.0, min(1.0, frac))
-
-    fa_eq = float(sim._firm_balance_sheet_equity_proxy("FA", p_now))
-    fh_eq = float(sim._firm_balance_sheet_equity_proxy("FH", p_now))
-    bk_eq = float(sim._firm_balance_sheet_equity_proxy("BANK", p_now))
-
-    hh_equity_total = (
-        _node_share_frac("HH", "FA", "shares_FA") * fa_eq
-        + _node_share_frac("HH", "FH", "shares_FH") * fh_eq
-        + _node_share_frac("HH", "BANK", "shares_BANK") * bk_eq
-    )
-    fund = sim.nodes["FUND"]
-    trust_equity_value_total = (
-        _node_share_frac("FUND", "FA", "shares_FA") * fa_eq
-        + _node_share_frac("FUND", "FH", "shares_FH") * fh_eq
-        + _node_share_frac("FUND", "BANK", "shares_BANK") * bk_eq
-    )
-    trust_value_total = (
-        float(fund.get("deposits", 0.0))
-        + trust_equity_value_total
-        - float(fund.get("loans", 0.0))
-    )
-    equity_i = weights * hh_equity_total
-    trust_i = np.full(n, trust_value_total / float(n), dtype=float)
-    wealth_i = dep_i + equity_i + trust_i - loan_i
+    wealth_i = dep_i + housing_i - loan_i
+    renters = (mort_i <= 1e-12) & (housing_i <= 1e-12)
+    mortgagors = mort_i > 1e-12
+    outright_owners = (mort_i <= 1e-12) & (housing_i > 1e-12)
+    initial_tenure_code = np.asarray(getattr(hh, "initial_tenure_code", np.asarray([], dtype=int)), dtype=int)
+    if initial_tenure_code.shape[0] != n:
+        initial_tenure_code = np.ones(n, dtype=int)
+    initial_outright_owner = initial_tenure_code == 2
+    initial_other = ~initial_outright_owner
+    income_groups_policy: Dict[str, List[float]] = {}
+    sol = sim.solve_within_tick_population()
+    if sol is not None:
+        wages_i = np.asarray(sol.get("wages_i", []), dtype=float)
+        income_tax_i = np.asarray(sol.get("income_tax_i", []), dtype=float)
+        vat_credit_i = np.asarray(sol.get("vat_credit_i", []), dtype=float)
+        if wages_i.shape[0] == n and income_tax_i.shape[0] == n and vat_credit_i.shape[0] == n:
+            has_vat_credit = vat_credit_i > 1e-9
+            pays_income_tax = income_tax_i > 1e-9
+            income_groups_policy = {
+                "vat_credit_no_income_tax": income_i[has_vat_credit & (~pays_income_tax)].astype(float).tolist(),
+                "vat_credit_and_income_tax": income_i[has_vat_credit & pays_income_tax].astype(float).tolist(),
+                "no_vat_credit_no_income_tax": income_i[(~has_vat_credit) & (~pays_income_tax)].astype(float).tolist(),
+                "no_vat_credit_and_income_tax": income_i[(~has_vat_credit) & pays_income_tax].astype(float).tolist(),
+            }
 
     return {
-        "price_level": float(p_now),
+        "price_level": float(sim.state.get("price_level", 1.0)),
         "income": income_i.astype(float).tolist(),
+        "income_groups": {
+            "renters": income_i[renters].astype(float).tolist(),
+            "mortgagors": income_i[mortgagors].astype(float).tolist(),
+            "outright_owners": income_i[outright_owners].astype(float).tolist(),
+        },
+        "income_groups_initial_owner": {
+            "initial_outright_owner": income_i[initial_outright_owner].astype(float).tolist(),
+            "initial_other_households": income_i[initial_other].astype(float).tolist(),
+        },
+        "income_groups_policy": income_groups_policy,
         "wealth": wealth_i.astype(float).tolist(),
+        "wealth_groups": {
+            "renters": wealth_i[renters].astype(float).tolist(),
+            "mortgagors": wealth_i[mortgagors].astype(float).tolist(),
+            "outright_owners": wealth_i[outright_owners].astype(float).tolist(),
+        },
     }
 
 
@@ -460,6 +462,10 @@ def _sync_startup_household_state(sim: NewLoop) -> None:
         sim.population.mpc_q = np.asarray(hh.mpc_q, dtype=float).astype(float).tolist()
 
     sim.nodes["HH"].set("deposits", hh.sum_deposits())
+    sim.nodes["HOUSING"].set(
+        "deposits",
+        float(sim.state.get("housing_financing_deposits_total", 0.0)),
+    )
     bank = sim.nodes["BANK"]
     dep_liab = float(sim._sum_deposits_all())
     bank.set("deposit_liab", dep_liab)
@@ -496,6 +502,7 @@ def _apply_startup_income_buffer_reset(
     prev_deposits = np.asarray(hh.deposits, dtype=float).copy()
     prev_income = np.asarray(hh.prev_income, dtype=float).copy()
     last_snapshot: Dict[str, Any] | None = None
+    deposit_blend = max(0.0, min(1.0, float(sim.params.get("startup_buffer_alignment_deposit_blend", 0.0))))
     for _ in range(max(1, int(max_iter))):
         snapshot = _startup_solver_snapshot(sim)
         if snapshot is None:
@@ -506,6 +513,9 @@ def _apply_startup_income_buffer_reset(
         if reset_deposits:
             target_i = np.maximum(0.0, np.asarray(snapshot["target_buffer_i"], dtype=float))
             hh.deposits = target_i.astype(float, copy=True)
+        elif deposit_blend > 0.0:
+            target_i = np.maximum(0.0, np.asarray(snapshot["target_buffer_i"], dtype=float))
+            hh.deposits = (((1.0 - deposit_blend) * np.asarray(hh.deposits, dtype=float)) + (deposit_blend * target_i)).astype(float, copy=True)
 
         if pop_mod is None or not mpc_schedule:
             _sync_startup_household_state(sim)
@@ -716,23 +726,138 @@ def _prepare_startup_sim(sim: NewLoop) -> Dict[str, Any] | None:
     return reset_stats
 
 
+def _reseed_visible_start_capacity(sim: NewLoop) -> Dict[str, Any] | None:
+    """Re-anchor sector capacity after neutral warmup using visible-regime demand."""
+    snapshot = _startup_solver_snapshot(sim)
+    if snapshot is None:
+        return None
+
+    sol = snapshot.get("sol")
+    if not isinstance(sol, dict):
+        return None
+
+    p_now = max(float(sim.state.get("price_level", 1.0)), 1e-9)
+    hh_demand_fa_real = float(sol.get("hh_demand_fa_real", 0.0))
+    hh_demand_fh_real = float(sol.get("hh_demand_fh_real", 0.0))
+    supplier_fa_real = float(sol.get("supplier_sales_fa_real", 0.0))
+    supplier_fh_real = float(sol.get("supplier_sales_fh_real", 0.0))
+    ums_fa_real = float(sol.get("ums_recycle_fa_nom", 0.0)) / p_now
+    ums_fh_real = float(sol.get("ums_recycle_fh_nom", 0.0)) / p_now
+
+    sim.state.pop("sector_base_capacity_info_real", None)
+    sim.state.pop("sector_base_capacity_phys_real", None)
+    sim._ensure_sector_capacity_anchors(
+        hh_demand_fa_real,
+        hh_demand_fh_real,
+        supplier_fa_real=supplier_fa_real,
+        supplier_fh_real=supplier_fh_real,
+        ums_fa_real=ums_fa_real,
+        ums_fh_real=ums_fh_real,
+    )
+    sim.state["sector_capacity_info_real_prev"] = float(sim._sector_capacity_real("FA"))
+    sim.state["sector_capacity_phys_real_prev"] = float(sim._sector_capacity_real("FH"))
+    return {
+        "hh_demand_fa_real": float(hh_demand_fa_real),
+        "hh_demand_fh_real": float(hh_demand_fh_real),
+        "supplier_fa_real": float(supplier_fa_real),
+        "supplier_fh_real": float(supplier_fh_real),
+        "ums_fa_real": float(ums_fa_real),
+        "ums_fh_real": float(ums_fh_real),
+        "capacity_info_real": float(sim._sector_capacity_real("FA")),
+        "capacity_phys_real": float(sim._sector_capacity_real("FH")),
+    }
+
+
+def _neutral_warmup_regime_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a copy of cfg with policy actions disabled for neutral warm-up."""
+    warm_cfg = copy.deepcopy(cfg)
+    params = warm_cfg["parameters"]
+    params["automation_disabled"] = True
+    params["disable_income_support"] = True
+    params["disable_trust"] = True
+    params["disable_mortgage_relief"] = True
+    # Keep hidden startup warm-up from pre-building visible-quarter capacity.
+    params["ums_recycle_rate_q"] = 0.0
+    params["sector_capex_share_min"] = 0.0
+    params["sector_capex_share_max"] = 0.0
+    params["sector_capex_gap_close_rate"] = 0.0
+    params["sector_capex_growth_cap_rate_q"] = 0.0
+    params["sector_install_rate_q"] = 0.0
+    params["mortgage_turnover_enabled"] = False
+    params["gov_tax_rebate_rate"] = 0.0
+    params["send_fund_residual_to_gov"] = False
+    params["fund_residual_to_gov_share"] = 0.0
+    return warm_cfg
+
+
+def _reset_post_warmup_sector_planner_state(sim: NewLoop) -> None:
+    """Clear hidden warm-up CAPEX planner carry-over before visible Q0."""
+    for key in (
+        "sector_free_cash_info_prev",
+        "sector_free_cash_phys_prev",
+        "sector_capex_queue_info_nom",
+        "sector_capex_queue_phys_nom",
+        "sector_unmet_info_real_prev",
+        "sector_unmet_phys_real_prev",
+        "sector_unmet_info_real_sm_prev",
+        "sector_unmet_phys_real_sm_prev",
+        "sector_load_gap_info_real_prev",
+        "sector_load_gap_phys_real_prev",
+        "sector_load_gap_info_real_sm_prev",
+        "sector_load_gap_phys_real_sm_prev",
+    ):
+        sim.state[key] = 0.0
+    sim.nodes["UMS"].set("deposits", 0.0)
+
+
+def _build_startup_sim(cfg: Dict[str, Any]) -> tuple[NewLoop, int, Dict[str, Any]]:
+    """Create a startup sim, optionally run hidden neutral warm-up quarters, and return the visible start index plus warm-up diagnostics."""
+    warmup_quarters = max(0, int(cfg.get("parameters", {}).get("neutral_warmup_quarters", 0)))
+    startup_cfg = _neutral_warmup_regime_cfg(cfg) if warmup_quarters > 0 else copy.deepcopy(cfg)
+    sim = NewLoop(startup_cfg)
+    _prepare_startup_sim(sim)
+    warmup_report: Dict[str, Any] = {
+        "requested_quarters": int(warmup_quarters),
+        "completed_quarters": 0,
+        "completed_fully": True,
+        "error": "",
+    }
+
+    if warmup_quarters > 0:
+        for idx in range(warmup_quarters):
+            try:
+                sim.step()
+            except Exception as exc:
+                warmup_report["completed_fully"] = False
+                warmup_report["error"] = f"{type(exc).__name__}: {exc}"
+                break
+            warmup_report["completed_quarters"] = int(idx + 1)
+        _prepare_startup_sim(sim)
+        sim.params = copy.deepcopy(cfg["parameters"])
+        sim.income_support_policy = make_income_support_policy(sim.params)
+        _reset_post_warmup_sector_planner_state(sim)
+        reseed_stats = _reseed_visible_start_capacity(sim)
+        if reseed_stats is not None:
+            warmup_report["visible_start_capacity_reseed"] = dict(reseed_stats)
+
+    return sim, len(sim.history), warmup_report
+
+
 def run_simulation(n_quarters: int = 80, cfg: Dict[str, Any] | None = None) -> SimulationRun:
     """Run NewLoop for n_quarters and return structured outputs."""
     base_cfg = copy.deepcopy(get_default_config() if cfg is None else cfg)
     effective_cfg, baseline_calibration = _run_baseline_calibration(base_cfg)
 
-    startup_diag_sim = NewLoop(copy.deepcopy(effective_cfg))
-    _prepare_startup_sim(startup_diag_sim)
+    startup_diag_sim, _, warmup_report = _build_startup_sim(effective_cfg)
     startup_diag = _startup_diagnostics(startup_diag_sim)
 
-    sim = NewLoop(effective_cfg)
-    _prepare_startup_sim(sim)
+    sim, visible_history_start, _ = _build_startup_sim(effective_cfg)
     before = _population_distribution_snapshot(sim)
     quarter_diag_q0: Dict[str, Any] | None = None
     quarter_diag_q10: Dict[str, Any] | None = None
     for _ in range(int(n_quarters)):
         sim.step()
-        visible_t = len(sim.history) - 1
+        visible_t = len(sim.history) - visible_history_start - 1
         if visible_t == 0:
             quarter_diag_q0 = _quarter_state_diagnostics(sim)
         elif visible_t == 10:
@@ -740,12 +865,16 @@ def run_simulation(n_quarters: int = 80, cfg: Dict[str, Any] | None = None) -> S
     after = _population_distribution_snapshot(sim)
     pop_dist = {"before": before, "after": after} if (before is not None and after is not None) else None
     startup_diag_out = dict(startup_diag or {})
+    startup_diag_out["neutral_warmup_quarters"] = int(warmup_report.get("requested_quarters", 0))
+    startup_diag_out["neutral_warmup_quarters_completed"] = int(warmup_report.get("completed_quarters", 0))
+    startup_diag_out["neutral_warmup_completed_fully"] = bool(warmup_report.get("completed_fully", True))
+    startup_diag_out["neutral_warmup_error"] = str(warmup_report.get("error", ""))
     quarter_compare = _quarter_comparison(quarter_diag_q0, quarter_diag_q10)
     if quarter_compare is not None:
         startup_diag_out["quarter_comparison"] = quarter_compare
     return SimulationRun(
         sim=sim,
-        rows=_visible_rows(sim.history),
+        rows=_visible_rows(sim.history, start_idx=visible_history_start),
         population_distributions=pop_dist,
         startup_diagnostics=startup_diag_out,
         baseline_calibration=baseline_calibration,

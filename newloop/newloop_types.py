@@ -34,6 +34,8 @@ class HouseholdState:
     n: int
     wages0_q: np.ndarray
     deposits: np.ndarray
+    housing_escrow: np.ndarray
+    renter_rent_q: np.ndarray
     mortgage_loans: np.ndarray
     revolving_loans: np.ndarray
     mpc_q: np.ndarray
@@ -44,6 +46,7 @@ class HouseholdState:
     mort_payment_sched_q: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=float))
     mort_orig_principal: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=float))
     liquid_buffer_months_target: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=float))
+    initial_tenure_code: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=int))
 
     prev_income: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=float))
     prev_uis: float = 0.0
@@ -62,6 +65,10 @@ class HouseholdState:
             self.liquid_buffer_months_target = np.zeros(self.n, dtype=float)
         if (self.prev_income.size == 0) or (self.prev_income.shape[0] != self.n):
             self.prev_income = np.asarray(self.wages0_q, dtype=float).copy()
+        if (self.housing_escrow.size == 0) or (self.housing_escrow.shape[0] != self.n):
+            self.housing_escrow = np.zeros(self.n, dtype=float)
+        if (self.renter_rent_q.size == 0) or (self.renter_rent_q.shape[0] != self.n):
+            self.renter_rent_q = np.zeros(self.n, dtype=float)
         if (self.mort_rate_q.size == 0) or (self.mort_rate_q.shape[0] != self.n):
             self.mort_rate_q = np.zeros(self.n, dtype=float)
         if (self.mort_age_q.size == 0) or (self.mort_age_q.shape[0] != self.n):
@@ -72,6 +79,13 @@ class HouseholdState:
             self.mort_payment_sched_q = np.zeros(self.n, dtype=float)
         if (self.mort_orig_principal.size == 0) or (self.mort_orig_principal.shape[0] != self.n):
             self.mort_orig_principal = np.zeros(self.n, dtype=float)
+        if (self.initial_tenure_code.size == 0) or (self.initial_tenure_code.shape[0] != self.n):
+            initial_renters = (self.mortgage_loans <= 1e-12) & (self.housing_escrow <= 1e-12)
+            initial_owners = (self.mortgage_loans <= 1e-12) & (self.housing_escrow > 1e-12)
+            initial_codes = np.ones(self.n, dtype=int)
+            initial_codes[initial_renters] = 0
+            initial_codes[initial_owners] = 2
+            self.initial_tenure_code = initial_codes
         if (self.mort_P0.size == 0) or (self.mort_P0.shape[0] != self.n):
             self.mort_P0 = np.zeros(self.n, dtype=float)
         if (self.mort_Y0.size == 0) or (self.mort_Y0.shape[0] != self.n):
@@ -113,7 +127,13 @@ class TickResult:
     gini_wealth: float
     private_eq_per_h: float
     hh_deposits_per_h: float
+    hh_housing_value_per_h: float
     hh_debt_per_h: float
+    hh_mortgage_debt_per_h: float
+    hh_revolving_debt_per_h: float
+    hh_mortgage_balance_total: float
+    hh_mortgage_orig_principal_total: float
+    hh_mortgage_active_count: float
     corporate_eq_info_per_h: float
     corporate_eq_physical_per_h: float
     corporate_eq_total_per_h: float
@@ -144,6 +164,8 @@ class TickResult:
     capex_per_h: float
     sector_capacity_info_per_h: float
     sector_capacity_physical_per_h: float
+    sector_hh_util_info: float
+    sector_hh_util_physical: float
     sector_util_info: float
     sector_util_physical: float
     sector_demand_info_per_h: float

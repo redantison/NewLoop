@@ -24,7 +24,13 @@ METRIC_LABELS: Dict[str, str] = {
     "gini_wealth": "Gini (Wealth)",
     "private_eq_per_h": "Private Equity / Household",
     "hh_deposits_per_h": "Household Deposits / Household",
+    "hh_housing_value_per_h": "Household Housing Value / Household",
     "hh_debt_per_h": "Household Debt / Household",
+    "hh_mortgage_debt_per_h": "Household Mortgage Debt / Household",
+    "hh_revolving_debt_per_h": "Household Revolving Debt / Household",
+    "hh_mortgage_balance_total": "Outstanding Mortgage Balance",
+    "hh_mortgage_orig_principal_total": "Outstanding Mortgage Original Principal",
+    "hh_mortgage_active_count": "Active Mortgages",
     "private_roe_q": "Private Payout Yield / Quarter",
     "private_broad_roe_q": "Private Broad ROE (Annualized %)",
     "bank_broad_roe_q": "Bank Broad ROE (Annualized %)",
@@ -56,6 +62,8 @@ METRIC_LABELS: Dict[str, str] = {
     "ums_recycle_total_per_h": "Total UMS Recycled / Household",
     "sector_capacity_info_per_h": "Sector Capacity (Info) / Household",
     "sector_capacity_physical_per_h": "Sector Capacity (Physical) / Household",
+    "sector_hh_util_info": "Household Utilization (Info)",
+    "sector_hh_util_physical": "Household Utilization (Physical)",
     "sector_util_info": "Total Utilization (Info)",
     "sector_util_physical": "Total Utilization (Physical)",
     "sector_demand_info_per_h": "Sector Demand (Info) / Household",
@@ -208,6 +216,10 @@ def _line_style(metric: str, *, secondary: bool) -> Dict[str, Any]:
     style: Dict[str, Any] = {"linewidth": 2.0}
     if secondary:
         style["linestyle"] = "--"
+    if metric in {"sector_demand_info_per_h", "unmet_demand_info_per_h"}:
+        style["color"] = "tab:blue"
+    elif metric in {"sector_demand_physical_per_h", "unmet_demand_physical_per_h"}:
+        style["color"] = "tab:orange"
     if metric == "automation":
         style["linewidth"] = 2.6
         style["linestyle"] = "-"
@@ -377,14 +389,14 @@ def plot_income_support_funding_mix(
     rows: Sequence[Mapping[str, Any]],
     ax: Any = None,
     *,
-    support_mode: str = "UIS",
+    support_mode: str = "UBI",
 ) -> Any:
     """Stacked-area chart for income-support funding channels."""
     import matplotlib.pyplot as plt
 
     rows = _require_rows(rows)
     x = [int(r.get("t", i)) for i, r in enumerate(rows)]
-    mode = _normalized_mode(support_mode) or "UIS"
+    mode = _normalized_mode(support_mode) or "UBI"
 
     fund = np.maximum(0.0, np.nan_to_num(np.asarray(_series(rows, "uis_from_fund_dep_per_h"), dtype=float), nan=0.0))
     gov = np.maximum(0.0, np.nan_to_num(np.asarray(_series(rows, "uis_from_gov_dep_per_h"), dtype=float), nan=0.0))
@@ -416,14 +428,14 @@ def plot_fund_inflows(
     rows: Sequence[Mapping[str, Any]],
     ax: Any = None,
     *,
-    support_mode: str = "UIS",
+    support_mode: str = "UBI",
 ) -> Any:
     """Stacked-area chart for FUND inflow channels."""
     import matplotlib.pyplot as plt
 
     rows = _require_rows(rows)
     x = [int(r.get("t", i)) for i, r in enumerate(rows)]
-    mode = _normalized_mode(support_mode) or "UIS"
+    mode = _normalized_mode(support_mode) or "UBI"
 
     fund_div = np.maximum(0.0, np.nan_to_num(np.asarray(_series(rows, "fund_dividend_inflow_per_h"), dtype=float), nan=0.0))
 
@@ -449,7 +461,7 @@ def plot_cumulative_income_support_funding(
     rows: Sequence[Mapping[str, Any]],
     ax: Any = None,
     *,
-    support_mode: str = "UIS",
+    support_mode: str = "UBI",
     household_count: int | None = None,
 ) -> Any:
     """Line chart for cumulative income-support funding channels over time."""
@@ -457,7 +469,7 @@ def plot_cumulative_income_support_funding(
 
     rows = _require_rows(rows)
     x = [int(r.get("t", i)) for i, r in enumerate(rows)]
-    mode = _normalized_mode(support_mode) or "UIS"
+    mode = _normalized_mode(support_mode) or "UBI"
 
     gov = np.maximum(0.0, np.nan_to_num(np.asarray(_series(rows, "uis_from_gov_dep_per_h"), dtype=float), nan=0.0))
     issued = np.maximum(0.0, np.nan_to_num(np.asarray(_series(rows, "uis_issued_per_h"), dtype=float), nan=0.0))
@@ -523,7 +535,7 @@ def plot_gini_series(
 
 def plot_default_dashboard(
     rows: Sequence[Mapping[str, Any]],
-    support_mode: str = "UIS",
+    support_mode: str = "UBI",
     *,
     household_count: int | None = None,
 ) -> Any:
@@ -531,7 +543,7 @@ def plot_default_dashboard(
     import matplotlib.pyplot as plt
 
     rows = _require_rows(rows)
-    mode = _normalized_mode(support_mode) or "UIS"
+    mode = _normalized_mode(support_mode) or "UBI"
     fig, axs = plt.subplots(2, 2, figsize=(13, 8), constrained_layout=True)
 
     automation_ax = axs[0][0]
@@ -624,6 +636,76 @@ def plot_distribution_compare(
     return fig
 
 
+def _anchored_distribution_range_and_edges(
+    before: Sequence[float],
+    after: Sequence[float],
+    *,
+    bins: int,
+) -> tuple[tuple[float, float], np.ndarray]:
+    """Build a histogram grid anchored to the before distribution, extended to cover both series."""
+    b = np.asarray(before, dtype=float)
+    a = np.asarray(after, dtype=float)
+    b = b[np.isfinite(b)]
+    a = a[np.isfinite(a)]
+
+    if b.size == 0 or a.size == 0:
+        raise ValueError("Distribution plot requires non-empty before and after arrays.")
+
+    anchor_lo = float(np.percentile(b, 1.0))
+    anchor_hi = float(np.percentile(b, 99.0))
+    if anchor_hi <= anchor_lo:
+        anchor_lo = float(np.min(b))
+        anchor_hi = float(np.max(b))
+        if anchor_hi <= anchor_lo:
+            anchor_hi = anchor_lo + 1.0
+
+    n_bins_base = int(max(20, bins))
+    bin_width = (anchor_hi - anchor_lo) / float(n_bins_base)
+    if not np.isfinite(bin_width) or bin_width <= 0.0:
+        bin_width = max(1.0, abs(anchor_hi), abs(anchor_lo), 1.0) / float(n_bins_base)
+
+    data_min = float(min(np.min(b), np.min(a)))
+    data_max = float(max(np.max(b), np.max(a)))
+
+    left_steps = int(max(0.0, np.ceil((anchor_lo - data_min) / bin_width)))
+    right_steps = int(max(0.0, np.ceil((data_max - anchor_lo) / bin_width)))
+
+    left_edge = anchor_lo - float(left_steps) * bin_width
+    right_edge = anchor_lo + float(right_steps) * bin_width
+    if right_edge <= left_edge:
+        right_edge = left_edge + bin_width
+
+    n_bins = int(max(1, round((right_edge - left_edge) / bin_width)))
+    edges = left_edge + bin_width * np.arange(n_bins + 1, dtype=float)
+    if edges.size < 2:
+        edges = np.asarray([left_edge, right_edge], dtype=float)
+    else:
+        edges[-1] = right_edge
+    return (float(left_edge), float(right_edge)), edges
+
+
+def _series_percentile_window(
+    values: Sequence[float],
+    *,
+    lo_pct: float = 2.0,
+    hi_pct: float = 95.0,
+) -> tuple[float, float]:
+    """Return a stable percentile window for one series."""
+    arr = np.asarray(values, dtype=float)
+    arr = arr[np.isfinite(arr)]
+    if arr.size == 0:
+        raise ValueError("Distribution plot requires a non-empty array.")
+
+    q_lo = float(np.percentile(arr, lo_pct))
+    q_hi = float(np.percentile(arr, hi_pct))
+    if q_hi <= q_lo:
+        q_lo = float(np.min(arr))
+        q_hi = float(np.max(arr))
+        if q_hi <= q_lo:
+            q_hi = q_lo + 1.0
+    return q_lo, q_hi
+
+
 def plot_distribution_share(
     before: Sequence[float],
     after: Sequence[float],
@@ -633,6 +715,8 @@ def plot_distribution_share(
     x_limits: tuple[float, float] | None = None,
     ax: Any = None,
     bins: int = 60,
+    edges: Sequence[float] | None = None,
+    after_edges: Sequence[float] | None = None,
 ) -> Any:
     """Overlay before/after share-per-bin histograms."""
     import matplotlib.pyplot as plt
@@ -646,29 +730,56 @@ def plot_distribution_share(
     if b.size == 0 or a.size == 0:
         raise ValueError("Distribution plot requires non-empty before and after arrays.")
 
-    if x_limits is not None:
+    if edges is not None:
+        edges_arr = np.asarray(edges, dtype=float)
+        if edges_arr.ndim != 1 or edges_arr.size < 2:
+            raise ValueError("Histogram edges must be a one-dimensional sequence with at least two entries.")
+        q_lo = float(edges_arr[0])
+        q_hi = float(edges_arr[-1])
+    elif x_limits is not None:
         q_lo = float(x_limits[0])
         q_hi = float(x_limits[1])
+        edges_arr = np.linspace(q_lo, q_hi, int(max(20, bins)) + 1)
     else:
         q_lo = float(min(np.percentile(b, 1.0), np.percentile(a, 1.0)))
         q_hi = float(max(np.percentile(b, 99.0), np.percentile(a, 99.0)))
+        edges_arr = np.linspace(q_lo, q_hi, int(max(20, bins)) + 1)
     if q_hi <= q_lo:
         q_lo = float(min(b.min(), a.min()))
         q_hi = float(max(b.max(), a.max()))
         if q_hi <= q_lo:
             q_hi = q_lo + 1.0
-
-    edges = np.linspace(q_lo, q_hi, int(max(20, bins)) + 1)
+        edges_arr = np.linspace(q_lo, q_hi, int(max(20, bins)) + 1)
 
     if ax is None:
         fig, ax = plt.subplots(figsize=(9, 4.5))
     else:
         fig = ax.figure
 
+    after_edges_arr = edges_arr
+    if after_edges is not None:
+        after_edges_arr = np.asarray(after_edges, dtype=float)
+        if after_edges_arr.ndim != 1 or after_edges_arr.size < 2:
+            raise ValueError("After-series histogram edges must be a one-dimensional sequence with at least two entries.")
+
+    # For zoomed views, fold observations beyond the visible window into the
+    # edge bins instead of dropping them entirely. That preserves the presence
+    # of the left/right tails while still focusing the x-axis on the requested
+    # percentile band.
+    if edges is not None:
+        b = np.clip(b, float(edges_arr[0]), float(edges_arr[-1]))
+    if after_edges is not None:
+        a = np.clip(a, float(after_edges_arr[0]), float(after_edges_arr[-1]))
+    elif edges is not None:
+        a = np.clip(a, float(edges_arr[0]), float(edges_arr[-1]))
+
+    if b.size == 0 or a.size == 0:
+        raise ValueError("Truncated histogram window removed all observations from one series.")
+
     w_b = np.full(b.size, 1.0 / float(b.size), dtype=float)
     w_a = np.full(a.size, 1.0 / float(a.size), dtype=float)
-    before_hist = ax.hist(b, bins=edges, weights=w_b, histtype="step", linewidth=2.0, label="Before")
-    after_hist = ax.hist(a, bins=edges, weights=w_a, histtype="step", linewidth=2.0, label="After")
+    before_hist = ax.hist(b, bins=edges_arr, weights=w_b, histtype="step", linewidth=2.0, label="Before")
+    after_hist = ax.hist(a, bins=after_edges_arr, weights=w_a, histtype="step", linewidth=2.0, label="After")
     before_color = before_hist[2][0].get_edgecolor()
     after_color = after_hist[2][0].get_edgecolor()
 
@@ -678,7 +789,10 @@ def plot_distribution_share(
     ax.set_title(title)
     ax.set_xlabel(x_label)
     ax.set_ylabel("Share of Households")
-    ax.set_xlim(q_lo, q_hi)
+    if x_limits is not None:
+        ax.set_xlim(float(x_limits[0]), float(x_limits[1]))
+    else:
+        ax.set_xlim(q_lo, q_hi)
     ax.yaxis.set_major_formatter(FuncFormatter(lambda val, _: f"{100.0 * float(val):.2f}%"))
     ax.grid(alpha=0.25)
     ax.legend(loc="best")
@@ -715,6 +829,45 @@ def plot_income_distribution_dual(
 ) -> Any:
     """Two-panel income distributions: cumulative + share-per-bin."""
     import matplotlib.pyplot as plt
+    from matplotlib.ticker import FuncFormatter
+
+    b = np.asarray(income_before, dtype=float)
+    a = np.asarray(income_after, dtype=float)
+    b = b[np.isfinite(b)]
+    a = a[np.isfinite(a)]
+    if b.size == 0 or a.size == 0:
+        raise ValueError("Distribution plot requires non-empty before and after arrays.")
+
+    def _robust_sigma(arr: np.ndarray) -> float:
+        q25 = float(np.percentile(arr, 25.0))
+        q75 = float(np.percentile(arr, 75.0))
+        return max(1e-9, (q75 - q25) / 1.349)
+
+    med_b = float(np.median(b))
+    med_a = float(np.median(a))
+    sig_b = _robust_sigma(b)
+    sig_a = _robust_sigma(a)
+    x_lo = float(min(med_b - (3.0 * sig_b), med_a - (3.0 * sig_a)))
+    x_hi = float(max(med_b + (3.0 * sig_b), med_a + (3.0 * sig_a)))
+    x_lo = max(x_lo, float(min(np.min(b), np.min(a))))
+    x_hi = min(x_hi, float(max(np.max(b), np.max(a))))
+    if x_hi <= x_lo:
+        x_lo = float(min(np.min(b), np.min(a)))
+        x_hi = float(max(np.max(b), np.max(a)))
+        if x_hi <= x_lo:
+            x_hi = x_lo + 1.0
+    x_limits = (x_lo, x_hi)
+    edges = np.linspace(x_lo, x_hi, 61, dtype=float)
+    before_vals = b[(b >= x_lo) & (b <= x_hi)]
+    after_vals = a[(a >= x_lo) & (a <= x_hi)]
+    before_counts, _ = np.histogram(before_vals, bins=edges)
+    after_counts, _ = np.histogram(after_vals, bins=edges)
+    before_share = before_counts.astype(float) / max(1.0, float(b.size))
+    after_share = after_counts.astype(float) / max(1.0, float(a.size))
+    below_b = int(np.sum(b < x_lo))
+    below_a = int(np.sum(a < x_lo))
+    above_b = int(np.sum(b > x_hi))
+    above_a = int(np.sum(a > x_hi))
 
     fig, axs = plt.subplots(1, 2, figsize=(13, 4.5), constrained_layout=True)
     plot_distribution_compare(
@@ -722,15 +875,125 @@ def plot_income_distribution_dual(
         income_after,
         title=_title_with_mode("Disposable Income Distribution (Cumulative)", support_mode),
         x_label=value_label,
+        x_limits=x_limits,
         ax=axs[0],
     )
-    plot_distribution_share(
-        income_before,
-        income_after,
-        title=_title_with_mode("Disposable Income Distribution (% per Bin)", support_mode),
-        x_label=value_label,
-        ax=axs[1],
+    axs[1].step(edges[:-1], before_share, where="post", color="#1f77b4", linewidth=2.0, label="Before")
+    axs[1].step(edges[:-1], after_share, where="post", color="#ff7f0e", linewidth=2.0, label="After")
+    axs[1].axvline(med_b, color="#1f77b4", linestyle=":", linewidth=1.8, alpha=0.9)
+    axs[1].axvline(med_a, color="#ff7f0e", linestyle=":", linewidth=1.8, alpha=0.9)
+    axs[1].set_title(_title_with_mode("Disposable Income Distribution (% per Bin, Median +/- 3 Robust Sigma)", support_mode))
+    axs[1].set_xlabel(value_label)
+    axs[1].set_ylabel("Share of Households")
+    axs[1].set_xlim(x_lo, x_hi)
+    axs[1].yaxis.set_major_formatter(FuncFormatter(lambda val, _: f"{100.0 * float(val):.2f}%"))
+    axs[1].grid(alpha=0.25)
+    axs[1].legend(loc="best")
+    note = (
+        f"Clipped tails: below Before {below_b}, After {below_a}; "
+        f"above Before {above_b}, After {above_a}"
     )
+    axs[1].text(0.01, 0.99, note, transform=axs[1].transAxes, ha="left", va="top", fontsize=9, color="0.35")
+    return fig
+
+
+def plot_income_distribution_by_group(
+    income_groups: Mapping[str, Sequence[float]],
+    *,
+    value_label: str,
+    support_mode: str | None = None,
+    overall_income: Sequence[float] | None = None,
+    label_map: Mapping[str, str] | None = None,
+    color_map: Mapping[str, str] | None = None,
+    ordered_keys: Sequence[str] | None = None,
+    title: str | None = None,
+    figsize: tuple[float, float] | None = None,
+) -> Any:
+    """Show the after-income histogram split by a supplied household grouping."""
+    import matplotlib.pyplot as plt
+    from matplotlib.ticker import FuncFormatter
+
+    label_map = dict(label_map or {
+        "renters": "Renters",
+        "mortgagors": "Mortgagors",
+        "outright_owners": "Outright Owners",
+    })
+    color_map = dict(color_map or {
+        "renters": "#1f77b4",
+        "mortgagors": "#ff7f0e",
+        "outright_owners": "#2ca02c",
+    })
+    ordered_keys = tuple(ordered_keys or ("renters", "mortgagors", "outright_owners"))
+
+    cleaned_groups: Dict[str, np.ndarray] = {}
+    for key in ordered_keys:
+        values = income_groups.get(key, [])
+        arr = np.asarray(values, dtype=float)
+        arr = arr[np.isfinite(arr)]
+        if arr.size:
+            cleaned_groups[key] = arr
+
+    if not cleaned_groups:
+        raise ValueError("Income group plot requires at least one non-empty group.")
+
+    if overall_income is None:
+        overall_vals = np.concatenate(list(cleaned_groups.values()))
+    else:
+        overall_vals = np.asarray(overall_income, dtype=float)
+        overall_vals = overall_vals[np.isfinite(overall_vals)]
+        if overall_vals.size == 0:
+            overall_vals = np.concatenate(list(cleaned_groups.values()))
+
+    def _robust_sigma(arr: np.ndarray) -> float:
+        q25 = float(np.percentile(arr, 25.0))
+        q75 = float(np.percentile(arr, 75.0))
+        return max(1e-9, (q75 - q25) / 1.349)
+
+    med = float(np.median(overall_vals))
+    sigma = _robust_sigma(overall_vals)
+    x_lo = max(float(np.min(overall_vals)), med - (3.0 * sigma))
+    x_hi = min(float(np.max(overall_vals)), med + (3.0 * sigma))
+    if x_hi <= x_lo:
+        x_lo = float(np.min(overall_vals))
+        x_hi = float(np.max(overall_vals))
+        if x_hi <= x_lo:
+            x_hi = x_lo + 1.0
+
+    edges = np.linspace(x_lo, x_hi, 61, dtype=float)
+    total_n = max(1.0, float(overall_vals.size))
+
+    fig, ax = plt.subplots(figsize=figsize or (13, 4.5), constrained_layout=True)
+    overall_clip = overall_vals[(overall_vals >= x_lo) & (overall_vals <= x_hi)]
+    overall_counts, _ = np.histogram(overall_clip, bins=edges)
+    overall_share = overall_counts.astype(float) / total_n
+    ax.step(edges[:-1], overall_share, where="post", color="black", linewidth=2.4, linestyle="--", label="All Households")
+
+    for key in ordered_keys:
+        arr = cleaned_groups.get(key)
+        if arr is None or arr.size == 0:
+            continue
+        clipped = arr[(arr >= x_lo) & (arr <= x_hi)]
+        counts, _ = np.histogram(clipped, bins=edges)
+        share = counts.astype(float) / total_n
+        group_share = 100.0 * float(arr.size) / total_n
+        ax.step(
+            edges[:-1],
+            share,
+            where="post",
+            color=color_map[key],
+            linewidth=2.0,
+            label=f"{label_map[key]} ({group_share:.1f}%)",
+        )
+        ax.axvline(float(np.median(arr)), color=color_map[key], linestyle=":", linewidth=1.4, alpha=0.85)
+
+    chart_title = title or "Disposable Income Distribution By Group (After)"
+    ax.set_title(_title_with_mode(chart_title, support_mode))
+    ax.set_xlabel(value_label)
+    ax.set_ylabel("Share of Households")
+    ax.set_xlim(x_lo, x_hi)
+    ax.yaxis.set_major_formatter(FuncFormatter(lambda val, _: f"{100.0 * float(val):.2f}%"))
+    ax.grid(alpha=0.25)
+    ax.legend(loc="best")
     return fig
 
 
@@ -766,30 +1029,46 @@ def plot_wealth_distributions_full_zoom(
     x_full_hi = float(np.max(all_w))
     if x_full_hi <= x_full_lo:
         x_full_hi = x_full_lo + 1.0
-    x_lo = float(np.percentile(all_w, lo))
-    x_hi = float(np.percentile(all_w, hi))
+
+    def _robust_sigma(arr: np.ndarray) -> float:
+        q25 = float(np.percentile(arr, 25.0))
+        q75 = float(np.percentile(arr, 75.0))
+        return max(1e-9, (q75 - q25) / 1.349)
+
+    med_b = float(np.median(w_b))
+    med_a = float(np.median(w_a))
+    sig_b = _robust_sigma(w_b)
+    sig_a = _robust_sigma(w_a)
+    x_lo = float(min(med_b - (3.0 * sig_b), med_a - (3.0 * sig_a)))
+    x_hi = float(max(med_b + (3.0 * sig_b), med_a + (3.0 * sig_a)))
+    x_lo = max(x_lo, x_full_lo)
+    x_hi = min(x_hi, x_full_hi)
     if x_hi <= x_lo:
-        x_lo = float(np.min(all_w))
-        x_hi = float(np.max(all_w))
-        if x_hi <= x_lo:
-            x_hi = x_lo + 1.0
+        x_lo = x_full_lo
+        x_hi = x_full_hi
 
     fig, axs = plt.subplots(1, 2, figsize=(13, 4.5), constrained_layout=True)
     t = [int(row.get("t", idx)) for idx, row in enumerate(rows)]
     deposits = [float(row.get("hh_deposits_per_h", 0.0)) for row in rows]
+    housing_value = [float(row.get("hh_housing_value_per_h", 0.0)) for row in rows]
     direct_equity = [float(row.get("private_eq_per_h", 0.0)) for row in rows]
     trust_value = [float(row.get("trust_value_per_h", 0.0)) for row in rows]
     debt = [-float(row.get("hh_debt_per_h", 0.0)) for row in rows]
+    mortgage_debt = [-float(row.get("hh_mortgage_debt_per_h", 0.0)) for row in rows]
+    revolving_debt = [-float(row.get("hh_revolving_debt_per_h", 0.0)) for row in rows]
     net_worth = [
-        float(dep + eq + trust + debt_val)
-        for dep, eq, trust, debt_val in zip(deposits, direct_equity, trust_value, debt)
+        float(dep + hv + eq + trust + debt_val)
+        for dep, hv, eq, trust, debt_val in zip(deposits, housing_value, direct_equity, trust_value, debt)
     ]
 
     ax_left = axs[0]
     ax_left.plot(t, deposits, label="Deposits", color="#1f77b4", linewidth=2.0)
+    ax_left.plot(t, housing_value, label="Housing Value", color="#17becf", linewidth=2.0)
     ax_left.plot(t, direct_equity, label="Direct Equity", color="#ff7f0e", linewidth=2.0)
     ax_left.plot(t, trust_value, label="Trust Value", color="#2ca02c", linewidth=2.0)
     ax_left.plot(t, debt, label="Debt", color="#d62728", linewidth=2.0)
+    ax_left.plot(t, mortgage_debt, label="Mortgage Debt", color="#d62728", linewidth=1.8, linestyle=":")
+    ax_left.plot(t, revolving_debt, label="Revolving Debt", color="#8c564b", linewidth=1.8, linestyle=":")
     ax_left.plot(t, net_worth, label="Net Worth", color="#9467bd", linewidth=2.4, linestyle="--")
     ax_left.axhline(0.0, color="0.4", linewidth=1.0, alpha=0.6)
     ax_left.set_title(_title_with_mode("Household Wealth Reservoirs", support_mode))
@@ -798,15 +1077,88 @@ def plot_wealth_distributions_full_zoom(
     ax_left.grid(True, alpha=0.25)
     ax_left.legend(loc="best")
 
-    plot_distribution_share(
-        w_b,
-        w_a,
-        title=_title_with_mode(f"Wealth Distribution (Histogram, Zoomed p{int(round(lo))} to p{int(round(hi))})", support_mode),
-        x_label=value_label,
-        x_limits=(x_lo, x_hi),
-        ax=axs[1],
-        bins=70,
-    )
+    ax_right = axs[1]
+    edges = np.linspace(x_lo, x_hi, 81, dtype=float)
+    before_vals = w_b[(w_b >= x_lo) & (w_b <= x_hi)]
+    after_vals = w_a[(w_a >= x_lo) & (w_a <= x_hi)]
+    before_counts, _ = np.histogram(before_vals, bins=edges)
+    after_counts, _ = np.histogram(after_vals, bins=edges)
+    before_share = before_counts.astype(float) / max(1.0, float(w_b.size))
+    after_share = after_counts.astype(float) / max(1.0, float(w_a.size))
+
+    ax_right.step(edges[:-1], before_share, where="post", color="#1f77b4", linewidth=2.0, label="Before")
+    ax_right.step(edges[:-1], after_share, where="post", color="#ff7f0e", linewidth=2.0, label="After")
+    ax_right.axvline(float(np.median(w_b)), color="#1f77b4", linestyle=":", linewidth=1.8, alpha=0.9)
+    ax_right.axvline(float(np.median(w_a)), color="#ff7f0e", linestyle=":", linewidth=1.8, alpha=0.9)
+    ax_right.set_title(_title_with_mode("Wealth Distribution (Bucketed Lines, Median +/- 3 Robust Sigma)", support_mode))
+    ax_right.set_xlabel(value_label)
+    ax_right.set_ylabel("Share of Households")
+    ax_right.set_xlim(x_lo, x_hi)
+    from matplotlib.ticker import FuncFormatter
+    ax_right.yaxis.set_major_formatter(FuncFormatter(lambda val, _: f"{100.0 * float(val):.2f}%"))
+    ax_right.grid(alpha=0.25)
+    ax_right.legend(loc="best")
+    n_before_below = int(np.sum(w_b < x_lo))
+    n_after_below = int(np.sum(w_a < x_lo))
+    n_before_above = int(np.sum(w_b > x_hi))
+    n_after_above = int(np.sum(w_a > x_hi))
+    if n_before_below > 0 or n_after_below > 0 or n_before_above > 0 or n_after_above > 0:
+        note = (
+            f"Clipped tails: below Before {n_before_below}, After {n_after_below}; "
+            f"above Before {n_before_above}, After {n_after_above}"
+        )
+        ax_right.text(0.01, 0.99, note, transform=ax_right.transAxes, ha="left", va="top", fontsize=9, color="0.35")
+    return fig
+
+
+def plot_mortgage_stock_over_time(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    value_label: str,
+    support_mode: str | None = None,
+) -> Any:
+    """Plot mortgage stock values and active mortgage count over time."""
+    import matplotlib.pyplot as plt
+
+    rows = _require_rows(rows)
+    t = [int(row.get("t", idx)) for idx, row in enumerate(rows)]
+    active_count = [float(row.get("hh_mortgage_active_count", 0.0)) for row in rows]
+    balance_total = [float(row.get("hh_mortgage_balance_total", 0.0)) for row in rows]
+    principal_total = [float(row.get("hh_mortgage_orig_principal_total", 0.0)) for row in rows]
+
+    fig, ax_left = plt.subplots(figsize=(6.4, 4.5), constrained_layout=True)
+    ax_right = ax_left.twinx()
+
+    left_line = ax_left.plot(
+        t,
+        active_count,
+        color="#2ca02c",
+        linewidth=2.2,
+        label="Active Mortgages",
+    )[0]
+    right_balance = ax_right.plot(
+        t,
+        balance_total,
+        color="#1f77b4",
+        linewidth=2.0,
+        label="Outstanding Mortgage Value",
+    )[0]
+    right_principal = ax_right.plot(
+        t,
+        principal_total,
+        color="#ff7f0e",
+        linewidth=2.0,
+        label="Outstanding Principal Value",
+    )[0]
+
+    ax_left.set_title(_title_with_mode("Mortgage Stock And Count", support_mode))
+    ax_left.set_xlabel("Quarter")
+    ax_left.set_ylabel("Active Mortgages")
+    ax_right.set_ylabel(value_label)
+    ax_left.grid(alpha=0.25)
+
+    lines = [left_line, right_balance, right_principal]
+    ax_left.legend(lines, [line.get_label() for line in lines], loc="best")
     return fig
 
 

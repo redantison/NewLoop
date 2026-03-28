@@ -19,7 +19,9 @@ from .plotting import (
     metric_options,
     plot_default_dashboard,
     plot_fund_inflows,
+    plot_income_distribution_by_group,
     plot_income_distribution_dual,
+    plot_mortgage_stock_over_time,
     plot_metric_lines,
     plot_wealth_distributions_full_zoom,
 )
@@ -64,6 +66,8 @@ PERCENT_COLUMNS = {
     "corp_tax_rate_eff",
     "sector_op_margin_info",
     "sector_op_margin_phys",
+    "sector_hh_util_info",
+    "sector_hh_util_physical",
     "sector_util_info",
     "sector_util_physical",
     "pop_dti_med",
@@ -105,9 +109,11 @@ COMPACT_NUMBER_COLUMNS = {
 DECIMAL_COLUMNS = {"price_level", "private_inv_cov"}
 
 DISPLAY_VALUE_MODES: tuple[str, str] = ("nominal", "real")
-CONTROL_DEFAULTS_VERSION = 10
+CONTROL_DEFAULTS_VERSION = 12
 UBI_PERCENTILE_PARAM_KEY = "param__ubi_target_percentile"
 UBI_PERCENTILE_UI_KEY = "ui__ubi_target_percentile"
+MORTGAGE_RATE_PARAM_PATH: tuple[str, ...] = ("mortgage_fixed_rate_q",)
+MORTGAGE_TERM_PARAM_PATH: tuple[str, ...] = ("mortgage_term_quarters",)
 _TITLE_MODE_SUFFIX_RE = re.compile(r"\s+\((?:UIS|UBI|Stale)\)\s*$", re.IGNORECASE)
 STARTUP_ALIGNMENT_PATH: tuple[str, ...] = ("startup_buffer_alignment_enabled",)
 
@@ -117,6 +123,11 @@ def _annualize_quarterly_rate(value: float) -> float:
     if q <= -1.0:
         return float("nan")
     return (1.0 + q) ** 4 - 1.0
+
+
+def _quarterly_rate_from_annual(value: float) -> float:
+    annual = max(-0.999999, float(value))
+    return (1.0 + annual) ** 0.25 - 1.0
 
 
 # Columns to deflate when display mode is "real".
@@ -343,6 +354,10 @@ def _apply_control_defaults(st: Any, base_params: Dict[str, Any]) -> None:
     for control in PARAMETER_CONTROLS:
         key = control_widget_key(control)
         default_value = resolve_control_default(control, base_params)
+        if tuple(control.path) == MORTGAGE_RATE_PARAM_PATH and default_value is not None:
+            default_value = _annualize_quarterly_rate(float(default_value))
+        elif tuple(control.path) == MORTGAGE_TERM_PARAM_PATH and default_value is not None:
+            default_value = max(1, int(round(float(default_value) / 4.0)))
         st.session_state[key] = default_value
     st.session_state["run__quarters"] = RUN_DEFAULT_QUARTERS
     raw_mode = str(base_params.get("dashboard_value_mode", "nominal")).strip().lower()
@@ -360,6 +375,10 @@ def _ensure_control_defaults(st: Any, base_params: Dict[str, Any]) -> None:
     for control in PARAMETER_CONTROLS:
         key = control_widget_key(control)
         default_value = resolve_control_default(control, base_params)
+        if tuple(control.path) == MORTGAGE_RATE_PARAM_PATH and default_value is not None:
+            default_value = _annualize_quarterly_rate(float(default_value))
+        elif tuple(control.path) == MORTGAGE_TERM_PARAM_PATH and default_value is not None:
+            default_value = max(1, int(round(float(default_value) / 4.0)))
         if key not in st.session_state or st.session_state.get(key) is None:
             st.session_state[key] = default_value
     if "run__quarters" not in st.session_state:
@@ -387,11 +406,16 @@ def _build_cfg_from_state(st: Any, base_cfg: Dict[str, Any]) -> Dict[str, Any]:
     for control in PARAMETER_CONTROLS:
         key = control_widget_key(control)
         raw = st.session_state.get(key, resolve_control_default(control, params))
-        set_by_path(params, control.path, _coerce_value(raw, control.kind))
+        if tuple(control.path) == MORTGAGE_RATE_PARAM_PATH:
+            set_by_path(params, control.path, _quarterly_rate_from_annual(float(raw)))
+        elif tuple(control.path) == MORTGAGE_TERM_PARAM_PATH:
+            set_by_path(params, control.path, max(1, int(raw) * 4))
+        else:
+            set_by_path(params, control.path, _coerce_value(raw, control.kind))
 
     # Guardrail: a zero UBI percentile anchors to zero in this population (some households have zero market income).
     # Keep run config sane even if a stale UI state slips through.
-    mode = str(params.get("income_support_mode", "UIS")).strip().upper()
+    mode = str(params.get("income_support_mode", "UBI")).strip().upper()
     if mode == "UBI":
         try:
             pct_val = float(params.get("ubi_target_percentile", 30.0))
@@ -489,9 +513,23 @@ def _population_dist_for_value_mode(
         scale = p0_eff / p
         income = [float(v) * scale for v in snapshot.get("income", [])]
         wealth = [float(v) * scale for v in snapshot.get("wealth", [])]
+        def _scale_groups(key: str) -> dict[str, list[float]]:
+            groups_raw = snapshot.get(key, {})
+            if not isinstance(groups_raw, dict):
+                return {}
+            return {
+                str(k): [float(v) * scale for v in vals]
+                for k, vals in groups_raw.items()
+                if isinstance(vals, list)
+            }
+
         out = dict(snapshot)
         out["income"] = income
+        out["income_groups"] = _scale_groups("income_groups")
+        out["income_groups_initial_owner"] = _scale_groups("income_groups_initial_owner")
+        out["income_groups_policy"] = _scale_groups("income_groups_policy")
         out["wealth"] = wealth
+        out["wealth_groups"] = _scale_groups("wealth_groups")
         return out
 
     return {"before": _scaled(before), "after": _scaled(after)}
@@ -675,7 +713,7 @@ def _cached_run_payload(n_quarters: int, cfg_json: str) -> Dict[str, Any]:
     cfg = json.loads(cfg_json)
     run = run_simulation(n_quarters=int(n_quarters), cfg=cfg)
     support_debug = {
-        "mode": str(run.sim.params.get("income_support_mode", "UIS")).strip().upper(),
+        "mode": str(run.sim.params.get("income_support_mode", "UBI")).strip().upper(),
         "disabled": bool(run.sim.params.get("disable_income_support", False)),
         "ubi_anchor_real_per_h": run.sim.state.get("ubi_anchor_real_per_h", None),
         "ubi_anchor_nominal_per_h_base": run.sim.state.get("ubi_anchor_nominal_per_h_base", None),
@@ -704,7 +742,7 @@ def main() -> None:
 
     st.set_page_config(page_title="NewLoop", layout="wide")
     _inject_selectbox_chevron_fallback(st)
-    st.title("NewLoop v2")
+    st.title("NewLoop v 2.2")
     st.caption("Interactive simulation with parameterized runs and reusable plotting.")
 
     base_cfg = get_default_config()
@@ -764,9 +802,9 @@ def main() -> None:
     )
 
     support_debug = dict(st.session_state.get("support_debug", {}))
-    support_mode_cfg = str(current_cfg.get("parameters", {}).get("income_support_mode", "UIS")).strip().upper()
+    support_mode_cfg = str(current_cfg.get("parameters", {}).get("income_support_mode", "UBI")).strip().upper()
     if support_mode_cfg not in {"UIS", "UBI"}:
-        support_mode_cfg = "UIS"
+        support_mode_cfg = "UBI"
     support_mode = str(support_debug.get("mode", support_mode_cfg)).strip().upper()
     if support_mode not in {"UIS", "UBI"}:
         support_mode = support_mode_cfg
@@ -831,7 +869,7 @@ def main() -> None:
 
     st.caption(
         "Gini labels: Disposable is the model's post-policy household income measure. "
-        "Wealth is deposits plus allocated household equity claims minus loans."
+        "Wealth is deposits plus household housing value plus allocated household equity claims minus loans."
     )
     st.caption(
         "Mortgage-burden metrics use required mortgage payment divided by pre-debt disposable income "
@@ -849,18 +887,6 @@ def main() -> None:
         "Cumulative public funding equals cumulative GOV funding plus cumulative issuance funding "
         "(economy totals, in the currently selected nominal/real display mode)."
     )
-
-    fund_flow_fig, (ax_fund_inflows, ax_fund_blank) = plt.subplots(1, 2, figsize=(13, 4.5), constrained_layout=True)
-    plot_fund_inflows(
-        rows,
-        support_mode=support_mode,
-        ax=ax_fund_inflows,
-    )
-    ax_fund_blank.axis("off")
-    if config_stale:
-        _mark_figure_stale(fund_flow_fig)
-    st.pyplot(fund_flow_fig, clear_figure=False)
-    plt.close(fund_flow_fig)
 
     equity_fig, (ax_equity, ax_recycling) = plt.subplots(1, 2, figsize=(13, 4.5), constrained_layout=True)
     plot_metric_lines(
@@ -899,21 +925,34 @@ def main() -> None:
     st.pyplot(equity_fig, clear_figure=False)
     plt.close(equity_fig)
 
-    sector_fig, (ax_capacity, ax_shortfall) = plt.subplots(1, 2, figsize=(13, 4.5), constrained_layout=True)
+    sector_fig, (ax_capacity, ax_total_util, ax_shortfall) = plt.subplots(1, 3, figsize=(18, 4.5), constrained_layout=True)
     plot_metric_lines(
         rows,
         [
             "sector_capacity_info_per_h",
             "sector_capacity_physical_per_h",
+            "sector_hh_util_info",
+            "sector_hh_util_physical",
+        ],
+        title="Sector Capacity And Household Utilization",
+        primary_ylabel="Capacity / Household",
+        secondary_metrics=["sector_hh_util_info", "sector_hh_util_physical"],
+        secondary_ylabel="Household Utilization",
+        support_mode=support_mode,
+        ax=ax_capacity,
+    )
+    plot_metric_lines(
+        rows,
+        [
             "sector_util_info",
             "sector_util_physical",
         ],
-        title="Sector Capacity And Total Utilization",
-        primary_ylabel="Capacity / Household",
+        title="Sector Total Utilization",
+        primary_ylabel="Total Utilization",
         secondary_metrics=["sector_util_info", "sector_util_physical"],
         secondary_ylabel="Total Utilization",
         support_mode=support_mode,
-        ax=ax_capacity,
+        ax=ax_total_util,
     )
     plot_metric_lines(
         rows,
@@ -973,6 +1012,7 @@ def main() -> None:
         after = pop_dist.get("after", {})
         income_before = before.get("income", [])
         income_after = after.get("income", [])
+        income_groups_policy_after = after.get("income_groups_policy", {})
         wealth_before = before.get("wealth", [])
         wealth_after = after.get("wealth", [])
         if income_before and income_after and wealth_before and wealth_after:
@@ -990,21 +1030,61 @@ def main() -> None:
             st.pyplot(income_fig, clear_figure=False)
             plt.close(income_fig)
 
-            zoom_window = st.slider(
-                "Wealth zoom percentile window",
-                min_value=0,
-                max_value=100,
-                value=(2, 98),
-                step=1,
-                help="Zooms the right-hand wealth histogram to this percentile band while keeping the left-hand household wealth reservoirs plot for context.",
-            )
+            if isinstance(income_groups_policy_after, dict) and income_groups_policy_after:
+                income_group_policy_fig = plot_income_distribution_by_group(
+                    income_groups_policy_after,
+                    value_label=value_label,
+                    support_mode=support_mode,
+                    overall_income=income_after,
+                    label_map={
+                        "vat_credit_no_income_tax": "VAT Credit, No Income Tax",
+                        "vat_credit_and_income_tax": "VAT Credit And Income Tax",
+                        "no_vat_credit_no_income_tax": "No VAT Credit, No Income Tax",
+                        "no_vat_credit_and_income_tax": "No VAT Credit, Income Tax",
+                    },
+                    color_map={
+                        "vat_credit_no_income_tax": "#1f77b4",
+                        "vat_credit_and_income_tax": "#17becf",
+                        "no_vat_credit_no_income_tax": "#bcbd22",
+                        "no_vat_credit_and_income_tax": "#d62728",
+                    },
+                    ordered_keys=(
+                        "vat_credit_no_income_tax",
+                        "vat_credit_and_income_tax",
+                        "no_vat_credit_no_income_tax",
+                        "no_vat_credit_and_income_tax",
+                    ),
+                    title="Disposable Income Distribution By Tax And VAT-Credit Status (After)",
+                    figsize=(6.4, 4.8),
+                )
+                if config_stale:
+                    _mark_figure_stale(income_group_policy_fig)
+                policy_left_col, policy_right_col = st.columns(2)
+                with policy_left_col:
+                    mortgage_stock_fig = plot_mortgage_stock_over_time(
+                        rows,
+                        value_label=value_label,
+                        support_mode=support_mode,
+                    )
+                    if config_stale:
+                        _mark_figure_stale(mortgage_stock_fig)
+                    st.pyplot(mortgage_stock_fig, clear_figure=False)
+                    plt.close(mortgage_stock_fig)
+                with policy_right_col:
+                    st.pyplot(income_group_policy_fig, clear_figure=False)
+                    st.caption(
+                        "This diagnostic highlights whether the transition is sorting households into "
+                        "distinct disposable-income bands defined by support, VAT-credit eligibility, "
+                        "and income-tax status. Read it as evidence of emerging policy-shaped strata, "
+                        "not by itself as proof of permanent classes."
+                    )
+                plt.close(income_group_policy_fig)
+
             wealth_fig = plot_wealth_distributions_full_zoom(
                 rows,
                 wealth_before,
                 wealth_after,
                 value_label=value_label,
-                zoom_lo_pct=float(zoom_window[0]),
-                zoom_hi_pct=float(zoom_window[1]),
                 support_mode=support_mode,
             )
             if config_stale:

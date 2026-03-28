@@ -47,7 +47,7 @@ class PopulationGenerationTests(unittest.TestCase):
         self.assertLessEqual(base_real_medians[0], 500.0)
         self.assertGreaterEqual(base_real_medians[-1], 625.0)
         self.assertLessEqual(base_real_medians[-1], 725.0)
-        self.assertGreaterEqual(realized_buffer_months[0], 0.9)
+        self.assertGreaterEqual(realized_buffer_months[0], 0.6)
         self.assertLessEqual(realized_buffer_months[0], 3.0)
         self.assertGreaterEqual(realized_buffer_months[-1], 7.0)
         self.assertLessEqual(realized_buffer_months[-1], 14.0)
@@ -71,6 +71,34 @@ class PopulationGenerationTests(unittest.TestCase):
         self.assertIn(1.5, rounded_targets)
         self.assertIn(12.0, rounded_targets)
         self.assertLess(int(counts.max()), 100)
+
+    def test_renters_receive_explicit_rent_burden(self):
+        cfg = PopulationConfig(
+            n_families=5000,
+            seed=7919,
+            employment_rate=1.0,
+            deposit_generation_mode="liquid_buffer_months",
+        )
+        pop = generate_population(cfg)
+
+        mort = np.asarray(pop.mortgage_loans, dtype=float)
+        housing = np.asarray(pop.housing_values, dtype=float)
+        rent = np.asarray(pop.renter_rent_q, dtype=float)
+        pay = np.asarray(pop.mortgage_payment_sched_q, dtype=float)
+        wages = np.asarray(pop.wages_q, dtype=float)
+
+        renters = (mort <= 1e-12) & (housing <= 1e-12)
+        mortgagors = mort > 1e-12
+        self.assertTrue(bool(np.any(renters)))
+        self.assertGreater(float(np.median(rent[renters])), 0.0)
+        self.assertTrue(bool(np.all(rent[~renters] <= 1e-12)))
+        low_end_cut = float(np.percentile(wages[mortgagors], 40.0))
+        low_end_mort_pay = pay[mortgagors & (wages <= low_end_cut)]
+        self.assertGreater(low_end_mort_pay.size, 0)
+        renter_med = float(np.median(rent[renters]))
+        low_end_med = float(np.median(low_end_mort_pay))
+        self.assertGreater(renter_med, 0.5 * low_end_med)
+        self.assertLess(renter_med, 1.5 * low_end_med)
 
 
 if __name__ == "__main__":

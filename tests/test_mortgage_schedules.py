@@ -90,6 +90,10 @@ class MortgageScheduleTests(unittest.TestCase):
 
         active = np.asarray(hh.mortgage_loans, dtype=float) > 1e-12
         self.assertTrue(bool(np.any(active)))
+        self.assertTrue(
+            np.all(np.asarray(hh.housing_escrow, dtype=float)[active] >= np.asarray(hh.mortgage_loans, dtype=float)[active])
+        )
+        self.assertAlmostEqual(float(sim.nodes["HOUSING"].get("deposits", 0.0)), 0.0, places=9)
         self.assertTrue(np.all(np.asarray(hh.mort_rate_q, dtype=float)[active] > 0.0))
         self.assertTrue(np.all(np.asarray(hh.mort_term_q, dtype=float)[active] == 60.0))
         self.assertTrue(np.all(np.asarray(hh.mort_payment_sched_q, dtype=float)[active] > 0.0))
@@ -118,6 +122,44 @@ class MortgageScheduleTests(unittest.TestCase):
                 atol=1e-9,
             )
         )
+
+    def test_population_initializes_explicit_tenure_groups_with_distinct_liquidity(self):
+        sim = NewLoop(make_cfg())
+        hh = sim.hh
+        self.assertIsNotNone(hh)
+        assert hh is not None
+
+        mort = np.asarray(hh.mortgage_loans, dtype=float)
+        housing = np.asarray(hh.housing_escrow, dtype=float)
+        deposits = np.asarray(hh.deposits, dtype=float)
+        rent = np.asarray(hh.renter_rent_q, dtype=float)
+
+        mortgagors = mort > 1e-12
+        outright_owners = (mort <= 1e-12) & (housing > 1e-12)
+        renters = (mort <= 1e-12) & (housing <= 1e-12)
+
+        self.assertTrue(bool(np.any(mortgagors)))
+        self.assertTrue(bool(np.any(outright_owners)))
+        self.assertTrue(bool(np.any(renters)))
+        self.assertLess(float(np.median(deposits[renters])), float(np.median(deposits[mortgagors])))
+        self.assertLess(float(np.median(deposits[mortgagors])), float(np.median(deposits[outright_owners])))
+        self.assertGreater(float(np.median(rent[renters])), 0.0)
+        self.assertTrue(bool(np.all(rent[mortgagors] <= 1e-12)))
+        self.assertTrue(bool(np.all(rent[outright_owners] <= 1e-12)))
+
+    def test_startup_alignment_preserves_buffer_shortfalls(self):
+        sim = NewLoop(make_cfg())
+        _prepare_startup_sim(sim)
+        snap = _startup_solver_snapshot(sim)
+        self.assertIsNotNone(snap)
+        assert snap is not None
+        hh = sim.hh
+        self.assertIsNotNone(hh)
+        assert hh is not None
+
+        deposits = np.asarray(hh.deposits, dtype=float)
+        target_i = np.asarray(snap["target_buffer_i"], dtype=float)
+        self.assertTrue(bool(np.any(deposits < (target_i - 1e-6))))
 
     def test_startup_disposable_income_tail_is_not_pathological(self):
         cfg = make_cfg()
@@ -173,7 +215,7 @@ class MortgageScheduleTests(unittest.TestCase):
         cfg = make_cfg()
         params = cfg["parameters"]
         params["mortgage_turnover_enabled"] = True
-        params["mortgage_turnover_replace_share"] = 1.0
+        params["mortgage_turnover_target_payment_floor_share"] = 1.0
         params["mortgage_turnover_dti_cap"] = 5.0
         params["mortgage_turnover_income_mult_cap"] = 20.0
         params["mortgage_turnover_min_wage_q"] = 0.0
@@ -183,14 +225,14 @@ class MortgageScheduleTests(unittest.TestCase):
         self.assertIsNotNone(hh)
         assert hh is not None
 
-        had_no_mortgage = np.asarray(hh.mortgage_loans, dtype=float) <= 1e-12
+        deposits_before = float(sim.nodes["HOUSING"].get("deposits", 0.0))
+        housing_before = np.asarray(hh.housing_escrow, dtype=float).copy()
         sim.step()
         sim.step()
 
-        new_mask = (np.asarray(hh.mortgage_loans, dtype=float) > 1e-12) & (np.asarray(hh.mort_t0, dtype=int) < 0)
+        new_mask = (np.asarray(hh.housing_escrow, dtype=float) - housing_before) > 1e-12
         self.assertGreater(float(sim.state.get("mort_turnover_total", 0.0)), 0.0)
         self.assertTrue(bool(np.any(new_mask)))
-        self.assertTrue(bool(np.any(new_mask & had_no_mortgage)))
         self.assertTrue(np.all(np.asarray(hh.mort_age_q, dtype=float)[new_mask] == 0.0))
         self.assertTrue(np.all(np.asarray(hh.mort_term_q, dtype=float)[new_mask] == 60.0))
         self.assertTrue(
@@ -212,17 +254,99 @@ class MortgageScheduleTests(unittest.TestCase):
                 atol=1e-9,
             )
         )
+        self.assertTrue(
+            np.allclose(
+                np.asarray(hh.housing_escrow, dtype=float)[new_mask] - housing_before[new_mask],
+                np.asarray(hh.mortgage_loans, dtype=float)[new_mask],
+                rtol=1e-7,
+                atol=1e-9,
+            )
+        )
+        self.assertAlmostEqual(
+            float(sim.nodes["HOUSING"].get("deposits", 0.0)) - deposits_before,
+            float(sim.state.get("housing_financing_deposits_total", 0.0)),
+            places=7,
+        )
+
+    def test_newly_issued_mortgages_start_index_at_issue_date(self):
+        cfg = make_cfg()
+        params = cfg["parameters"]
+        params["mortgage_turnover_enabled"] = True
+        params["mortgage_turnover_target_payment_floor_share"] = 1.0
+        params["mortgage_turnover_dti_cap"] = 5.0
+        params["mortgage_turnover_income_mult_cap"] = 20.0
+        params["mortgage_turnover_min_wage_q"] = 0.0
+        params["mort_index_weight_w"] = 1.0
+        params["mort_index_ewma_lambda"] = 0.5
+
+        sim = NewLoop(cfg)
+        hh = sim.hh
+        self.assertIsNotNone(hh)
+        assert hh is not None
+
+        pending_new = np.zeros(hh.n, dtype=bool)
+        for _ in range(3):
+            sim.step()
+            pending_new = (np.asarray(hh.mortgage_loans, dtype=float) > 1e-12) & (np.asarray(hh.mort_t0, dtype=int) < 0)
+            if np.any(pending_new):
+                break
+
+        self.assertTrue(bool(np.any(pending_new)))
+
+        sim.state["price_level"] = 2.0
+        sim.state["mort_price_series_prev"] = 1.0
+        sim.state["mort_income_series_prev"] = 1.0
+        rL = float(sim.state.get("policy_rate_q", sim.params.get("loan_rate_per_quarter", 0.0)))
+
+        sim._ensure_mortgage_index_anchors(2.0, 1.0, rL)
+        terms = sim._compute_mortgage_index_terms(
+            mort=np.asarray(hh.mortgage_loans, dtype=float),
+            rL=rL,
+            wages_total=1.0,
+            div_house_total=0.0,
+            uis_per_h=0.0,
+            commit_state=False,
+        )
+
+        mort_index_i = np.asarray(terms["mort_index_i"], dtype=float)
+        mort_pay_req_i = np.asarray(terms["mort_pay_req_i"], dtype=float)
+        mort_pay_ctr_i = np.asarray(terms["mort_pay_ctr_i"], dtype=float)
+        mort_dln_sm_i = np.asarray(terms["mort_dln_sm_i"], dtype=float)
+
+        self.assertTrue(np.allclose(mort_index_i[pending_new], 1.0, rtol=0.0, atol=1e-9))
+        self.assertTrue(np.allclose(mort_pay_req_i[pending_new], mort_pay_ctr_i[pending_new], rtol=0.0, atol=1e-9))
+        self.assertTrue(np.allclose(mort_dln_sm_i[pending_new], 0.0, rtol=0.0, atol=1e-9))
+
+    def test_matured_mortgages_are_cleared_from_active_pool(self):
+        sim = NewLoop(make_cfg())
+        hh = sim.hh
+        self.assertIsNotNone(hh)
+        assert hh is not None
+
+        idx = int(np.argmax(np.asarray(hh.mortgage_loans, dtype=float)))
+        hh.mortgage_loans[idx] = 25.0
+        hh.mort_term_q[idx] = 60.0
+        hh.mort_age_q[idx] = 60.0
+        hh.mort_rate_q[idx] = 0.01
+        hh.mort_payment_sched_q[idx] = 25.25
+        hh.mort_orig_principal[idx] = 1000.0
+
+        sim._refresh_mortgage_contract_state()
+
+        self.assertAlmostEqual(float(hh.mortgage_loans[idx]), 0.0, places=9)
+        self.assertAlmostEqual(float(hh.mort_age_q[idx]), 0.0, places=9)
+        self.assertAlmostEqual(float(hh.mort_term_q[idx]), 0.0, places=9)
+        self.assertAlmostEqual(float(hh.mort_payment_sched_q[idx]), 0.0, places=9)
 
     def test_revolving_credit_is_capped(self):
-        cfg = make_cfg()
-        run = run_simulation(120, cfg)
-        hh = run.sim.hh
+        sim = NewLoop(make_cfg())
+        hh = sim.hh
         self.assertIsNotNone(hh)
         assert hh is not None
 
         rev = np.asarray(hh.revolving_loans, dtype=float)
         wages_q = np.asarray(hh.wages0_q, dtype=float)
-        cap_mult = float(cfg["parameters"]["population_config"]["revolving_cap_income_mult"])
+        cap_mult = float(make_cfg()["parameters"]["population_config"]["revolving_cap_income_mult"])
         rev_cap = cap_mult * np.maximum(0.0, 4.0 * wages_q)
         self.assertTrue(np.all(rev <= (rev_cap + 1e-6)))
 

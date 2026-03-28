@@ -10,7 +10,7 @@ sys.path.insert(0, str(ROOT))
 
 from newloop.config import get_default_config
 from newloop.engine import NewLoop
-from newloop.results import _population_distribution_snapshot, _prepare_startup_sim, _startup_diagnostics
+from newloop.results import _population_distribution_snapshot, _prepare_startup_sim, _startup_diagnostics, run_simulation
 
 
 def make_cfg():
@@ -20,6 +20,10 @@ def make_cfg():
 
 
 class PolicyAlignmentTests(unittest.TestCase):
+    def test_default_support_mode_is_ubi(self):
+        cfg = make_cfg()
+        self.assertEqual(str(cfg["parameters"].get("income_support_mode", "")).upper(), "UBI")
+
     def test_default_run_stays_stock_flow_consistent(self):
         sim = NewLoop(make_cfg())
         for _ in range(12):
@@ -254,6 +258,85 @@ class PolicyAlignmentTests(unittest.TestCase):
 
         self.assertTrue(np.all(mort_pay_req_i[active] <= (cap_i[active] + 1e-9)))
 
+    def test_sector_capex_plan_ignores_internal_load_gap_when_household_unmet_is_zero(self):
+        cfg = make_cfg()
+        sim = NewLoop(cfg)
+
+        sim.state["price_level"] = 1.0
+        sim.state["sector_capacity_info_real_prev"] = 1000.0
+        sim.state["sector_free_cash_info_prev"] = 1000.0
+        sim.state["sector_unmet_info_real_prev"] = 0.0
+        sim.state["sector_unmet_info_real_sm_prev"] = 0.0
+        sim.state["sector_load_gap_info_real_prev"] = 0.0
+        sim.state["sector_load_gap_info_real_sm_prev"] = 0.0
+
+        capex_without_load_gap = sim._sector_capex_plan_nom("FA", 1.0)
+
+        sim.state["sector_load_gap_info_real_prev"] = 400.0
+        sim.state["sector_load_gap_info_real_sm_prev"] = 400.0
+        capex_with_load_gap = sim._sector_capex_plan_nom("FA", 1.0)
+
+        self.assertAlmostEqual(capex_with_load_gap, capex_without_load_gap, places=9)
+
+    def test_sector_capex_plan_funds_maintenance_before_expansion(self):
+        cfg = make_cfg()
+        sim = NewLoop(cfg)
+
+        sim.state["price_level"] = 1.0
+        sim.nodes["FH"].set("K", 1000.0)
+        sim.state["sector_base_capacity_phys_real"] = 1000.0
+        sim.state["sector_capacity_phys_real_prev"] = sim._sector_capacity_real("FH")
+        maintenance_nom = sim._sector_maintenance_capex_nom("FH", 1.0)
+        reserve_share = float(cfg["parameters"].get("sector_maintenance_reserve_share", 1.0))
+        sim.state["sector_free_cash_phys_prev"] = maintenance_nom + 100.0
+        sim.state["sector_unmet_phys_real_prev"] = 0.0
+        sim.state["sector_unmet_phys_real_sm_prev"] = 0.0
+        sim.state["sector_load_gap_phys_real_prev"] = 0.0
+        sim.state["sector_load_gap_phys_real_sm_prev"] = 0.0
+
+        capex_plan_nom = sim._sector_capex_plan_nom("FH", 1.0)
+
+        self.assertGreaterEqual(capex_plan_nom, (reserve_share * maintenance_nom) - 1e-9)
+
+    def test_sector_dividend_commit_reserves_maintenance_profit_first(self):
+        cfg = make_cfg()
+        sim = NewLoop(cfg)
+
+        sim.state["price_level"] = 1.0
+        sim.nodes["FH"].set("K", 1000.0)
+        sim.state["sector_base_capacity_phys_real"] = 1000.0
+
+        maintenance_nom = sim._sector_maintenance_capex_nom("FH", 1.0)
+        reserve_share = float(cfg["parameters"].get("sector_maintenance_reserve_share", 1.0))
+        distributable = sim._sector_profit_distributable_nom("FH", maintenance_nom + 50.0, 1.0)
+
+        self.assertAlmostEqual(distributable, ((1.0 - reserve_share) * maintenance_nom) + 50.0, places=6)
+
+    def test_mortgage_gap_neutralization_funds_bank_when_gap_exists(self):
+        cfg = make_cfg()
+        params = cfg["parameters"]
+        params["mort_neutralize_trigger_mode"] = "Always"
+        params["mort_neutralize_funding_stack"] = ["ISSUANCE"]
+        params["mort_neutralize_cap_mode"] = "None"
+        params["gov_tax_rebate_rate"] = 0.0
+
+        sim = NewLoop(cfg)
+        sim.step()
+
+        self.assertGreater(float(sim.state.get("mort_gap_total", 0.0)), 0.0)
+        self.assertGreater(float(sim.state.get("bank_mort_neutralize_inflow", 0.0)), 0.0)
+        self.assertGreater(float(sim.state.get("bank_mort_neutralize_principal_inflow", 0.0)), 0.0)
+        self.assertAlmostEqual(
+            float(sim.state.get("bank_mort_neutralize_inflow", 0.0)),
+            float(sim.state.get("mort_gap_total", 0.0)),
+            places=6,
+        )
+        self.assertAlmostEqual(
+            float(sim.state.get("mort_gap_paid_by_issuance", 0.0)),
+            float(sim.state.get("mort_gap_total", 0.0)),
+            places=6,
+        )
+
     def test_mortgage_neutralization_splits_interest_from_principal(self):
         cfg = make_cfg()
         cfg["parameters"]["mort_neutralize_trigger_mode"] = "Always"
@@ -348,7 +431,7 @@ class PolicyAlignmentTests(unittest.TestCase):
         self.assertGreater(float(sim.nodes["FA"].get("K", 0.0)), 0.0)
         self.assertGreater(float(sim.nodes["FH"].get("K", 0.0)), 0.0)
 
-    def test_population_wealth_snapshot_splits_trust_value_equally(self):
+    def test_population_wealth_snapshot_ignores_aggregate_trust_holdings(self):
         cfg = make_cfg()
         sim = NewLoop(cfg)
         assert sim.hh is not None
@@ -366,7 +449,7 @@ class PolicyAlignmentTests(unittest.TestCase):
         assert with_trust is not None
 
         delta = np.asarray(with_trust["wealth"], dtype=float) - np.asarray(baseline["wealth"], dtype=float)
-        np.testing.assert_allclose(delta, np.full(delta.shape, 200.0 / float(sim.hh.n)), rtol=0.0, atol=1e-9)
+        np.testing.assert_allclose(delta, np.zeros(delta.shape, dtype=float), rtol=0.0, atol=1e-9)
 
     def test_sector_target_payout_rate_rises_when_unmet_demand_is_low(self):
         cfg = make_cfg()
@@ -416,6 +499,74 @@ class PolicyAlignmentTests(unittest.TestCase):
         assert diag is not None
         self.assertAlmostEqual(float(diag.get("startup_op_margin_info", 0.0)), 0.25, delta=0.03)
         self.assertAlmostEqual(float(diag.get("startup_op_margin_phys", 0.0)), 0.10, delta=0.03)
+
+    def test_uis_starts_at_zero_and_anchors_from_q0_wages(self):
+        cfg = make_cfg()
+        cfg["parameters"]["income_support_mode"] = "UIS"
+
+        sim = NewLoop(cfg)
+        sim.step()
+
+        q0 = sim.history[0]
+        self.assertAlmostEqual(float(q0.uis_per_h), 0.0, places=9)
+
+        p0 = max(1e-9, float(q0.price_level))
+        expected_real_target = float(q0.wages_total) / p0
+        self.assertAlmostEqual(
+            float(sim.state.get("income_target_pool_real_pop", 0.0)),
+            expected_real_target,
+            places=6,
+        )
+
+    def test_neutral_warmup_makes_before_snapshot_common_across_support_modes(self):
+        cfg_uis = make_cfg()
+        cfg_ubi = make_cfg()
+        cfg_uis["parameters"]["income_support_mode"] = "UIS"
+        cfg_ubi["parameters"]["income_support_mode"] = "UBI"
+        cfg_uis["parameters"]["neutral_warmup_quarters"] = 2
+        cfg_ubi["parameters"]["neutral_warmup_quarters"] = 2
+        cfg_uis["parameters"]["baseline_calibration_enabled"] = False
+        cfg_ubi["parameters"]["baseline_calibration_enabled"] = False
+
+        run_uis = run_simulation(n_quarters=1, cfg=cfg_uis)
+        run_ubi = run_simulation(n_quarters=1, cfg=cfg_ubi)
+
+        before_uis = run_uis.population_distributions["before"]
+        before_ubi = run_ubi.population_distributions["before"]
+
+        self.assertTrue(np.allclose(np.asarray(before_uis["income"], dtype=float), np.asarray(before_ubi["income"], dtype=float)))
+        self.assertTrue(np.allclose(np.asarray(before_uis["wealth"], dtype=float), np.asarray(before_ubi["wealth"], dtype=float)))
+        self.assertEqual(int(run_uis.startup_diagnostics.get("neutral_warmup_quarters", 0)), 2)
+        self.assertGreaterEqual(int(run_uis.startup_diagnostics.get("neutral_warmup_quarters_completed", 0)), 1)
+        self.assertEqual(int(run_ubi.startup_diagnostics.get("neutral_warmup_quarters", 0)), 2)
+        self.assertGreaterEqual(int(run_ubi.startup_diagnostics.get("neutral_warmup_quarters_completed", 0)), 1)
+        self.assertEqual(
+            int(run_uis.startup_diagnostics.get("neutral_warmup_quarters_completed", 0)),
+            int(run_ubi.startup_diagnostics.get("neutral_warmup_quarters_completed", 0)),
+        )
+
+    def test_neutral_warmup_preserves_visible_q0_label(self):
+        cfg = make_cfg()
+        cfg["parameters"]["neutral_warmup_quarters"] = 2
+        run = run_simulation(n_quarters=2, cfg=cfg)
+
+        self.assertEqual(int(run.rows[0].get("t", -1)), 0)
+        self.assertEqual(int(run.rows[1].get("t", -1)), 1)
+
+    def test_neutral_warmup_fails_soft_when_requested_length_is_infeasible(self):
+        cfg = make_cfg()
+        cfg["parameters"]["neutral_warmup_quarters"] = 3
+
+        run = run_simulation(n_quarters=1, cfg=cfg)
+
+        self.assertEqual(int(run.startup_diagnostics.get("neutral_warmup_quarters", 0)), 3)
+        completed = int(run.startup_diagnostics.get("neutral_warmup_quarters_completed", 0))
+        self.assertLessEqual(completed, 3)
+        if completed < 3:
+            self.assertFalse(bool(run.startup_diagnostics.get("neutral_warmup_completed_fully", True)))
+            self.assertTrue(str(run.startup_diagnostics.get("neutral_warmup_error", "")))
+        else:
+            self.assertTrue(bool(run.startup_diagnostics.get("neutral_warmup_completed_fully", False)))
 
     def test_sector_input_costs_accumulate_in_ums_before_trust_runs(self):
         cfg = make_cfg()
