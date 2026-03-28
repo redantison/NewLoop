@@ -222,6 +222,13 @@ class PopulationConfig:
     renter_rent_payment_mult_sigma: float = 0.15
     revolving_income_mult_median: float = 0.06  # revolving principal as multiple of annual wage
     revolving_income_mult_sigma: float = 0.80
+    revolving_balance_mult_by_wealth_pct: Tuple[Tuple[float, float], ...] = (
+        (20.0, 2.50),
+        (50.0, 1.75),
+        (80.0, 1.00),
+        (95.0, 0.70),
+        (100.0, 0.50),
+    )
     renter_deposit_target_mult_median: float = 0.70
     renter_deposit_target_mult_sigma: float = 0.65
     mortgagor_deposit_target_mult_median: float = 1.00
@@ -232,6 +239,7 @@ class PopulationConfig:
     # Revolving balance caps (to prevent extreme tails in interest burden)
     revolving_cap_income_mult: float = 0.50   # cap revolving principal at this multiple of annual wage
     revolving_cap_deposits_mult: float = 2.0  # cap revolving principal at this multiple of deposits
+    revolving_cap_deposit_floor_income_mult: float = 0.25  # treat this share of annual wage as minimum effective deposits for startup revolving cap
 
     # Interest rates (effective rates on outstanding balances; baseline calibration)
     mortgage_rate_effective: float = 0.045
@@ -701,14 +709,26 @@ def generate_population(cfg: PopulationConfig) -> Population:
 
     rev_mask = has_wage & (rng.random(n) < rev_p)
     if rev_mask.any():
+        rev_balance_schedule = tuple(
+            (float(pct), float(mult))
+            for pct, mult in getattr(cfg, "revolving_balance_mult_by_wealth_pct", ())
+        )
+        if len(rev_balance_schedule) > 0:
+            rev_balance_mult = _assign_piecewise_by_percentile_rank(deposits, rev_balance_schedule)
+        else:
+            rev_balance_mult = np.ones(n, dtype=float)
         rev_mult = rng.lognormal(
             mean=math.log(max(cfg.revolving_income_mult_median, 1e-12)),
             sigma=float(cfg.revolving_income_mult_sigma),
             size=int(rev_mask.sum()),
         )
-        raw = np.maximum(0.0, rev_mult * wages_annual[rev_mask])
+        raw = np.maximum(0.0, rev_mult * wages_annual[rev_mask] * rev_balance_mult[rev_mask])
         cap_income = float(cfg.revolving_cap_income_mult) * wages_annual[rev_mask]
-        cap_deposits = float(cfg.revolving_cap_deposits_mult) * deposits[rev_mask]
+        effective_deposits = np.maximum(
+            deposits[rev_mask],
+            float(cfg.revolving_cap_deposit_floor_income_mult) * wages_annual[rev_mask],
+        )
+        cap_deposits = float(cfg.revolving_cap_deposits_mult) * effective_deposits
         revolving_loans[rev_mask] = np.maximum(0.0, np.minimum.reduce([raw, cap_income, cap_deposits]))
 
     loans = mortgage_loans + revolving_loans

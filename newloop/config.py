@@ -216,6 +216,13 @@ config = {
             "renter_rent_payment_mult_sigma": 0.15,
             "revolving_income_mult_median": 0.06,
             "revolving_income_mult_sigma": 0.80,
+            "revolving_balance_mult_by_wealth_pct": (
+                (20.0, 2.50),
+                (50.0, 1.75),
+                (80.0, 1.00),
+                (95.0, 0.70),
+                (100.0, 0.50),
+            ),
             "renter_deposit_target_mult_median": 0.70,
             "renter_deposit_target_mult_sigma": 0.65,
             "mortgagor_deposit_target_mult_median": 1.00,
@@ -224,6 +231,7 @@ config = {
             "owner_deposit_target_mult_sigma": 0.55,
             "revolving_cap_income_mult": 0.50,
             "revolving_cap_deposits_mult": 2.0,
+            "revolving_cap_deposit_floor_income_mult": 0.25,
         },
 
         # Price level

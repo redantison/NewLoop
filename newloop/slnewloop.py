@@ -1057,14 +1057,18 @@ def main() -> None:
                 )
                 if config_stale:
                     _mark_figure_stale(income_group_policy_fig)
-                st.pyplot(income_group_policy_fig, clear_figure=False)
+                policy_left_col, policy_right_col = st.columns(2)
+                with policy_left_col:
+                    st.empty()
+                with policy_right_col:
+                    st.pyplot(income_group_policy_fig, clear_figure=False)
+                    st.caption(
+                        "This diagnostic highlights whether the transition is sorting households into "
+                        "distinct disposable-income bands defined by support, VAT-credit eligibility, "
+                        "and income-tax status. Read it as evidence of emerging policy-shaped strata, "
+                        "not by itself as proof of permanent classes."
+                    )
                 plt.close(income_group_policy_fig)
-                st.caption(
-                    "This diagnostic highlights whether the transition is sorting households into "
-                    "distinct disposable-income bands defined by support, VAT-credit eligibility, "
-                    "and income-tax status. Read it as evidence of emerging policy-shaped strata, "
-                    "not by itself as proof of permanent classes."
-                )
 
             wealth_fig = plot_wealth_distributions_full_zoom(
                 rows,
