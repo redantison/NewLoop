@@ -19,6 +19,7 @@ from .plotting import (
     metric_options,
     plot_default_dashboard,
     plot_fund_inflows,
+    plot_income_distribution_by_group,
     plot_income_distribution_dual,
     plot_metric_lines,
     plot_wealth_distributions_full_zoom,
@@ -511,18 +512,23 @@ def _population_dist_for_value_mode(
         scale = p0_eff / p
         income = [float(v) * scale for v in snapshot.get("income", [])]
         wealth = [float(v) * scale for v in snapshot.get("wealth", [])]
-        wealth_groups_raw = snapshot.get("wealth_groups", {})
-        wealth_groups = {}
-        if isinstance(wealth_groups_raw, dict):
-            wealth_groups = {
+        def _scale_groups(key: str) -> dict[str, list[float]]:
+            groups_raw = snapshot.get(key, {})
+            if not isinstance(groups_raw, dict):
+                return {}
+            return {
                 str(k): [float(v) * scale for v in vals]
-                for k, vals in wealth_groups_raw.items()
+                for k, vals in groups_raw.items()
                 if isinstance(vals, list)
             }
+
         out = dict(snapshot)
         out["income"] = income
+        out["income_groups"] = _scale_groups("income_groups")
+        out["income_groups_initial_owner"] = _scale_groups("income_groups_initial_owner")
+        out["income_groups_policy"] = _scale_groups("income_groups_policy")
         out["wealth"] = wealth
-        out["wealth_groups"] = wealth_groups
+        out["wealth_groups"] = _scale_groups("wealth_groups")
         return out
 
     return {"before": _scaled(before), "after": _scaled(after)}
@@ -1005,6 +1011,7 @@ def main() -> None:
         after = pop_dist.get("after", {})
         income_before = before.get("income", [])
         income_after = after.get("income", [])
+        income_groups_policy_after = after.get("income_groups_policy", {})
         wealth_before = before.get("wealth", [])
         wealth_after = after.get("wealth", [])
         if income_before and income_after and wealth_before and wealth_after:
@@ -1021,6 +1028,43 @@ def main() -> None:
                 _mark_figure_stale(income_fig)
             st.pyplot(income_fig, clear_figure=False)
             plt.close(income_fig)
+
+            if isinstance(income_groups_policy_after, dict) and income_groups_policy_after:
+                income_group_policy_fig = plot_income_distribution_by_group(
+                    income_groups_policy_after,
+                    value_label=value_label,
+                    support_mode=support_mode,
+                    overall_income=income_after,
+                    label_map={
+                        "vat_credit_no_income_tax": "VAT Credit, No Income Tax",
+                        "vat_credit_and_income_tax": "VAT Credit And Income Tax",
+                        "no_vat_credit_no_income_tax": "No VAT Credit, No Income Tax",
+                        "no_vat_credit_and_income_tax": "No VAT Credit, Income Tax",
+                    },
+                    color_map={
+                        "vat_credit_no_income_tax": "#1f77b4",
+                        "vat_credit_and_income_tax": "#17becf",
+                        "no_vat_credit_no_income_tax": "#bcbd22",
+                        "no_vat_credit_and_income_tax": "#d62728",
+                    },
+                    ordered_keys=(
+                        "vat_credit_no_income_tax",
+                        "vat_credit_and_income_tax",
+                        "no_vat_credit_no_income_tax",
+                        "no_vat_credit_and_income_tax",
+                    ),
+                    title="Disposable Income Distribution By Tax And VAT-Credit Status (After)",
+                )
+                if config_stale:
+                    _mark_figure_stale(income_group_policy_fig)
+                st.pyplot(income_group_policy_fig, clear_figure=False)
+                plt.close(income_group_policy_fig)
+                st.caption(
+                    "This diagnostic highlights whether the transition is sorting households into "
+                    "distinct disposable-income bands defined by support, VAT-credit eligibility, "
+                    "and income-tax status. Read it as evidence of emerging policy-shaped strata, "
+                    "not by itself as proof of permanent classes."
+                )
 
             wealth_fig = plot_wealth_distributions_full_zoom(
                 rows,

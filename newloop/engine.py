@@ -211,6 +211,11 @@ class NewLoop:
                 housing_escrow = housing_values.copy()
             else:
                 housing_escrow = mort_orig_principal.copy() if mort_orig_principal.size else mortgage_loans.copy()
+            initial_renters = (mortgage_loans <= 1e-12) & (housing_escrow <= 1e-12)
+            initial_owners = (mortgage_loans <= 1e-12) & (housing_escrow > 1e-12)
+            initial_tenure_code = np.ones(mortgage_loans.shape[0], dtype=int)
+            initial_tenure_code[initial_renters] = 0
+            initial_tenure_code[initial_owners] = 2
             mpc_q = _as_np(mpc_q_raw, dtype=float)
             base_real_cons_q = _as_np(base_real_cons_q_raw, dtype=float)
             liquid_buffer_months_target_raw = getattr(pop, "liquid_buffer_months_target", np.zeros(base_real_cons_q.shape[0], dtype=float))
@@ -250,6 +255,7 @@ class NewLoop:
                     mort_payment_sched_q=mort_payment_sched_q[:n].copy(),
                     mort_orig_principal=mort_orig_principal[:n].copy(),
                     liquid_buffer_months_target=liquid_buffer_months_target[:n].copy(),
+                    initial_tenure_code=initial_tenure_code[:n].copy(),
                 )
                 self.hh.ensure_memos()
             else:
@@ -2949,6 +2955,7 @@ class NewLoop:
         self.state["mortgage_turnover_payment_gap_remaining_total"] = 0.0
         self.state["mortgage_turnover_payment_capacity_total"] = 0.0
         self.state["mortgage_turnover_nonmort_count"] = 0.0
+        self.state["mortgage_turnover_outright_owner_excluded_count"] = 0.0
         self.state["mortgage_turnover_new_eligible_count"] = 0.0
         self.state["mortgage_turnover_dti_binding_count"] = 0.0
         self.state["mortgage_turnover_income_binding_count"] = 0.0
@@ -3038,13 +3045,16 @@ class NewLoop:
             self.state["mortgage_turnover_payment_gap_total"] = float(payment_gap_total)
             self.state["mortgage_turnover_active_count"] = float(np.sum(active_for_target_i))
             nonmort_mask = ~active_mort_i
-            base_new_pool = nonmort_mask & (underwriting_income_q_i >= mort_turnover_min_wage_q)
+            outright_owner_nonmort_mask = nonmort_mask & (_as_np(hh.housing_escrow, dtype=float) > 1e-12)
+            eligible_nonmort_mask = nonmort_mask & (~outright_owner_nonmort_mask)
+            base_new_pool = eligible_nonmort_mask & (underwriting_income_q_i >= mort_turnover_min_wage_q)
             self.state["mortgage_turnover_nonmort_count"] = float(np.sum(nonmort_mask))
+            self.state["mortgage_turnover_outright_owner_excluded_count"] = float(np.sum(outright_owner_nonmort_mask))
             self.state["mortgage_turnover_zero_dti_room_count"] = float(np.sum(base_new_pool & (dti_room_nom <= 1e-9)))
             self.state["mortgage_turnover_zero_income_room_count"] = float(np.sum(base_new_pool & (income_limit_principal_i <= 1e-9)))
 
             new_eligible = (
-                nonmort_mask
+                eligible_nonmort_mask
                 & (underwriting_income_q_i >= mort_turnover_min_wage_q)
                 & (desired_payment_i > 1e-9)
             )

@@ -46,6 +46,7 @@ class HouseholdState:
     mort_payment_sched_q: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=float))
     mort_orig_principal: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=float))
     liquid_buffer_months_target: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=float))
+    initial_tenure_code: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=int))
 
     prev_income: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=float))
     prev_uis: float = 0.0
@@ -78,6 +79,13 @@ class HouseholdState:
             self.mort_payment_sched_q = np.zeros(self.n, dtype=float)
         if (self.mort_orig_principal.size == 0) or (self.mort_orig_principal.shape[0] != self.n):
             self.mort_orig_principal = np.zeros(self.n, dtype=float)
+        if (self.initial_tenure_code.size == 0) or (self.initial_tenure_code.shape[0] != self.n):
+            initial_renters = (self.mortgage_loans <= 1e-12) & (self.housing_escrow <= 1e-12)
+            initial_owners = (self.mortgage_loans <= 1e-12) & (self.housing_escrow > 1e-12)
+            initial_codes = np.ones(self.n, dtype=int)
+            initial_codes[initial_renters] = 0
+            initial_codes[initial_owners] = 2
+            self.initial_tenure_code = initial_codes
         if (self.mort_P0.size == 0) or (self.mort_P0.shape[0] != self.n):
             self.mort_P0 = np.zeros(self.n, dtype=float)
         if (self.mort_Y0.size == 0) or (self.mort_Y0.shape[0] != self.n):

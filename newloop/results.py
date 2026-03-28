@@ -67,10 +67,40 @@ def _population_distribution_snapshot(sim: NewLoop) -> Dict[str, Any] | None:
     renters = (mort_i <= 1e-12) & (housing_i <= 1e-12)
     mortgagors = mort_i > 1e-12
     outright_owners = (mort_i <= 1e-12) & (housing_i > 1e-12)
+    initial_tenure_code = np.asarray(getattr(hh, "initial_tenure_code", np.asarray([], dtype=int)), dtype=int)
+    if initial_tenure_code.shape[0] != n:
+        initial_tenure_code = np.ones(n, dtype=int)
+    initial_outright_owner = initial_tenure_code == 2
+    initial_other = ~initial_outright_owner
+    income_groups_policy: Dict[str, List[float]] = {}
+    sol = sim.solve_within_tick_population()
+    if sol is not None:
+        wages_i = np.asarray(sol.get("wages_i", []), dtype=float)
+        income_tax_i = np.asarray(sol.get("income_tax_i", []), dtype=float)
+        vat_credit_i = np.asarray(sol.get("vat_credit_i", []), dtype=float)
+        if wages_i.shape[0] == n and income_tax_i.shape[0] == n and vat_credit_i.shape[0] == n:
+            has_vat_credit = vat_credit_i > 1e-9
+            pays_income_tax = income_tax_i > 1e-9
+            income_groups_policy = {
+                "vat_credit_no_income_tax": income_i[has_vat_credit & (~pays_income_tax)].astype(float).tolist(),
+                "vat_credit_and_income_tax": income_i[has_vat_credit & pays_income_tax].astype(float).tolist(),
+                "no_vat_credit_no_income_tax": income_i[(~has_vat_credit) & (~pays_income_tax)].astype(float).tolist(),
+                "no_vat_credit_and_income_tax": income_i[(~has_vat_credit) & pays_income_tax].astype(float).tolist(),
+            }
 
     return {
         "price_level": float(sim.state.get("price_level", 1.0)),
         "income": income_i.astype(float).tolist(),
+        "income_groups": {
+            "renters": income_i[renters].astype(float).tolist(),
+            "mortgagors": income_i[mortgagors].astype(float).tolist(),
+            "outright_owners": income_i[outright_owners].astype(float).tolist(),
+        },
+        "income_groups_initial_owner": {
+            "initial_outright_owner": income_i[initial_outright_owner].astype(float).tolist(),
+            "initial_other_households": income_i[initial_other].astype(float).tolist(),
+        },
+        "income_groups_policy": income_groups_policy,
         "wealth": wealth_i.astype(float).tolist(),
         "wealth_groups": {
             "renters": wealth_i[renters].astype(float).tolist(),

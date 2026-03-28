@@ -894,6 +894,105 @@ def plot_income_distribution_dual(
     return fig
 
 
+def plot_income_distribution_by_group(
+    income_groups: Mapping[str, Sequence[float]],
+    *,
+    value_label: str,
+    support_mode: str | None = None,
+    overall_income: Sequence[float] | None = None,
+    label_map: Mapping[str, str] | None = None,
+    color_map: Mapping[str, str] | None = None,
+    ordered_keys: Sequence[str] | None = None,
+    title: str | None = None,
+) -> Any:
+    """Show the after-income histogram split by a supplied household grouping."""
+    import matplotlib.pyplot as plt
+    from matplotlib.ticker import FuncFormatter
+
+    label_map = dict(label_map or {
+        "renters": "Renters",
+        "mortgagors": "Mortgagors",
+        "outright_owners": "Outright Owners",
+    })
+    color_map = dict(color_map or {
+        "renters": "#1f77b4",
+        "mortgagors": "#ff7f0e",
+        "outright_owners": "#2ca02c",
+    })
+    ordered_keys = tuple(ordered_keys or ("renters", "mortgagors", "outright_owners"))
+
+    cleaned_groups: Dict[str, np.ndarray] = {}
+    for key in ordered_keys:
+        values = income_groups.get(key, [])
+        arr = np.asarray(values, dtype=float)
+        arr = arr[np.isfinite(arr)]
+        if arr.size:
+            cleaned_groups[key] = arr
+
+    if not cleaned_groups:
+        raise ValueError("Income group plot requires at least one non-empty group.")
+
+    if overall_income is None:
+        overall_vals = np.concatenate(list(cleaned_groups.values()))
+    else:
+        overall_vals = np.asarray(overall_income, dtype=float)
+        overall_vals = overall_vals[np.isfinite(overall_vals)]
+        if overall_vals.size == 0:
+            overall_vals = np.concatenate(list(cleaned_groups.values()))
+
+    def _robust_sigma(arr: np.ndarray) -> float:
+        q25 = float(np.percentile(arr, 25.0))
+        q75 = float(np.percentile(arr, 75.0))
+        return max(1e-9, (q75 - q25) / 1.349)
+
+    med = float(np.median(overall_vals))
+    sigma = _robust_sigma(overall_vals)
+    x_lo = max(float(np.min(overall_vals)), med - (3.0 * sigma))
+    x_hi = min(float(np.max(overall_vals)), med + (3.0 * sigma))
+    if x_hi <= x_lo:
+        x_lo = float(np.min(overall_vals))
+        x_hi = float(np.max(overall_vals))
+        if x_hi <= x_lo:
+            x_hi = x_lo + 1.0
+
+    edges = np.linspace(x_lo, x_hi, 61, dtype=float)
+    total_n = max(1.0, float(overall_vals.size))
+
+    fig, ax = plt.subplots(figsize=(13, 4.5), constrained_layout=True)
+    overall_clip = overall_vals[(overall_vals >= x_lo) & (overall_vals <= x_hi)]
+    overall_counts, _ = np.histogram(overall_clip, bins=edges)
+    overall_share = overall_counts.astype(float) / total_n
+    ax.step(edges[:-1], overall_share, where="post", color="black", linewidth=2.4, linestyle="--", label="All Households")
+
+    for key in ordered_keys:
+        arr = cleaned_groups.get(key)
+        if arr is None or arr.size == 0:
+            continue
+        clipped = arr[(arr >= x_lo) & (arr <= x_hi)]
+        counts, _ = np.histogram(clipped, bins=edges)
+        share = counts.astype(float) / total_n
+        group_share = 100.0 * float(arr.size) / total_n
+        ax.step(
+            edges[:-1],
+            share,
+            where="post",
+            color=color_map[key],
+            linewidth=2.0,
+            label=f"{label_map[key]} ({group_share:.1f}%)",
+        )
+        ax.axvline(float(np.median(arr)), color=color_map[key], linestyle=":", linewidth=1.4, alpha=0.85)
+
+    chart_title = title or "Disposable Income Distribution By Group (After)"
+    ax.set_title(_title_with_mode(chart_title, support_mode))
+    ax.set_xlabel(value_label)
+    ax.set_ylabel("Share of Households")
+    ax.set_xlim(x_lo, x_hi)
+    ax.yaxis.set_major_formatter(FuncFormatter(lambda val, _: f"{100.0 * float(val):.2f}%"))
+    ax.grid(alpha=0.25)
+    ax.legend(loc="best")
+    return fig
+
+
 def plot_wealth_distributions_full_zoom(
     rows: Sequence[Mapping[str, Any]],
     wealth_before: Sequence[float],
