@@ -231,7 +231,7 @@ def _line_style(metric: str, *, secondary: bool) -> Dict[str, Any]:
         "sector_demand_physical_per_h",
         "unmet_demand_physical_per_h",
     }:
-        style["color"] = "#d4aa00"
+        style["color"] = "#ff7f0e"
     if metric == "automation":
         style["linewidth"] = 2.6
         style["linestyle"] = "-"
