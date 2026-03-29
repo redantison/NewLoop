@@ -14,6 +14,8 @@ from .engine import NewLoop
 from .income_support import make_income_support_policy
 from .newloop_types import TickResult
 
+COMPREHENSIVE_WEALTH_DISTRIBUTION = True
+
 
 @dataclass
 class SimulationRun:
@@ -46,6 +48,79 @@ def _visible_rows(history: Sequence[TickResult], start_idx: int = 0) -> List[Dic
     return rows
 
 
+def _household_wealth_snapshot(sim: NewLoop, *, comprehensive: bool = COMPREHENSIVE_WEALTH_DISTRIBUTION) -> Dict[str, np.ndarray]:
+    """Build household wealth vectors using either the narrow or comprehensive definition."""
+    if sim.hh is None or sim.hh.n <= 0:
+        return {
+            "wealth": np.asarray([], dtype=float),
+            "deposits": np.asarray([], dtype=float),
+            "housing": np.asarray([], dtype=float),
+            "private_equity": np.asarray([], dtype=float),
+            "trust_value": np.asarray([], dtype=float),
+            "loans": np.asarray([], dtype=float),
+        }
+
+    hh = sim.hh
+    deposits_i = np.asarray(hh.deposits, dtype=float)
+    housing_i = np.asarray(hh.housing_escrow, dtype=float)
+    mort_i = np.asarray(hh.mortgage_loans, dtype=float)
+    rev_i = np.asarray(hh.revolving_loans, dtype=float)
+    loan_i = mort_i + rev_i
+    equity_i = np.zeros_like(deposits_i, dtype=float)
+    trust_i = np.zeros_like(deposits_i, dtype=float)
+
+    if comprehensive and deposits_i.size and (loan_i.size == deposits_i.size):
+        wages0_i = np.asarray(hh.wages0_q, dtype=float)
+        wages0_sum = float(wages0_i.sum()) if wages0_i.shape[0] == deposits_i.shape[0] else 0.0
+        if wages0_sum > 0.0:
+            wealth_weights = wages0_i / wages0_sum
+        else:
+            wealth_weights = np.full(deposits_i.shape[0], 1.0 / float(deposits_i.shape[0]), dtype=float)
+
+        price_level = float(sim.state.get("price_level", 1.0))
+        if price_level <= 0.0:
+            price_level = 1e-9
+
+        def node_share_frac(holder: str, issuer: str, key: str) -> float:
+            shares_out = float(sim.nodes[issuer].get("shares_outstanding", 0.0))
+            if shares_out <= 0.0:
+                return 0.0
+            frac = float(sim.nodes[holder].get(key, 0.0)) / shares_out
+            return max(0.0, min(1.0, frac))
+
+        fa_equity_proxy = sim._firm_balance_sheet_equity_proxy("FA", price_level)
+        fh_equity_proxy = sim._firm_balance_sheet_equity_proxy("FH", price_level)
+        bank_equity_proxy = sim._firm_balance_sheet_equity_proxy("BANK", price_level)
+
+        hh_equity_total = (
+            node_share_frac("HH", "FA", "shares_FA") * fa_equity_proxy
+            + node_share_frac("HH", "FH", "shares_FH") * fh_equity_proxy
+            + node_share_frac("HH", "BANK", "shares_BANK") * bank_equity_proxy
+        )
+        trust_equity_total = (
+            node_share_frac("FUND", "FA", "shares_FA") * fa_equity_proxy
+            + node_share_frac("FUND", "FH", "shares_FH") * fh_equity_proxy
+            + node_share_frac("FUND", "BANK", "shares_BANK") * bank_equity_proxy
+        )
+        trust_value_total = (
+            float(sim.nodes["FUND"].get("deposits", 0.0))
+            + trust_equity_total
+            - float(sim.nodes["FUND"].get("loans", 0.0))
+        )
+        equity_i = wealth_weights * max(0.0, float(hh_equity_total))
+        trust_i = np.full(deposits_i.shape[0], trust_value_total / float(deposits_i.shape[0]), dtype=float)
+
+    wealth_i = deposits_i + housing_i + equity_i + trust_i - loan_i
+    return {
+        "wealth": wealth_i,
+        "deposits": deposits_i,
+        "housing": housing_i,
+        "private_equity": equity_i,
+        "trust_value": trust_i,
+        "loans": loan_i,
+    }
+
+
 def _population_distribution_snapshot(sim: NewLoop) -> Dict[str, Any] | None:
     """Capture household income and net-worth vectors for before/after plotting."""
     if sim.hh is None or sim.hh.n <= 0:
@@ -54,6 +129,7 @@ def _population_distribution_snapshot(sim: NewLoop) -> Dict[str, Any] | None:
     hh = sim.hh
     n = int(hh.n)
 
+    wealth_snapshot = _household_wealth_snapshot(sim)
     dep_i = np.asarray(hh.deposits, dtype=float)
     housing_i = np.asarray(hh.housing_escrow, dtype=float)
     mort_i = np.asarray(hh.mortgage_loans, dtype=float)
@@ -63,7 +139,7 @@ def _population_distribution_snapshot(sim: NewLoop) -> Dict[str, Any] | None:
     if income_i.shape[0] != n:
         income_i = np.asarray(hh.wages0_q, dtype=float)
 
-    wealth_i = dep_i + housing_i - loan_i
+    wealth_i = np.asarray(wealth_snapshot.get("wealth", np.asarray([], dtype=float)), dtype=float)
     renters = (mort_i <= 1e-12) & (housing_i <= 1e-12)
     mortgagors = mort_i > 1e-12
     outright_owners = (mort_i <= 1e-12) & (housing_i > 1e-12)
@@ -101,7 +177,13 @@ def _population_distribution_snapshot(sim: NewLoop) -> Dict[str, Any] | None:
             "initial_other_households": income_i[initial_other].astype(float).tolist(),
         },
         "income_groups_policy": income_groups_policy,
+        "wealth_definition": "comprehensive" if COMPREHENSIVE_WEALTH_DISTRIBUTION else "narrow",
         "wealth": wealth_i.astype(float).tolist(),
+        "wealth_components": {
+            key: np.asarray(val, dtype=float).tolist()
+            for key, val in wealth_snapshot.items()
+            if key != "wealth"
+        },
         "wealth_groups": {
             "renters": wealth_i[renters].astype(float).tolist(),
             "mortgagors": wealth_i[mortgagors].astype(float).tolist(),

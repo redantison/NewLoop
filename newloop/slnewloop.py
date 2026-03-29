@@ -529,6 +529,7 @@ def _population_dist_for_value_mode(
         out["income_groups_initial_owner"] = _scale_groups("income_groups_initial_owner")
         out["income_groups_policy"] = _scale_groups("income_groups_policy")
         out["wealth"] = wealth
+        out["wealth_components"] = _scale_groups("wealth_components")
         out["wealth_groups"] = _scale_groups("wealth_groups")
         return out
 
