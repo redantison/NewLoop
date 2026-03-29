@@ -216,10 +216,22 @@ def _line_style(metric: str, *, secondary: bool) -> Dict[str, Any]:
     style: Dict[str, Any] = {"linewidth": 2.0}
     if secondary:
         style["linestyle"] = "--"
-    if metric in {"sector_demand_info_per_h", "unmet_demand_info_per_h"}:
+    if metric in {
+        "sector_capacity_info_per_h",
+        "sector_hh_util_info",
+        "sector_util_info",
+        "sector_demand_info_per_h",
+        "unmet_demand_info_per_h",
+    }:
         style["color"] = "tab:blue"
-    elif metric in {"sector_demand_physical_per_h", "unmet_demand_physical_per_h"}:
-        style["color"] = "tab:orange"
+    elif metric in {
+        "sector_capacity_physical_per_h",
+        "sector_hh_util_physical",
+        "sector_util_physical",
+        "sector_demand_physical_per_h",
+        "unmet_demand_physical_per_h",
+    }:
+        style["color"] = "#d4aa00"
     if metric == "automation":
         style["linewidth"] = 2.6
         style["linestyle"] = "-"
@@ -231,10 +243,22 @@ def _line_style(metric: str, *, secondary: bool) -> Dict[str, Any]:
         style["linestyle"] = ":"
     elif metric == "sector_demand_info_per_h":
         style["linewidth"] = 2.0
-        style["linestyle"] = "--"
+        style["linestyle"] = "-"
     elif metric == "sector_demand_physical_per_h":
         style["linewidth"] = 2.0
-        style["linestyle"] = "-."
+        style["linestyle"] = "-"
+    elif metric == "sector_util_info":
+        style["linewidth"] = 2.0
+        style["linestyle"] = "-"
+    elif metric == "sector_util_physical":
+        style["linewidth"] = 2.0
+        style["linestyle"] = "-"
+    elif metric == "unmet_demand_info_per_h":
+        style["linewidth"] = 2.0
+        style["linestyle"] = "--"
+    elif metric == "unmet_demand_physical_per_h":
+        style["linewidth"] = 2.0
+        style["linestyle"] = ":"
     return style
 
 
@@ -966,7 +990,7 @@ def plot_income_distribution_by_group(
     overall_clip = overall_vals[(overall_vals >= x_lo) & (overall_vals <= x_hi)]
     overall_counts, _ = np.histogram(overall_clip, bins=edges)
     overall_share = overall_counts.astype(float) / total_n
-    ax.step(edges[:-1], overall_share, where="post", color="black", linewidth=2.4, linestyle="--", label="All Households")
+    ax.step(edges[:-1], overall_share, where="post", color="#ff7f0e", linewidth=2.4, linestyle="--", label="All Households")
 
     for key in ordered_keys:
         arr = cleaned_groups.get(key)

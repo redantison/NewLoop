@@ -2372,6 +2372,9 @@ class NewLoop:
         self.state["hh_buffer_gap_total"] = float(sol.get("buffer_gap_total", 0.0))
         self.state["hh_buffer_gap_positive_total"] = float(sol.get("buffer_gap_positive_total", 0.0))
         self.state["hh_buffer_gap_shortfall_total"] = float(sol.get("buffer_gap_shortfall_total", 0.0))
+        # Housing-finance deposits are only populated when a future explicit cash-settlement
+        # path is modeled. Keep the reservoir cleared so turnover remains balance-sheet neutral.
+        self.state["housing_financing_deposits_total"] = 0.0
 
         if c_firm_nom.shape[0] != n:
             raise ValueError("population solver returned c_firm_nom of wrong length")
@@ -3142,7 +3145,6 @@ class NewLoop:
                         if matched_pos is None:
                             continue
                         renter_idx = remaining_renters.pop(matched_pos)
-                        deposits[renter_idx] = deposits[renter_idx] - matched_downpayment
                         allocation[renter_idx] = matched_principal
                         acquired_house_value[renter_idx] = house_value
                         renter_entry_count += 1
@@ -3151,15 +3153,12 @@ class NewLoop:
                 exit_idx = np.where(turnover_exit_mask)[0]
                 sold_house_values = housing_value_i[exit_idx]
                 sold_house_payments = payment_from_orig_principal(sold_house_values, new_rate_q, new_term_q)
-                exit_cash_release = np.maximum(0.0, sold_house_values - np.maximum(0.0, mort[exit_idx]))
-                deposits[exit_idx] = deposits[exit_idx] + exit_cash_release
                 hh.housing_escrow[exit_idx] = 0.0
                 renter_rent_q[exit_idx] = np.maximum(0.0, sold_house_payments * rent_mult_median)
 
             old_mort_turnover_total = float(np.sum(np.maximum(0.0, mort[mort_turnover_event_i])))
             if old_mort_turnover_total > 0.0:
                 self.nodes["BANK"].add("loan_assets", -old_mort_turnover_total)
-                self.nodes["BANK"].add("deposit_liab", -old_mort_turnover_total)
             if np.any(turnover_event_i):
                 mort[turnover_event_i] = 0.0
                 hh.mort_rate_q[turnover_event_i] = 0.0
@@ -3183,10 +3182,6 @@ class NewLoop:
                 hh.mort_t0[new_mask] = -1
                 renter_rent_q[new_mask] = 0.0
                 self.nodes["BANK"].add("loan_assets", mort_turnover_total)
-                self.nodes["BANK"].add("deposit_liab", mort_turnover_total)
-                self.state["housing_financing_deposits_total"] = float(
-                    self.state.get("housing_financing_deposits_total", 0.0) + mort_turnover_total
-                )
                 self.state["mort_turnover_total"] = float(mort_turnover_total)
                 self.state["mort_turnover_households"] = float(np.sum(allocation > 1e-9))
             self.state["mortgage_turnover_renter_entry_count"] = float(renter_entry_count)

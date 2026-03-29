@@ -768,6 +768,39 @@ def _reseed_visible_start_capacity(sim: NewLoop) -> Dict[str, Any] | None:
     }
 
 
+def _extract_sector_planner_seed(sim: NewLoop) -> Dict[str, float]:
+    """Capture the lagged CAPEX planner state that should survive a policy switch."""
+    keys = (
+        "sector_capacity_info_real_prev",
+        "sector_capacity_phys_real_prev",
+        "sector_free_cash_info_prev",
+        "sector_free_cash_phys_prev",
+    )
+    return {
+        key: float(max(0.0, sim.state.get(key, 0.0)))
+        for key in keys
+    }
+
+
+def _apply_sector_planner_seed(sim: NewLoop, planner_seed: Dict[str, Any] | None) -> None:
+    """Restore legacy lagged planner state onto the visible-start simulation."""
+    if not planner_seed:
+        return
+    for key, value in planner_seed.items():
+        sim.state[key] = float(max(0.0, value))
+
+
+def _build_legacy_sector_planner_seed(cfg: Dict[str, Any]) -> Dict[str, float] | None:
+    """Simulate one hidden no-policy quarter to seed visible-start CAPEX planner state."""
+    seed_sim = NewLoop(_neutral_warmup_regime_cfg(cfg))
+    _prepare_startup_sim(seed_sim)
+    try:
+        seed_sim.step()
+    except Exception:
+        return None
+    return _extract_sector_planner_seed(seed_sim)
+
+
 def _neutral_warmup_regime_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
     """Return a copy of cfg with policy actions disabled for neutral warm-up."""
     warm_cfg = copy.deepcopy(cfg)
@@ -791,10 +824,8 @@ def _neutral_warmup_regime_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _reset_post_warmup_sector_planner_state(sim: NewLoop) -> None:
-    """Clear hidden warm-up CAPEX planner carry-over before visible Q0."""
+    """Clear hidden warm-up expansion pressure before visible Q0."""
     for key in (
-        "sector_free_cash_info_prev",
-        "sector_free_cash_phys_prev",
         "sector_capex_queue_info_nom",
         "sector_capex_queue_phys_nom",
         "sector_unmet_info_real_prev",
@@ -816,6 +847,7 @@ def _build_startup_sim(cfg: Dict[str, Any]) -> tuple[NewLoop, int, Dict[str, Any
     startup_cfg = _neutral_warmup_regime_cfg(cfg) if warmup_quarters > 0 else copy.deepcopy(cfg)
     sim = NewLoop(startup_cfg)
     _prepare_startup_sim(sim)
+    legacy_planner_seed: Dict[str, float] | None = None
     warmup_report: Dict[str, Any] = {
         "requested_quarters": int(warmup_quarters),
         "completed_quarters": 0,
@@ -833,12 +865,24 @@ def _build_startup_sim(cfg: Dict[str, Any]) -> tuple[NewLoop, int, Dict[str, Any
                 break
             warmup_report["completed_quarters"] = int(idx + 1)
         _prepare_startup_sim(sim)
+        legacy_planner_seed = _extract_sector_planner_seed(sim)
         sim.params = copy.deepcopy(cfg["parameters"])
         sim.income_support_policy = make_income_support_policy(sim.params)
         _reset_post_warmup_sector_planner_state(sim)
+        _sync_startup_household_state(sim)
+        _apply_sector_planner_seed(sim, legacy_planner_seed)
         reseed_stats = _reseed_visible_start_capacity(sim)
         if reseed_stats is not None:
             warmup_report["visible_start_capacity_reseed"] = dict(reseed_stats)
+            warmup_report["visible_start_capex_seed"] = dict(legacy_planner_seed or {})
+    else:
+        legacy_planner_seed = _build_legacy_sector_planner_seed(cfg)
+        _apply_sector_planner_seed(sim, legacy_planner_seed)
+        reseed_stats = _reseed_visible_start_capacity(sim)
+        if reseed_stats is not None:
+            warmup_report["visible_start_capacity_reseed"] = dict(reseed_stats)
+        if legacy_planner_seed is not None:
+            warmup_report["visible_start_capex_seed"] = dict(legacy_planner_seed)
 
     return sim, len(sim.history), warmup_report
 

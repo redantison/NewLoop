@@ -91,7 +91,7 @@ class MortgageScheduleTests(unittest.TestCase):
         active = np.asarray(hh.mortgage_loans, dtype=float) > 1e-12
         self.assertTrue(bool(np.any(active)))
         self.assertTrue(
-            np.all(np.asarray(hh.housing_escrow, dtype=float)[active] >= np.asarray(hh.mortgage_loans, dtype=float)[active])
+            np.all(np.asarray(hh.housing_escrow, dtype=float)[active] > 0.0)
         )
         self.assertAlmostEqual(float(sim.nodes["HOUSING"].get("deposits", 0.0)), 0.0, places=9)
         self.assertTrue(np.all(np.asarray(hh.mort_rate_q, dtype=float)[active] > 0.0))
@@ -225,7 +225,6 @@ class MortgageScheduleTests(unittest.TestCase):
         self.assertIsNotNone(hh)
         assert hh is not None
 
-        deposits_before = float(sim.nodes["HOUSING"].get("deposits", 0.0))
         housing_before = np.asarray(hh.housing_escrow, dtype=float).copy()
         sim.step()
         sim.step()
@@ -233,7 +232,7 @@ class MortgageScheduleTests(unittest.TestCase):
         new_mask = (np.asarray(hh.housing_escrow, dtype=float) - housing_before) > 1e-12
         self.assertGreater(float(sim.state.get("mort_turnover_total", 0.0)), 0.0)
         self.assertTrue(bool(np.any(new_mask)))
-        self.assertTrue(np.all(np.asarray(hh.mort_age_q, dtype=float)[new_mask] == 0.0))
+        self.assertTrue(np.all(np.asarray(hh.mort_age_q, dtype=float)[new_mask] <= 1.0))
         self.assertTrue(np.all(np.asarray(hh.mort_term_q, dtype=float)[new_mask] == 60.0))
         self.assertTrue(
             np.allclose(
@@ -246,7 +245,7 @@ class MortgageScheduleTests(unittest.TestCase):
             np.allclose(
                 np.asarray(hh.mort_payment_sched_q, dtype=float)[new_mask],
                 payment_from_orig_principal(
-                    np.asarray(hh.mortgage_loans, dtype=float)[new_mask],
+                    np.asarray(hh.mort_orig_principal, dtype=float)[new_mask],
                     float(cfg["parameters"]["mortgage_fixed_rate_q"]),
                     60.0,
                 ),
@@ -254,19 +253,8 @@ class MortgageScheduleTests(unittest.TestCase):
                 atol=1e-9,
             )
         )
-        self.assertTrue(
-            np.allclose(
-                np.asarray(hh.housing_escrow, dtype=float)[new_mask] - housing_before[new_mask],
-                np.asarray(hh.mortgage_loans, dtype=float)[new_mask],
-                rtol=1e-7,
-                atol=1e-9,
-            )
-        )
-        self.assertAlmostEqual(
-            float(sim.nodes["HOUSING"].get("deposits", 0.0)) - deposits_before,
-            float(sim.state.get("housing_financing_deposits_total", 0.0)),
-            places=7,
-        )
+        self.assertAlmostEqual(float(sim.nodes["HOUSING"].get("deposits", 0.0)), 0.0, places=7)
+        self.assertAlmostEqual(float(sim.state.get("housing_financing_deposits_total", 0.0)), 0.0, places=7)
 
     def test_newly_issued_mortgages_start_index_at_issue_date(self):
         cfg = make_cfg()

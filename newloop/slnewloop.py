@@ -742,7 +742,7 @@ def main() -> None:
 
     st.set_page_config(page_title="NewLoop", layout="wide")
     _inject_selectbox_chevron_fallback(st)
-    st.title("NewLoop v 2.2")
+    st.title("NewLoop 2.3")
     st.caption("Interactive simulation with parameterized runs and reusable plotting.")
 
     base_cfg = get_default_config()
