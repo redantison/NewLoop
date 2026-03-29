@@ -36,8 +36,8 @@ METRIC_LABELS: Dict[str, str] = {
     "bank_broad_roe_q": "Bank Broad ROE (Annualized %)",
     "corporate_info_broad_roe_q": "Info Broad ROE (Annualized %)",
     "corporate_physical_broad_roe_q": "Physical Broad ROE (Annualized %)",
-    "sector_op_margin_info": "Info Profit Margin (%)",
-    "sector_op_margin_phys": "Physical Profit Margin (%)",
+    "sector_op_margin_info": "Info Operating Margin (%)",
+    "sector_op_margin_phys": "Physical Operating Margin (%)",
     "corporate_nonbank_broad_roe_q": "Non-Bank Corporate Broad ROE (Annualized %)",
     "corporate_broad_roe_q": "Total Corporate Broad ROE (Annualized %)",
     "private_inv_cov": "Investment Coverage",
@@ -60,6 +60,7 @@ METRIC_LABELS: Dict[str, str] = {
     "ums_recycle_to_info_per_h": "UMS Recycled To IS / Household",
     "ums_recycle_to_phys_per_h": "UMS Recycled To PS / Household",
     "ums_recycle_total_per_h": "Total UMS Recycled / Household",
+    "capex_per_h": "Capital Investment / Household",
     "sector_capacity_info_per_h": "Sector Capacity (Info) / Household",
     "sector_capacity_physical_per_h": "Sector Capacity (Physical) / Household",
     "sector_hh_util_info": "Household Utilization (Info)",
@@ -216,7 +217,10 @@ def _line_style(metric: str, *, secondary: bool) -> Dict[str, Any]:
     style: Dict[str, Any] = {"linewidth": 2.0}
     if secondary:
         style["linestyle"] = "--"
-    if metric in {
+    if metric == "capex_per_h":
+        style["color"] = "tab:green"
+    elif metric in {
+        "sector_op_margin_info",
         "sector_capacity_info_per_h",
         "sector_hh_util_info",
         "sector_util_info",
@@ -225,6 +229,7 @@ def _line_style(metric: str, *, secondary: bool) -> Dict[str, Any]:
     }:
         style["color"] = "tab:blue"
     elif metric in {
+        "sector_op_margin_phys",
         "sector_capacity_physical_per_h",
         "sector_hh_util_physical",
         "sector_util_physical",
@@ -232,11 +237,22 @@ def _line_style(metric: str, *, secondary: bool) -> Dict[str, Any]:
         "unmet_demand_physical_per_h",
     }:
         style["color"] = "#ff7f0e"
+    elif metric == "corporate_nonbank_broad_roe_q":
+        style["color"] = "tab:red"
     if metric == "automation":
         style["linewidth"] = 2.6
         style["linestyle"] = "-"
     elif metric == "corporate_eq_total_per_h":
         style["linewidth"] = 2.6
+        style["linestyle"] = "-"
+    elif metric == "capex_per_h":
+        style["linewidth"] = 2.6
+        style["linestyle"] = "-"
+    elif metric in {
+        "sector_op_margin_info",
+        "sector_op_margin_phys",
+        "corporate_nonbank_broad_roe_q",
+    }:
         style["linestyle"] = "-"
     elif metric == "automation_flow":
         style["linewidth"] = 2.6

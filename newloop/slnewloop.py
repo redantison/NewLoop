@@ -917,7 +917,7 @@ def main() -> None:
             "sector_op_margin_info",
             "sector_op_margin_phys",
         ],
-        secondary_ylabel="ROE / Profit Margin (%)",
+        secondary_ylabel="ROE / Operating Margin (%)",
         support_mode=support_mode,
         ax=ax_recycling,
     )
