@@ -794,16 +794,11 @@ def _run_baseline_calibration(cfg: Dict[str, Any]) -> tuple[Dict[str, Any], Dict
 
 
 def _prepare_startup_sim(sim: NewLoop) -> Dict[str, Any] | None:
-    reset_stats = None
-    if (
-        bool(sim.params.get("baseline_calibration_enabled", False))
-        or bool(sim.params.get("startup_buffer_alignment_enabled", False))
-    ):
-        reset_stats = _apply_startup_income_buffer_reset(
-            sim,
-            max_iter=int(sim.params.get("startup_buffer_alignment_max_iters", 8)),
-            reset_deposits=bool(sim.params.get("baseline_calibration_reset_deposits_to_runtime_target", True)),
-        )
+    reset_stats = _apply_startup_income_buffer_reset(
+        sim,
+        max_iter=int(sim.params.get("startup_buffer_alignment_max_iters", 8)),
+        reset_deposits=bool(sim.params.get("baseline_calibration_reset_deposits_to_runtime_target", True)),
+    )
     sim._bootstrap_startup_lagged_retained()
     return reset_stats
 

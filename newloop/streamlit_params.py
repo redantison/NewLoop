@@ -104,13 +104,6 @@ PARAMETER_CONTROLS: tuple[ParamControl, ...] = (
         help_text="Run this many hidden neutral startup quarters before visible Q0, with income support, trust, mortgage relief, and GOV rebate temporarily disabled.",
     ),
     ParamControl(
-        ("startup_buffer_alignment_enabled",),
-        "Align Startup Deposits To Runtime Buffer",
-        STARTUP_SECTION,
-        "bool",
-        help_text="Re-seed household deposits to the solver's live liquidity-buffer target before visible Q0, without recalibrating the consumption ladder.",
-    ),
-    ParamControl(
         ("startup_buffer_alignment_max_iters",),
         "Buffer Alignment Iterations",
         STARTUP_SECTION,

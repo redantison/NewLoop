@@ -170,7 +170,6 @@ config = {
         "baseline_calibration_tol_pct": 0.02,
         "baseline_calibration_reset_deposits_to_runtime_target": False,
         "neutral_warmup_quarters": 2,
-        "startup_buffer_alignment_enabled": True,
         "startup_buffer_alignment_max_iters": 8,
         "startup_buffer_alignment_deposit_blend": 0.35,
         "population_config": {

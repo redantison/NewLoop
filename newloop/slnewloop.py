@@ -109,13 +109,12 @@ COMPACT_NUMBER_COLUMNS = {
 DECIMAL_COLUMNS = {"price_level", "private_inv_cov"}
 
 DISPLAY_VALUE_MODES: tuple[str, str] = ("nominal", "real")
-CONTROL_DEFAULTS_VERSION = 12
+CONTROL_DEFAULTS_VERSION = 13
 UBI_PERCENTILE_PARAM_KEY = "param__ubi_target_percentile"
 UBI_PERCENTILE_UI_KEY = "ui__ubi_target_percentile"
 MORTGAGE_RATE_PARAM_PATH: tuple[str, ...] = ("mortgage_fixed_rate_q",)
 MORTGAGE_TERM_PARAM_PATH: tuple[str, ...] = ("mortgage_term_quarters",)
 _TITLE_MODE_SUFFIX_RE = re.compile(r"\s+\((?:UIS|UBI|Stale)\)\s*$", re.IGNORECASE)
-STARTUP_ALIGNMENT_PATH: tuple[str, ...] = ("startup_buffer_alignment_enabled",)
 
 
 def _annualize_quarterly_rate(value: float) -> float:
@@ -624,19 +623,8 @@ def _render_parameter_controls(
             help="Controls how monetary values are displayed in charts/tables. Simulation mechanics are unchanged.",
         )
 
-        startup_controls = grouped_controls.get(STARTUP_SECTION, [])
-        startup_alignment_control = next(
-            (c for c in startup_controls if tuple(c.path) == STARTUP_ALIGNMENT_PATH),
-            None,
-        )
-        if startup_alignment_control is not None:
-            _render_control(startup_alignment_control)
-            st.caption("Applies before visible Q0 so the first shown quarter starts from the live buffer rule.")
-
         for section in SECTION_ORDER:
             controls = grouped_controls.get(section, [])
-            if section == STARTUP_SECTION:
-                controls = [c for c in controls if tuple(c.path) != STARTUP_ALIGNMENT_PATH]
             if not controls:
                 continue
             with st.expander(section, expanded=False):
