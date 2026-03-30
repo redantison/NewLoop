@@ -144,6 +144,8 @@ config = {
         "fund_residual_to_gov_share": 0.0,  # optional share of residual FUND deposits sent to GOV after debt-first treatment
         "disable_income_support": False,
         "income_support_mode": "UBI",       # "UIS" | "UBI"
+        "income_support_start_delay_quarters": 2,  # quarters to wait after the first positive policy trigger before payments begin
+        "income_support_ramp_quarters": 4,  # quarters to linearly ramp from zero to full support after the start delay
         "income_support_issuance_share": 0.15,  # fixed share of each quarter's income support paid via issuance
         "income_support_monotonic_floor": True, # if True, policy support cannot decline quarter-to-quarter
         "ubi_target_percentile": 30.0,      # nearest-rank percentile target used to anchor UBI per-household amount

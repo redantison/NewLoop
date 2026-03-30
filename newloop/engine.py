@@ -71,6 +71,7 @@ class NewLoop:
             "uis_from_fund_dep_total": 0.0,
             "uis_from_gov_dep_total": 0.0,
             "uis_issued_total": 0.0,
+            "income_support_trigger_t": None,
             "tax_rebate_total": 0.0,
             # Lagged private equity stock used for private payout-yield proxy.
             "private_equity_prev_total": 0.0,
@@ -354,7 +355,7 @@ class NewLoop:
             self.state["startup_bootstrap_done"] = True
             return
 
-        seed_sol = self.solve_within_tick_population()
+        seed_sol = self.solve_within_tick_population(allow_income_support_trigger=False)
         if seed_sol is None:
             raise RuntimeError("Startup lagged-retained bootstrap expected a population solution but received None.")
 
@@ -365,7 +366,7 @@ class NewLoop:
         if not explicit_revenue:
             self.nodes["FA"].memo["revenue_prev"] = max(0.0, float(seed_sol.get("rev_fa", 0.0)))
             self.nodes["FH"].memo["revenue_prev"] = max(0.0, float(seed_sol.get("rev_fh", 0.0)))
-            seed_sol = self.solve_within_tick_population()
+            seed_sol = self.solve_within_tick_population(allow_income_support_trigger=False)
             if seed_sol is None:
                 raise RuntimeError("Startup lagged-retained bootstrap expected a population solution after revenue seed.")
 
@@ -374,7 +375,7 @@ class NewLoop:
             self._bootstrap_startup_firm_capital(seed_sol)
             # Re-solve after any true capital bootstrap so lagged retained earnings line
             # up with the visible quarter-0 balance sheet and price/productivity state.
-            seed_sol = self.solve_within_tick_population()
+            seed_sol = self.solve_within_tick_population(allow_income_support_trigger=False)
             if seed_sol is None:
                 raise RuntimeError("Startup retained bootstrap expected a population solution after capital seed.")
 
@@ -589,6 +590,35 @@ class NewLoop:
 
     def _income_support_disabled(self) -> bool:
         return bool(self.params.get("disable_income_support", False))
+
+    def _income_support_start_delay_quarters(self) -> int:
+        return max(0, int(self.params.get("income_support_start_delay_quarters", 0)))
+
+    def _income_support_ramp_quarters(self) -> int:
+        return max(0, int(self.params.get("income_support_ramp_quarters", 0)))
+
+    def _apply_income_support_start_delay(self, support_per_h: float, *, allow_trigger: bool = True) -> float:
+        support = max(0.0, float(support_per_h))
+        delay_q = self._income_support_start_delay_quarters()
+        current_t = int(self.state.get("t", 0))
+        trigger_t = self.state.get("income_support_trigger_t", None)
+        if support > 1e-12 and trigger_t is None and allow_trigger:
+            trigger_t = current_t
+            self.state["income_support_trigger_t"] = int(current_t)
+
+        if trigger_t is None:
+            return support if (delay_q <= 0 and self._income_support_ramp_quarters() <= 0) else 0.0
+        release_t = int(trigger_t) + delay_q
+        if current_t < release_t:
+            return 0.0
+
+        ramp_q = self._income_support_ramp_quarters()
+        if ramp_q <= 0:
+            return support
+
+        ramp_elapsed_q = current_t - release_t
+        ramp_frac = min(1.0, float(ramp_elapsed_q + 1) / float(ramp_q))
+        return support * ramp_frac
 
     def _effective_income_tax_rate(self) -> float:
         if self._income_tax_disabled():
@@ -1999,7 +2029,13 @@ class NewLoop:
     # Population-mode solver (Step A): vectorized household sector
     # ---------------------------------------------------------
 
-    def solve_within_tick_population(self, max_iter: int = 200, tol: float = 1e-8) -> Optional[Dict[str, Any]]:
+    def solve_within_tick_population(
+        self,
+        max_iter: int = 200,
+        tol: float = 1e-8,
+        *,
+        allow_income_support_trigger: bool = True,
+    ) -> Optional[Dict[str, Any]]:
         """Vectorized within-tick solver for synthetic population households.
         Implements VAT, VAT credit, and marginal income tax (population mode).
         """
@@ -2231,13 +2267,17 @@ class NewLoop:
             if self._income_support_disabled():
                 uis = 0.0
             else:
-                uis = self.income_support_policy.compute_per_household(
+                raw_uis = self.income_support_policy.compute_per_household(
                     wages_total=float(w_total),
                     div_house_total=float(div_house_total_est),
                     price_level=float(P),
                     n_households=int(hh.n),
                     previous_support_per_h=float(hh.prev_uis),
                     state=self.state,
+                )
+                uis = self._apply_income_support_start_delay(
+                    raw_uis,
+                    allow_trigger=allow_income_support_trigger,
                 )
 
             # Mortgage index module: compute indexed required payment per household mortgage.
@@ -3776,7 +3816,7 @@ class NewLoop:
             uis = float(solp.get("uis", 0.0))
             dti_sol = solp
             if int(self.state.get("t", 0)) == 0:
-                sol_diag = self.solve_within_tick_population()
+                sol_diag = self.solve_within_tick_population(allow_income_support_trigger=False)
                 if sol_diag is not None:
                     dti_sol = sol_diag
 

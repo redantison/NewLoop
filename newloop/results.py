@@ -141,7 +141,9 @@ def _population_distribution_snapshot(
     mort_i = np.asarray(hh.mortgage_loans, dtype=float)
     rev_i = np.asarray(hh.revolving_loans, dtype=float)
     loan_i = mort_i + rev_i
-    income_i = np.asarray(hh.prev_income, dtype=float)
+    income_i = np.asarray(sol.get("y", []), dtype=float)
+    if income_i.shape[0] != n:
+        income_i = np.asarray(hh.prev_income, dtype=float)
     if income_i.shape[0] != n:
         income_i = np.asarray(hh.wages0_q, dtype=float)
 
@@ -513,7 +515,7 @@ def _startup_solver_snapshot(
         )
 
     if sol is None:
-        sol = sim.solve_within_tick_population()
+        sol = sim.solve_within_tick_population(allow_income_support_trigger=False)
     if sol is None:
         return None
 
@@ -994,7 +996,7 @@ def run_simulation(n_quarters: int = 80, cfg: Dict[str, Any] | None = None) -> S
     startup_diag = _startup_diagnostics(startup_diag_sim, snapshot=startup_snapshot)
 
     sim, visible_history_start, _ = _build_startup_sim(effective_cfg)
-    before_sol = sim.solve_within_tick_population()
+    before_sol = sim.solve_within_tick_population(allow_income_support_trigger=False)
     before = _population_distribution_snapshot(sim, sol=before_sol) if before_sol is not None else None
     quarter_diag_q0: Dict[str, Any] | None = None
     quarter_diag_q10: Dict[str, Any] | None = None
@@ -1013,7 +1015,7 @@ def run_simulation(n_quarters: int = 80, cfg: Dict[str, Any] | None = None) -> S
                 _quarter_state_diagnostics(sim, snapshot=quarter_diag_q10_snapshot)
                 if quarter_diag_q10_snapshot is not None else None
             )
-    after_sol = sim.solve_within_tick_population()
+    after_sol = sim.solve_within_tick_population(allow_income_support_trigger=False)
     after = _population_distribution_snapshot(sim, sol=after_sol) if after_sol is not None else None
     pop_dist = {"before": before, "after": after} if (before is not None and after is not None) else None
     startup_diag_out = dict(startup_diag or {})

@@ -571,6 +571,26 @@ class PolicyAlignmentTests(unittest.TestCase):
         assert snap_reuse is not None
         self.assert_nested_close(snap_fresh, snap_reuse)
 
+    def test_population_distribution_snapshot_uses_solver_disposable_income(self):
+        cfg = make_cfg()
+        sim = NewLoop(copy.deepcopy(cfg))
+
+        sol = sim.solve_within_tick_population()
+        self.assertIsNotNone(sol)
+        assert sol is not None
+
+        n = sim.hh.n if sim.hh is not None else 0
+        self.assertGreater(n, 0)
+        if sim.hh is not None:
+            sim.hh.prev_income = np.full(n, -12345.0, dtype=float)
+
+        snap = _population_distribution_snapshot(sim, sol=sol)
+
+        self.assertIsNotNone(snap)
+        assert snap is not None
+        self.assertEqual(len(snap["income"]), n)
+        self.assert_nested_close(snap["income"], np.asarray(sol.get("y", []), dtype=float).tolist())
+
     def test_quarter_state_diagnostics_match_reused_snapshot(self):
         cfg = make_cfg()
         sim_fresh = NewLoop(copy.deepcopy(cfg))
@@ -596,6 +616,7 @@ class PolicyAlignmentTests(unittest.TestCase):
     def test_uis_starts_at_zero_and_anchors_from_q0_wages(self):
         cfg = make_cfg()
         cfg["parameters"]["income_support_mode"] = "UIS"
+        cfg["parameters"]["income_support_start_delay_quarters"] = 0
 
         sim = NewLoop(cfg)
         sim.step()
@@ -611,7 +632,73 @@ class PolicyAlignmentTests(unittest.TestCase):
             places=6,
         )
 
-    def test_neutral_warmup_makes_before_snapshot_common_across_support_modes(self):
+    def test_ubi_delay_and_ramp_phase_support_in_after_q0_trigger(self):
+        cfg = make_cfg()
+        cfg["parameters"]["income_support_mode"] = "UBI"
+        cfg["parameters"]["income_support_start_delay_quarters"] = 2
+        cfg["parameters"]["income_support_ramp_quarters"] = 4
+
+        sim = NewLoop(cfg)
+        for _ in range(6):
+            sim.step()
+
+        supports = [float(row.uis_per_h) for row in sim.history[:6]]
+        self.assertEqual(int(sim.state.get("income_support_trigger_t", -1)), 0)
+        self.assertAlmostEqual(supports[0], 0.0, places=9)
+        self.assertAlmostEqual(supports[1], 0.0, places=9)
+        self.assertGreater(supports[2], 0.0)
+        self.assertGreater(supports[3], supports[2])
+        self.assertGreater(supports[4], supports[3])
+        self.assertGreater(supports[5], supports[4])
+
+    def test_ubi_delay_without_ramp_still_switches_on_immediately(self):
+        cfg = make_cfg()
+        cfg["parameters"]["income_support_mode"] = "UBI"
+        cfg["parameters"]["income_support_start_delay_quarters"] = 2
+        cfg["parameters"]["income_support_ramp_quarters"] = 0
+
+        sim = NewLoop(cfg)
+        for _ in range(4):
+            sim.step()
+
+        supports = [float(row.uis_per_h) for row in sim.history[:4]]
+        self.assertAlmostEqual(supports[0], 0.0, places=9)
+        self.assertAlmostEqual(supports[1], 0.0, places=9)
+        self.assertGreater(supports[2], 0.0)
+        self.assertAlmostEqual(supports[2], supports[3], places=9)
+
+    def test_uis_delay_and_ramp_wait_after_first_positive_trigger(self):
+        cfg_now = make_cfg()
+        cfg_now["parameters"]["income_support_mode"] = "UIS"
+        cfg_now["parameters"]["income_support_start_delay_quarters"] = 0
+        cfg_now["parameters"]["income_support_ramp_quarters"] = 0
+
+        sim_now = NewLoop(cfg_now)
+        for _ in range(6):
+            sim_now.step()
+
+        raw_supports = [float(row.uis_per_h) for row in sim_now.history[:6]]
+        trigger_idx = next((idx for idx, value in enumerate(raw_supports) if value > 1e-9), None)
+        self.assertIsNotNone(trigger_idx)
+        assert trigger_idx is not None
+
+        cfg_delayed = make_cfg()
+        cfg_delayed["parameters"]["income_support_mode"] = "UIS"
+        cfg_delayed["parameters"]["income_support_start_delay_quarters"] = 2
+        cfg_delayed["parameters"]["income_support_ramp_quarters"] = 4
+
+        sim_delayed = NewLoop(cfg_delayed)
+        for _ in range(8):
+            sim_delayed.step()
+
+        delayed_supports = [float(row.uis_per_h) for row in sim_delayed.history[:8]]
+        self.assertEqual(int(sim_delayed.state.get("income_support_trigger_t", -1)), trigger_idx)
+        for idx in range(trigger_idx + 2):
+            self.assertAlmostEqual(delayed_supports[idx], 0.0, places=9)
+        self.assertGreater(delayed_supports[trigger_idx + 2], 0.0)
+        self.assertGreater(delayed_supports[trigger_idx + 3], delayed_supports[trigger_idx + 2])
+
+    def test_neutral_warmup_makes_before_wealth_snapshot_common_across_support_modes(self):
         cfg_uis = make_cfg()
         cfg_ubi = make_cfg()
         cfg_uis["parameters"]["income_support_mode"] = "UIS"
@@ -627,7 +714,6 @@ class PolicyAlignmentTests(unittest.TestCase):
         before_uis = run_uis.population_distributions["before"]
         before_ubi = run_ubi.population_distributions["before"]
 
-        self.assertTrue(np.allclose(np.asarray(before_uis["income"], dtype=float), np.asarray(before_ubi["income"], dtype=float)))
         self.assertTrue(np.allclose(np.asarray(before_uis["wealth"], dtype=float), np.asarray(before_ubi["wealth"], dtype=float)))
         self.assertEqual(int(run_uis.startup_diagnostics.get("neutral_warmup_quarters", 0)), 2)
         self.assertGreaterEqual(int(run_uis.startup_diagnostics.get("neutral_warmup_quarters_completed", 0)), 1)
