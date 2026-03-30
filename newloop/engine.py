@@ -12,9 +12,10 @@ import numpy as np
 
 from .mathutils import _as_np, _pct, _pct_np, automation_two_hump, calculate_gini_np
 from .mortgage import (
+    FixedRateMortgageSchedule,
+    get_fixed_rate_mortgage_schedule,
     orig_principal_from_balance,
     payment_from_balance,
-    payment_from_orig_principal,
     remaining_term,
     scheduled_payment_components,
 )
@@ -48,6 +49,14 @@ class NewLoop:
         self.income_support_policy = make_income_support_policy(self.params)
         p0 = float(config["parameters"].get("price_level_initial", 1.0))
         base_rate_q = max(0.0, float(config["parameters"].get("loan_rate_per_quarter", 0.0)))
+        self._default_mortgage_schedule: FixedRateMortgageSchedule = get_fixed_rate_mortgage_schedule(
+            max(0.0, float(config["parameters"].get("mortgage_fixed_rate_q", base_rate_q))),
+            max(1, int(config["parameters"].get("mortgage_term_quarters", 60))),
+        )
+        self._mortgage_contract_state_dirty = True
+        self._mortgage_contract_cache: Dict[str, np.ndarray] | None = None
+        self._mortgage_contract_cache_rate_q: float | None = None
+        self._mortgage_contract_cache_term_q: int | None = None
         payout_firms_base = max(0.0, min(1.0, float(config["parameters"].get("dividend_payout_rate_firms", 1.0))))
         self.state = {
             "t": 0,
@@ -614,8 +623,99 @@ class NewLoop:
     def _mortgage_term_quarters(self) -> int:
         return max(1, int(self.params.get("mortgage_term_quarters", 60)))
 
+    def _invalidate_mortgage_contract_state(self) -> None:
+        self._mortgage_contract_state_dirty = True
+        self._mortgage_contract_cache = None
+        self._mortgage_contract_cache_rate_q = None
+        self._mortgage_contract_cache_term_q = None
+
+    def _default_mortgage_product_mask(self, active_mask: np.ndarray) -> np.ndarray:
+        if self.hh is None or self.hh.n <= 0:
+            return np.zeros(0, dtype=bool)
+        hh = self.hh
+        default_rate_q = self._mortgage_fixed_rate_q()
+        default_term_q = float(self._mortgage_term_quarters())
+        return (
+            active_mask
+            & np.isclose(np.asarray(hh.mort_rate_q, dtype=float), default_rate_q, rtol=0.0, atol=1e-12)
+            & np.isclose(np.asarray(hh.mort_term_q, dtype=float), default_term_q, rtol=0.0, atol=1e-12)
+        )
+
+    def _current_mortgage_schedule(self) -> FixedRateMortgageSchedule:
+        rate_q = self._mortgage_fixed_rate_q()
+        term_q = self._mortgage_term_quarters()
+        if (
+            abs(float(self._default_mortgage_schedule.rate_q) - float(rate_q)) > 1e-12
+            or int(self._default_mortgage_schedule.term_q) != int(term_q)
+        ):
+            self._default_mortgage_schedule = get_fixed_rate_mortgage_schedule(rate_q, term_q)
+        return self._default_mortgage_schedule
+
+    def _contractual_mortgage_components(
+        self,
+        mort: np.ndarray,
+        mort_rate_q: np.ndarray,
+        mort_age_q: np.ndarray,
+        mort_term_q: np.ndarray,
+        mort_payment_sched_q: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        n = int(mort.shape[0])
+        mort_remaining_q = remaining_term(mort_term_q, mort_age_q)
+        mort_pay_ctr_i = np.zeros(n, dtype=float)
+        mort_interest_due_i = np.zeros(n, dtype=float)
+        mort_principal_ctr_i = np.zeros(n, dtype=float)
+
+        active = mort > 1e-12
+        if not np.any(active):
+            return mort_remaining_q, mort_pay_ctr_i, mort_interest_due_i, mort_principal_ctr_i
+
+        default_mask = self._default_mortgage_product_mask(active)
+        if np.any(default_mask):
+            schedule = self._current_mortgage_schedule()
+            (
+                mort_pay_ctr_i[default_mask],
+                mort_interest_due_i[default_mask],
+                mort_principal_ctr_i[default_mask],
+            ) = schedule.contractual_components(
+                mort[default_mask],
+                mort_payment_sched_q[default_mask],
+                mort_age_q[default_mask],
+            )
+
+        fallback_mask = active & (~default_mask)
+        if np.any(fallback_mask):
+            (
+                mort_pay_ctr_i[fallback_mask],
+                mort_interest_due_i[fallback_mask],
+                mort_principal_ctr_i[fallback_mask],
+            ) = scheduled_payment_components(
+                mort[fallback_mask],
+                mort_rate_q[fallback_mask],
+                mort_payment_sched_q[fallback_mask],
+                mort_remaining_q[fallback_mask],
+            )
+
+        return mort_remaining_q, mort_pay_ctr_i, mort_interest_due_i, mort_principal_ctr_i
+
+    def _mortgage_contract_snapshot(self) -> Dict[str, np.ndarray]:
+        self._refresh_mortgage_contract_state()
+        if self._mortgage_contract_cache is None:
+            raise RuntimeError("Mortgage contract cache is unavailable after refresh.")
+        return self._mortgage_contract_cache
+
     def _refresh_mortgage_contract_state(self) -> None:
         if self.hh is None or self.hh.n <= 0:
+            return
+        current_rate_q = self._mortgage_fixed_rate_q()
+        current_term_q = self._mortgage_term_quarters()
+        if (
+            not self._mortgage_contract_state_dirty
+            and self._mortgage_contract_cache is not None
+            and self._mortgage_contract_cache_rate_q is not None
+            and self._mortgage_contract_cache_term_q is not None
+            and abs(float(self._mortgage_contract_cache_rate_q) - float(current_rate_q)) <= 1e-12
+            and int(self._mortgage_contract_cache_term_q) == int(current_term_q)
+        ):
             return
         hh = self.hh
         hh.ensure_memos()
@@ -641,17 +741,38 @@ class NewLoop:
             hh.mort_rate_q[active] = np.where(hh.mort_rate_q[active] > 1e-12, hh.mort_rate_q[active], default_rate_q)
             hh.mort_term_q[active] = np.where(hh.mort_term_q[active] > 1e-12, hh.mort_term_q[active], default_term_q)
             hh.mort_age_q[active] = np.maximum(0.0, np.minimum(hh.mort_age_q[active], hh.mort_term_q[active] - 1.0))
-            rem_q = remaining_term(hh.mort_term_q[active], hh.mort_age_q[active])
-            hh.mort_payment_sched_q[active] = np.where(
-                hh.mort_payment_sched_q[active] > 1e-12,
-                hh.mort_payment_sched_q[active],
-                payment_from_balance(mort[active], hh.mort_rate_q[active], rem_q),
-            )
-            hh.mort_orig_principal[active] = np.where(
-                hh.mort_orig_principal[active] > 1e-12,
-                hh.mort_orig_principal[active],
-                orig_principal_from_balance(mort[active], hh.mort_rate_q[active], hh.mort_term_q[active], hh.mort_age_q[active]),
-            )
+            default_mask = self._default_mortgage_product_mask(active)
+            if np.any(default_mask):
+                schedule = self._current_mortgage_schedule()
+                hh.mort_payment_sched_q[default_mask] = np.where(
+                    hh.mort_payment_sched_q[default_mask] > 1e-12,
+                    hh.mort_payment_sched_q[default_mask],
+                    schedule.contract_payment_from_balance(mort[default_mask], hh.mort_age_q[default_mask]),
+                )
+                hh.mort_orig_principal[default_mask] = np.where(
+                    hh.mort_orig_principal[default_mask] > 1e-12,
+                    hh.mort_orig_principal[default_mask],
+                    schedule.orig_principal_from_balance(mort[default_mask], hh.mort_age_q[default_mask]),
+                )
+
+            fallback_mask = active & (~default_mask)
+            if np.any(fallback_mask):
+                rem_q = remaining_term(hh.mort_term_q[fallback_mask], hh.mort_age_q[fallback_mask])
+                hh.mort_payment_sched_q[fallback_mask] = np.where(
+                    hh.mort_payment_sched_q[fallback_mask] > 1e-12,
+                    hh.mort_payment_sched_q[fallback_mask],
+                    payment_from_balance(mort[fallback_mask], hh.mort_rate_q[fallback_mask], rem_q),
+                )
+                hh.mort_orig_principal[fallback_mask] = np.where(
+                    hh.mort_orig_principal[fallback_mask] > 1e-12,
+                    hh.mort_orig_principal[fallback_mask],
+                    orig_principal_from_balance(
+                        mort[fallback_mask],
+                        hh.mort_rate_q[fallback_mask],
+                        hh.mort_term_q[fallback_mask],
+                        hh.mort_age_q[fallback_mask],
+                    ),
+                )
 
         if np.any(inactive):
             hh.mort_rate_q[inactive] = 0.0
@@ -665,6 +786,36 @@ class NewLoop:
             hh.mort_pay_base[inactive] = 0.0
             hh.mort_index_prev[inactive] = 1.0
             hh.mort_dlnI_sm_prev[inactive] = 0.0
+
+        mort_rate_q = np.maximum(0.0, _as_np(hh.mort_rate_q, dtype=float))
+        mort_age_q = np.maximum(0.0, _as_np(hh.mort_age_q, dtype=float))
+        mort_term_q = np.maximum(0.0, _as_np(hh.mort_term_q, dtype=float))
+        mort_payment_sched_q = np.maximum(0.0, _as_np(hh.mort_payment_sched_q, dtype=float))
+        (
+            mort_remaining_q,
+            mort_pay_ctr_i,
+            mort_interest_due_i,
+            mort_principal_ctr_i,
+        ) = self._contractual_mortgage_components(
+            mort=mort,
+            mort_rate_q=mort_rate_q,
+            mort_age_q=mort_age_q,
+            mort_term_q=mort_term_q,
+            mort_payment_sched_q=mort_payment_sched_q,
+        )
+        self._mortgage_contract_cache = {
+            "mort_rate_q": mort_rate_q.astype(float, copy=True),
+            "mort_age_q": mort_age_q.astype(float, copy=True),
+            "mort_term_q": mort_term_q.astype(float, copy=True),
+            "mort_payment_sched_q": mort_payment_sched_q.astype(float, copy=True),
+            "mort_remaining_q": mort_remaining_q.astype(float, copy=True),
+            "mort_pay_ctr_i": mort_pay_ctr_i.astype(float, copy=True),
+            "mort_interest_due_i": mort_interest_due_i.astype(float, copy=True),
+            "mort_principal_ctr_i": mort_principal_ctr_i.astype(float, copy=True),
+        }
+        self._mortgage_contract_cache_rate_q = float(current_rate_q)
+        self._mortgage_contract_cache_term_q = int(current_term_q)
+        self._mortgage_contract_state_dirty = False
 
     def _ensure_mortgage_index_anchors(self, p_series_now: float, y_series_now: float, rL: float) -> None:
         if self.hh is None or self.hh.n <= 0:
@@ -729,20 +880,32 @@ class NewLoop:
 
         hh = self.hh
         hh.ensure_memos()
-        self._refresh_mortgage_contract_state()
         n = int(hh.n)
         mort_vec = _as_np(mort, dtype=float)
-        mort_rate_q = np.maximum(0.0, _as_np(hh.mort_rate_q, dtype=float))
-        mort_age_q = np.maximum(0.0, _as_np(hh.mort_age_q, dtype=float))
-        mort_term_q = np.maximum(0.0, _as_np(hh.mort_term_q, dtype=float))
-        mort_payment_sched_q = np.maximum(0.0, _as_np(hh.mort_payment_sched_q, dtype=float))
-        mort_remaining_q = remaining_term(mort_term_q, mort_age_q)
-        mort_pay_ctr_i, mort_interest_due_i, mort_principal_ctr_i = scheduled_payment_components(
-            mort_vec,
-            mort_rate_q,
-            mort_payment_sched_q,
-            mort_remaining_q,
-        )
+        snapshot = self._mortgage_contract_snapshot()
+        mort_rate_q = np.asarray(snapshot["mort_rate_q"], dtype=float)
+        mort_age_q = np.asarray(snapshot["mort_age_q"], dtype=float)
+        mort_term_q = np.asarray(snapshot["mort_term_q"], dtype=float)
+        mort_payment_sched_q = np.asarray(snapshot["mort_payment_sched_q"], dtype=float)
+        mort_remaining_q = np.asarray(snapshot["mort_remaining_q"], dtype=float)
+        use_cached_contract = np.shares_memory(mort_vec, np.asarray(hh.mortgage_loans, dtype=float))
+        if use_cached_contract:
+            mort_pay_ctr_i = np.asarray(snapshot["mort_pay_ctr_i"], dtype=float)
+            mort_interest_due_i = np.asarray(snapshot["mort_interest_due_i"], dtype=float)
+            mort_principal_ctr_i = np.asarray(snapshot["mort_principal_ctr_i"], dtype=float)
+        else:
+            (
+                mort_remaining_q,
+                mort_pay_ctr_i,
+                mort_interest_due_i,
+                mort_principal_ctr_i,
+            ) = self._contractual_mortgage_components(
+                mort=mort_vec,
+                mort_rate_q=mort_rate_q,
+                mort_age_q=mort_age_q,
+                mort_term_q=mort_term_q,
+                mort_payment_sched_q=mort_payment_sched_q,
+            )
 
         p_series_now = self._mort_price_series_value(float(self.state.get("price_level", 1.0)))
         y_series_now = self._mort_income_series_value(wages_total, div_house_total, uis_per_h)
@@ -2751,7 +2914,6 @@ class NewLoop:
                 hh.mort_term_q[active_mort_start],
                 hh.mort_age_q[active_mort_start] + 1.0,
             )
-        self._refresh_mortgage_contract_state()
 
         trust_interest = float(sol.get("trust_interest", 0.0))
         if trust_interest > 0:
@@ -2949,7 +3111,6 @@ class NewLoop:
         housing_turnover_rate_mortgagor_q = max(0.0, min(1.0, housing_turnover_rate_mortgagor_q))
         housing_turnover_rate_owner_q = max(0.0, min(1.0, housing_turnover_rate_owner_q))
         housing_turnover_owner_mortgage_share = max(0.0, min(1.0, housing_turnover_owner_mortgage_share))
-        self._refresh_mortgage_contract_state()
 
         principal_paid_total = 0.0
         rev_rollover_total = 0.0
@@ -3037,13 +3198,8 @@ class NewLoop:
             )
             new_rate_q = self._mortgage_fixed_rate_q()
             new_term_q = float(self._mortgage_term_quarters())
-            unit_payment_q = float(
-                payment_from_orig_principal(
-                    np.asarray([1.0], dtype=float),
-                    new_rate_q,
-                    new_term_q,
-                )[0]
-            )
+            new_schedule = self._current_mortgage_schedule()
+            unit_payment_q = float(new_schedule.contract_payment_factor)
             income_limit_payment_i = mort_cap_i * max(0.0, unit_payment_q)
             desired_mult = float(pop_cfg.get("mortgage_income_mult_median", mort_turnover_income_mult_cap))
             desired_mult = max(0.0, desired_mult)
@@ -3184,7 +3340,7 @@ class NewLoop:
             if np.any(matched_seller_mask):
                 exit_idx = np.where(matched_seller_mask)[0]
                 sold_house_values = housing_value_i[exit_idx]
-                sold_house_payments = payment_from_orig_principal(sold_house_values, new_rate_q, new_term_q)
+                sold_house_payments = new_schedule.payment_from_orig_principal(sold_house_values)
                 hh.housing_escrow[exit_idx] = 0.0
                 renter_rent_q[exit_idx] = np.maximum(0.0, sold_house_payments * rent_mult_median)
 
@@ -3209,7 +3365,7 @@ class NewLoop:
                 hh.mort_term_q[new_mask] = new_term_q
                 hh.mort_age_q[new_mask] = 0.0
                 # Turnover creates a fresh mortgage on the next housing-finance event.
-                hh.mort_payment_sched_q[new_mask] = payment_from_orig_principal(allocation[new_mask], new_rate_q, new_term_q)
+                hh.mort_payment_sched_q[new_mask] = new_schedule.payment_from_orig_principal(allocation[new_mask])
                 hh.mort_orig_principal[new_mask] = allocation[new_mask]
                 hh.mort_t0[new_mask] = -1
                 renter_rent_q[new_mask] = 0.0
@@ -3229,6 +3385,9 @@ class NewLoop:
             self.state["mort_turnover_seller_net_total"] = float(matched_seller_net_total)
             self.state["mortgage_turnover_renter_entry_count"] = float(renter_entry_count)
             self.state["mortgage_turnover_supply_released_count"] = float(supply_values.size)
+
+        self._invalidate_mortgage_contract_state()
+        self._refresh_mortgage_contract_state()
 
         # 7) Household overdrafts -> revolving loans
         # -------------------------------------------------
@@ -3470,6 +3629,7 @@ class NewLoop:
         use_pop_dyn = bool(self.params.get("use_population", False)) and bool(self.params.get("population_dynamics", False)) and (self.hh is not None)
 
         if use_pop_dyn:
+            self._refresh_mortgage_contract_state()
             # Allow policy modules to initialize first-tick anchors before solving.
             if not self._income_support_disabled():
                 self.income_support_policy.warm_start_anchor_if_needed(
