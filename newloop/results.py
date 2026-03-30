@@ -121,10 +121,16 @@ def _household_wealth_snapshot(sim: NewLoop, *, comprehensive: bool = COMPREHENS
     }
 
 
-def _population_distribution_snapshot(sim: NewLoop) -> Dict[str, Any] | None:
+def _population_distribution_snapshot(
+    sim: NewLoop,
+    *,
+    sol: Dict[str, Any] | None = None,
+) -> Dict[str, Any] | None:
     """Capture household income and net-worth vectors for before/after plotting."""
     if sim.hh is None or sim.hh.n <= 0:
         return None
+    if sol is None:
+        raise ValueError("_population_distribution_snapshot requires a precomputed solver result.")
 
     hh = sim.hh
     n = int(hh.n)
@@ -149,7 +155,6 @@ def _population_distribution_snapshot(sim: NewLoop) -> Dict[str, Any] | None:
     initial_outright_owner = initial_tenure_code == 2
     initial_other = ~initial_outright_owner
     income_groups_policy: Dict[str, List[float]] = {}
-    sol = sim.solve_within_tick_population()
     if sol is not None:
         wages_i = np.asarray(sol.get("wages_i", []), dtype=float)
         income_tax_i = np.asarray(sol.get("income_tax_i", []), dtype=float)
@@ -192,10 +197,16 @@ def _population_distribution_snapshot(sim: NewLoop) -> Dict[str, Any] | None:
     }
 
 
-def _startup_diagnostics(sim: NewLoop) -> Dict[str, Any] | None:
+def _startup_diagnostics(
+    sim: NewLoop,
+    *,
+    snapshot: Dict[str, Any] | None = None,
+) -> Dict[str, Any] | None:
     """Summarize quarter-0 household buffer consistency and debt stress."""
     if sim.hh is None or sim.hh.n <= 0:
         return None
+    if snapshot is None:
+        raise ValueError("_startup_diagnostics requires a precomputed startup snapshot.")
 
     hh = sim.hh
     hh.ensure_memos()
@@ -216,7 +227,6 @@ def _startup_diagnostics(sim: NewLoop) -> Dict[str, Any] | None:
             "percent": pct,
         }
 
-    snapshot = _startup_solver_snapshot(sim)
     sol = None if snapshot is None else snapshot.get("sol")
     if snapshot is None:
         return None
@@ -343,13 +353,18 @@ def _startup_diagnostics(sim: NewLoop) -> Dict[str, Any] | None:
     }
 
 
-def _quarter_state_diagnostics(sim: NewLoop) -> Dict[str, Any] | None:
+def _quarter_state_diagnostics(
+    sim: NewLoop,
+    *,
+    snapshot: Dict[str, Any] | None = None,
+) -> Dict[str, Any] | None:
     if sim.hh is None or sim.hh.n <= 0 or not sim.history:
         return None
+    if snapshot is None:
+        raise ValueError("_quarter_state_diagnostics requires a precomputed startup snapshot.")
 
     hh = sim.hh
     hh.ensure_memos()
-    snapshot = _startup_solver_snapshot(sim)
     if snapshot is None:
         return None
 
@@ -472,7 +487,11 @@ def _bucket_means(values: np.ndarray, rank_source: np.ndarray, n_buckets: int) -
     return np.asarray(means, dtype=float)
 
 
-def _startup_solver_snapshot(sim: NewLoop) -> Dict[str, Any] | None:
+def _startup_solver_snapshot(
+    sim: NewLoop,
+    *,
+    sol: Dict[str, Any] | None = None,
+) -> Dict[str, Any] | None:
     if sim.hh is None or sim.hh.n <= 0:
         return None
 
@@ -486,14 +505,15 @@ def _startup_solver_snapshot(sim: NewLoop) -> Dict[str, Any] | None:
     p_now = max(float(sim.state.get("price_level", 1.0)), 1e-9)
     p_cons = p_now * (1.0 + float(sim._effective_vat_rate()))
 
-    if not bool(sim.params.get("disable_income_support", False)):
+    if sol is None and not bool(sim.params.get("disable_income_support", False)):
         sim.income_support_policy.warm_start_anchor_if_needed(
             state=sim.state,
             baseline_wages_i=hh.wages0_q,
             price_level=float(sim.state.get("price_level", 1.0)),
         )
 
-    sol = sim.solve_within_tick_population()
+    if sol is None:
+        sol = sim.solve_within_tick_population()
     if sol is None:
         return None
 
@@ -970,20 +990,31 @@ def run_simulation(n_quarters: int = 80, cfg: Dict[str, Any] | None = None) -> S
     effective_cfg, baseline_calibration = _run_baseline_calibration(base_cfg)
 
     startup_diag_sim, _, warmup_report = _build_startup_sim(effective_cfg)
-    startup_diag = _startup_diagnostics(startup_diag_sim)
+    startup_snapshot = _startup_solver_snapshot(startup_diag_sim)
+    startup_diag = _startup_diagnostics(startup_diag_sim, snapshot=startup_snapshot)
 
     sim, visible_history_start, _ = _build_startup_sim(effective_cfg)
-    before = _population_distribution_snapshot(sim)
+    before_sol = sim.solve_within_tick_population()
+    before = _population_distribution_snapshot(sim, sol=before_sol) if before_sol is not None else None
     quarter_diag_q0: Dict[str, Any] | None = None
     quarter_diag_q10: Dict[str, Any] | None = None
     for _ in range(int(n_quarters)):
         sim.step()
         visible_t = len(sim.history) - visible_history_start - 1
         if visible_t == 0:
-            quarter_diag_q0 = _quarter_state_diagnostics(sim)
+            quarter_diag_q0_snapshot = _startup_solver_snapshot(sim)
+            quarter_diag_q0 = (
+                _quarter_state_diagnostics(sim, snapshot=quarter_diag_q0_snapshot)
+                if quarter_diag_q0_snapshot is not None else None
+            )
         elif visible_t == 10:
-            quarter_diag_q10 = _quarter_state_diagnostics(sim)
-    after = _population_distribution_snapshot(sim)
+            quarter_diag_q10_snapshot = _startup_solver_snapshot(sim)
+            quarter_diag_q10 = (
+                _quarter_state_diagnostics(sim, snapshot=quarter_diag_q10_snapshot)
+                if quarter_diag_q10_snapshot is not None else None
+            )
+    after_sol = sim.solve_within_tick_population()
+    after = _population_distribution_snapshot(sim, sol=after_sol) if after_sol is not None else None
     pop_dist = {"before": before, "after": after} if (before is not None and after is not None) else None
     startup_diag_out = dict(startup_diag or {})
     startup_diag_out["neutral_warmup_quarters"] = int(warmup_report.get("requested_quarters", 0))

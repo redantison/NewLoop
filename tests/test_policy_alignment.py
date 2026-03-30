@@ -10,7 +10,14 @@ sys.path.insert(0, str(ROOT))
 
 from newloop.config import get_default_config
 from newloop.engine import NewLoop
-from newloop.results import _population_distribution_snapshot, _prepare_startup_sim, _startup_diagnostics, run_simulation
+from newloop.results import (
+    _population_distribution_snapshot,
+    _prepare_startup_sim,
+    _quarter_state_diagnostics,
+    _startup_diagnostics,
+    _startup_solver_snapshot,
+    run_simulation,
+)
 
 
 def make_cfg():
@@ -20,6 +27,27 @@ def make_cfg():
 
 
 class PolicyAlignmentTests(unittest.TestCase):
+    def assert_nested_close(self, left, right, *, places: int = 9):
+        if isinstance(left, dict):
+            self.assertIsInstance(right, dict)
+            self.assertEqual(set(left.keys()), set(right.keys()))
+            for key in left:
+                self.assert_nested_close(left[key], right[key], places=places)
+            return
+        if isinstance(left, list):
+            self.assertIsInstance(right, list)
+            self.assertEqual(len(left), len(right))
+            for l_item, r_item in zip(left, right):
+                self.assert_nested_close(l_item, r_item, places=places)
+            return
+        if isinstance(left, bool) or isinstance(right, bool):
+            self.assertEqual(left, right)
+            return
+        if isinstance(left, (int, float, np.integer, np.floating)) and isinstance(right, (int, float, np.integer, np.floating)):
+            self.assertAlmostEqual(float(left), float(right), places=places)
+            return
+        self.assertEqual(left, right)
+
     def test_default_support_mode_is_ubi(self):
         cfg = make_cfg()
         self.assertEqual(str(cfg["parameters"].get("income_support_mode", "")).upper(), "UBI")
@@ -436,7 +464,8 @@ class PolicyAlignmentTests(unittest.TestCase):
         sim = NewLoop(cfg)
         assert sim.hh is not None
 
-        baseline = _population_distribution_snapshot(sim)
+        baseline_sol = sim.solve_within_tick_population()
+        baseline = _population_distribution_snapshot(sim, sol=baseline_sol)
         self.assertIsNotNone(baseline)
         assert baseline is not None
 
@@ -444,7 +473,8 @@ class PolicyAlignmentTests(unittest.TestCase):
         sim.nodes["BANK"].add("deposit_liab", 200.0)
         sim.nodes["BANK"].add("reserves", 200.0)
 
-        with_trust = _population_distribution_snapshot(sim)
+        with_trust_sol = sim.solve_within_tick_population()
+        with_trust = _population_distribution_snapshot(sim, sol=with_trust_sol)
         self.assertIsNotNone(with_trust)
         assert with_trust is not None
 
@@ -494,12 +524,74 @@ class PolicyAlignmentTests(unittest.TestCase):
         sim = NewLoop(cfg)
 
         _prepare_startup_sim(sim)
-        diag = _startup_diagnostics(sim)
+        snapshot = _startup_solver_snapshot(sim)
+        diag = _startup_diagnostics(sim, snapshot=snapshot)
 
         self.assertIsNotNone(diag)
         assert diag is not None
         self.assertAlmostEqual(float(diag.get("startup_op_margin_info", 0.0)), 0.25, delta=0.03)
         self.assertAlmostEqual(float(diag.get("startup_op_margin_phys", 0.0)), 0.10, delta=0.03)
+
+    def test_startup_diagnostics_match_reused_snapshot(self):
+        cfg = make_cfg()
+        sim_fresh = NewLoop(copy.deepcopy(cfg))
+        sim_reuse = NewLoop(copy.deepcopy(cfg))
+
+        _prepare_startup_sim(sim_fresh)
+        _prepare_startup_sim(sim_reuse)
+
+        snapshot_fresh = _startup_solver_snapshot(sim_fresh)
+        diag_fresh = _startup_diagnostics(sim_fresh, snapshot=snapshot_fresh)
+        snapshot = _startup_solver_snapshot(sim_reuse)
+        diag_reuse = _startup_diagnostics(sim_reuse, snapshot=snapshot)
+
+        self.assertIsNotNone(diag_fresh)
+        self.assertIsNotNone(snapshot_fresh)
+        self.assertIsNotNone(snapshot)
+        self.assertIsNotNone(diag_reuse)
+        assert diag_fresh is not None
+        assert diag_reuse is not None
+        self.assert_nested_close(diag_fresh, diag_reuse)
+
+    def test_population_distribution_snapshot_matches_reused_solver_output(self):
+        cfg = make_cfg()
+        sim_fresh = NewLoop(copy.deepcopy(cfg))
+        sim_reuse = NewLoop(copy.deepcopy(cfg))
+
+        sol_fresh = sim_fresh.solve_within_tick_population()
+        snap_fresh = _population_distribution_snapshot(sim_fresh, sol=sol_fresh)
+        sol = sim_reuse.solve_within_tick_population()
+        snap_reuse = _population_distribution_snapshot(sim_reuse, sol=sol)
+
+        self.assertIsNotNone(sol_fresh)
+        self.assertIsNotNone(sol)
+        self.assertIsNotNone(snap_fresh)
+        self.assertIsNotNone(snap_reuse)
+        assert snap_fresh is not None
+        assert snap_reuse is not None
+        self.assert_nested_close(snap_fresh, snap_reuse)
+
+    def test_quarter_state_diagnostics_match_reused_snapshot(self):
+        cfg = make_cfg()
+        sim_fresh = NewLoop(copy.deepcopy(cfg))
+        sim_reuse = NewLoop(copy.deepcopy(cfg))
+
+        for _ in range(2):
+            sim_fresh.step()
+            sim_reuse.step()
+
+        snapshot_fresh = _startup_solver_snapshot(sim_fresh)
+        diag_fresh = _quarter_state_diagnostics(sim_fresh, snapshot=snapshot_fresh)
+        snapshot = _startup_solver_snapshot(sim_reuse)
+        diag_reuse = _quarter_state_diagnostics(sim_reuse, snapshot=snapshot)
+
+        self.assertIsNotNone(diag_fresh)
+        self.assertIsNotNone(snapshot_fresh)
+        self.assertIsNotNone(snapshot)
+        self.assertIsNotNone(diag_reuse)
+        assert diag_fresh is not None
+        assert diag_reuse is not None
+        self.assert_nested_close(diag_fresh, diag_reuse)
 
     def test_uis_starts_at_zero_and_anchors_from_q0_wages(self):
         cfg = make_cfg()

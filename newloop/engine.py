@@ -883,16 +883,16 @@ class NewLoop:
         n = int(hh.n)
         mort_vec = _as_np(mort, dtype=float)
         snapshot = self._mortgage_contract_snapshot()
-        mort_rate_q = np.asarray(snapshot["mort_rate_q"], dtype=float)
-        mort_age_q = np.asarray(snapshot["mort_age_q"], dtype=float)
-        mort_term_q = np.asarray(snapshot["mort_term_q"], dtype=float)
-        mort_payment_sched_q = np.asarray(snapshot["mort_payment_sched_q"], dtype=float)
-        mort_remaining_q = np.asarray(snapshot["mort_remaining_q"], dtype=float)
-        use_cached_contract = np.shares_memory(mort_vec, np.asarray(hh.mortgage_loans, dtype=float))
+        mort_rate_q = snapshot["mort_rate_q"]
+        mort_age_q = snapshot["mort_age_q"]
+        mort_term_q = snapshot["mort_term_q"]
+        mort_payment_sched_q = snapshot["mort_payment_sched_q"]
+        mort_remaining_q = snapshot["mort_remaining_q"]
+        use_cached_contract = np.shares_memory(mort_vec, _as_np(hh.mortgage_loans, dtype=float))
         if use_cached_contract:
-            mort_pay_ctr_i = np.asarray(snapshot["mort_pay_ctr_i"], dtype=float)
-            mort_interest_due_i = np.asarray(snapshot["mort_interest_due_i"], dtype=float)
-            mort_principal_ctr_i = np.asarray(snapshot["mort_principal_ctr_i"], dtype=float)
+            mort_pay_ctr_i = snapshot["mort_pay_ctr_i"]
+            mort_interest_due_i = snapshot["mort_interest_due_i"]
+            mort_principal_ctr_i = snapshot["mort_principal_ctr_i"]
         else:
             (
                 mort_remaining_q,
@@ -2253,8 +2253,19 @@ class NewLoop:
                 uis_per_h=float(uis),
                 commit_state=False,
             )
-            mort_pay_req_i = _as_np(mort_terms.get("mort_pay_req_i", np.zeros(hh.n, dtype=float)), dtype=float)
-            mort_interest_paid_i = _as_np(mort_terms.get("mort_interest_paid_i", np.zeros(hh.n, dtype=float)), dtype=float)
+            mort_zero_vec = np.zeros(hh.n, dtype=float)
+            mort_one_vec = np.ones(hh.n, dtype=float)
+            mort_pay_req_i = _as_np(mort_terms.get("mort_pay_req_i", mort_zero_vec), dtype=float)
+            mort_pay_ctr_i = _as_np(mort_terms.get("mort_pay_ctr_i", mort_zero_vec), dtype=float)
+            mort_interest_due_i = _as_np(mort_terms.get("mort_interest_due_i", mort_zero_vec), dtype=float)
+            mort_interest_paid_i = _as_np(mort_terms.get("mort_interest_paid_i", mort_zero_vec), dtype=float)
+            mort_principal_paid_i = _as_np(mort_terms.get("mort_principal_paid_i", mort_zero_vec), dtype=float)
+            mort_interest_gap_i = _as_np(mort_terms.get("mort_interest_gap_i", mort_zero_vec), dtype=float)
+            mort_principal_gap_i = _as_np(mort_terms.get("mort_principal_gap_i", mort_zero_vec), dtype=float)
+            mort_gap_i = _as_np(mort_terms.get("mort_gap_i", mort_zero_vec), dtype=float)
+            mort_index_i = _as_np(mort_terms.get("mort_index_i", mort_one_vec), dtype=float)
+            mort_dln_i = _as_np(mort_terms.get("mort_dln_i", mort_zero_vec), dtype=float)
+            mort_dln_sm_i = _as_np(mort_terms.get("mort_dln_sm_i", mort_zero_vec), dtype=float)
             bank_profit_pre_tax = float(bank_interest_ex_mort + np.sum(np.maximum(0.0, mort_interest_paid_i)))
 
             corp_tax_depr_fa = max(0.0, float(self.nodes["FA"].get("K", 0.0))) * P * corp_tax_depr_rate_q
@@ -2456,22 +2467,22 @@ class NewLoop:
                     "mort_index_enable": bool(mort_index_enable),
                     "mort_pay_req_i": mort_pay_req_i,
                     "renter_rent_q": renter_rent_q,
-                    "mort_pay_ctr_i": _as_np(mort_terms.get("mort_pay_ctr_i", np.zeros(hh.n, dtype=float)), dtype=float),
-                    "mort_interest_due_i": _as_np(mort_terms.get("mort_interest_due_i", np.zeros(hh.n, dtype=float)), dtype=float),
-                    "mort_interest_paid_i": _as_np(mort_terms.get("mort_interest_paid_i", np.zeros(hh.n, dtype=float)), dtype=float),
-                    "mort_principal_paid_i": _as_np(mort_terms.get("mort_principal_paid_i", np.zeros(hh.n, dtype=float)), dtype=float),
-                    "mort_interest_gap_i": _as_np(mort_terms.get("mort_interest_gap_i", np.zeros(hh.n, dtype=float)), dtype=float),
-                    "mort_principal_gap_i": _as_np(mort_terms.get("mort_principal_gap_i", np.zeros(hh.n, dtype=float)), dtype=float),
-                    "mort_gap_i": _as_np(mort_terms.get("mort_gap_i", np.zeros(hh.n, dtype=float)), dtype=float),
+                    "mort_pay_ctr_i": mort_pay_ctr_i,
+                    "mort_interest_due_i": mort_interest_due_i,
+                    "mort_interest_paid_i": mort_interest_paid_i,
+                    "mort_principal_paid_i": mort_principal_paid_i,
+                    "mort_interest_gap_i": mort_interest_gap_i,
+                    "mort_principal_gap_i": mort_principal_gap_i,
+                    "mort_gap_i": mort_gap_i,
                     "mort_gap_total": float(mort_terms.get("mort_gap_total", 0.0)),
                     "mort_pay_req_total": float(mort_terms.get("mort_pay_req_total", 0.0)),
                     "mort_pay_ctr_total": float(mort_terms.get("mort_pay_ctr_total", 0.0)),
                     "mort_index_mean": float(mort_terms.get("mort_index_mean", 1.0)),
                     "mort_index_min": float(mort_terms.get("mort_index_min", 1.0)),
                     "mort_index_max": float(mort_terms.get("mort_index_max", 1.0)),
-                    "mort_index_i": _as_np(mort_terms.get("mort_index_i", np.ones(hh.n, dtype=float)), dtype=float),
-                    "mort_dln_i": _as_np(mort_terms.get("mort_dln_i", np.zeros(hh.n, dtype=float)), dtype=float),
-                    "mort_dln_sm_i": _as_np(mort_terms.get("mort_dln_sm_i", np.zeros(hh.n, dtype=float)), dtype=float),
+                    "mort_index_i": mort_index_i,
+                    "mort_dln_i": mort_dln_i,
+                    "mort_dln_sm_i": mort_dln_sm_i,
                     "p_series_now": float(mort_terms.get("p_series_now", P)),
                     "y_series_now": float(mort_terms.get("y_series_now", max(1e-9, w_total + div_house_total + float(uis) * float(hh.n)))),
                     "rev_interest_i": rev_interest,
