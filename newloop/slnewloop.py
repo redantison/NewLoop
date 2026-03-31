@@ -12,7 +12,7 @@ import csv
 import io
 import json
 import re
-from typing import Any, Dict, List, Sequence
+from typing import Any, Callable, Dict, List, Sequence
 
 from .plotting import (
     DEFAULT_LINE_METRICS,
@@ -106,7 +106,12 @@ COMPACT_NUMBER_COLUMNS = {
     "pop_inc_p90",
 }
 
-DECIMAL_COLUMNS = {"price_level", "private_inv_cov"}
+DECIMAL_COLUMNS = {
+    "price_level",
+    "private_inv_cov",
+    "sector_tfp_mult_info",
+    "sector_tfp_mult_physical",
+}
 
 DISPLAY_VALUE_MODES: tuple[str, str] = ("nominal", "real")
 CONTROL_DEFAULTS_VERSION = 13
@@ -127,6 +132,29 @@ def _annualize_quarterly_rate(value: float) -> float:
 def _quarterly_rate_from_annual(value: float) -> float:
     annual = max(-0.999999, float(value))
     return (1.0 + annual) ** 0.25 - 1.0
+
+
+def _sync_ubi_percentile_state(session_state: Dict[str, Any], fallback_default: float = 30.0) -> float:
+    """Keep the dedicated UBI percentile UI key and hidden parameter key in sync."""
+    try:
+        ui_val = float(session_state.get(UBI_PERCENTILE_UI_KEY, fallback_default))
+    except Exception:
+        ui_val = float(fallback_default)
+    try:
+        param_val = float(session_state.get(UBI_PERCENTILE_PARAM_KEY, fallback_default))
+    except Exception:
+        param_val = float(fallback_default)
+
+    if ui_val > 0.0:
+        chosen = ui_val
+    elif param_val > 0.0:
+        chosen = param_val
+    else:
+        chosen = float(fallback_default)
+
+    session_state[UBI_PERCENTILE_PARAM_KEY] = float(chosen)
+    session_state[UBI_PERCENTILE_UI_KEY] = float(chosen)
+    return float(chosen)
 
 
 # Columns to deflate when display mode is "real".
@@ -563,7 +591,7 @@ def _render_parameter_controls(
     st: Any,
     grouped_controls: Dict[str, List[Any]],
     base_params: Dict[str, Any],
-) -> tuple[bool, bool, int]:
+) -> tuple[bool, bool, int, Any]:
     def _request_reset_defaults() -> None:
         st.session_state["app__reset_requested"] = True
         st.session_state["app__force_stale_after_reset"] = True
@@ -614,6 +642,7 @@ def _render_parameter_controls(
             step=RUN_STEP_QUARTERS,
             key="run__quarters",
         )
+        progress_bar = st.empty()
         st.radio(
             "Display Values",
             options=list(DISPLAY_VALUE_MODES),
@@ -656,14 +685,10 @@ def _render_parameter_controls(
                             None,
                         )
                         if ubi_pct_control is not None:
-                            ubi_pct_key = control_widget_key(ubi_pct_control)
-                            try:
-                                pct_val = float(st.session_state.get(ubi_pct_key, 0.0))
-                            except Exception:
-                                pct_val = 0.0
-                            if pct_val <= 0.0:
-                                st.session_state[ubi_pct_key] = 30.0
-                            st.session_state[UBI_PERCENTILE_UI_KEY] = float(st.session_state.get(ubi_pct_key, 30.0))
+                            _sync_ubi_percentile_state(
+                                st.session_state,
+                                fallback_default=float(resolve_control_default(ubi_pct_control, base_params) or 30.0),
+                            )
 
                     st.session_state[last_mode_key] = active_mode
 
@@ -695,12 +720,16 @@ def _render_parameter_controls(
                 else:
                     for control in controls:
                         _render_control(control)
-    return run_clicked, reset_clicked, int(quarters)
+    return run_clicked, reset_clicked, int(quarters), progress_bar
 
 
-def _cached_run_payload(n_quarters: int, cfg_json: str) -> Dict[str, Any]:
+def _cached_run_payload(
+    n_quarters: int,
+    cfg_json: str,
+    progress_callback: Callable[[str, int, int], None] | None = None,
+) -> Dict[str, Any]:
     cfg = json.loads(cfg_json)
-    run = run_simulation(n_quarters=int(n_quarters), cfg=cfg)
+    run = run_simulation(n_quarters=int(n_quarters), cfg=cfg, progress_callback=progress_callback)
     support_debug = {
         "mode": str(run.sim.params.get("income_support_mode", "UBI")).strip().upper(),
         "disabled": bool(run.sim.params.get("disable_income_support", False)),
@@ -742,7 +771,11 @@ def main() -> None:
     if bool(st.session_state.pop("app__reset_requested", False)):
         _apply_control_defaults(st, base_params)
 
-    run_clicked, _reset_clicked, quarters = _render_parameter_controls(st, grouped_controls, base_params)
+    run_clicked, _reset_clicked, quarters, progress_bar = _render_parameter_controls(
+        st,
+        grouped_controls,
+        base_params,
+    )
 
     if "rows" not in st.session_state:
         st.session_state["rows"] = []
@@ -763,8 +796,19 @@ def main() -> None:
     current_cfg_json = _cfg_json(current_cfg)
     should_run = run_clicked or (not st.session_state["rows"])
     if should_run:
-        with st.spinner("Running simulation..."):
-            payload = _cached_run_payload(quarters, current_cfg_json)
+        def _update_run_progress(_stage: str, completed: int, total: int) -> None:
+            total_q = max(0, int(total))
+            done_q = min(max(0, int(completed)), total_q)
+            if total_q > 0:
+                progress_bar.progress(done_q / total_q)
+            else:
+                progress_bar.progress(1.0 if done_q > 0 else 0.0)
+
+        payload = _cached_run_payload(
+            quarters,
+            current_cfg_json,
+            progress_callback=_update_run_progress,
+        )
         st.session_state["rows"] = list(payload.get("rows", []))
         st.session_state["population_distributions"] = dict(payload.get("population_distributions", {}))
         st.session_state["startup_diagnostics"] = dict(payload.get("startup_diagnostics", {}))
@@ -779,6 +823,8 @@ def main() -> None:
         st.session_state.get("last_run_cfg_json", "") != current_cfg_json
         or int(st.session_state.get("last_run_quarters", 0)) != int(quarters)
     )
+    if config_stale:
+        progress_bar.empty()
     if rows_raw and config_stale:
         st.warning("Parameters changed since last run. Click `Run Model` to generate new data.")
 

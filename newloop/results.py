@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import asdict, dataclass
+from typing import Callable
 from typing import Any, Dict, List, Sequence
 
 import numpy as np
@@ -986,11 +987,22 @@ def _build_startup_sim(cfg: Dict[str, Any]) -> tuple[NewLoop, int, Dict[str, Any
     return sim, len(sim.history), warmup_report
 
 
-def run_simulation(n_quarters: int = 80, cfg: Dict[str, Any] | None = None) -> SimulationRun:
+def run_simulation(
+    n_quarters: int = 80,
+    cfg: Dict[str, Any] | None = None,
+    progress_callback: Callable[[str, int, int], None] | None = None,
+) -> SimulationRun:
     """Run NewLoop for n_quarters and return structured outputs."""
+    total_quarters = max(0, int(n_quarters))
+
+    def _notify_progress(stage: str, completed: int) -> None:
+        if progress_callback is not None:
+            progress_callback(str(stage), int(completed), int(total_quarters))
+
     base_cfg = copy.deepcopy(get_default_config() if cfg is None else cfg)
     effective_cfg, baseline_calibration = _run_baseline_calibration(base_cfg)
 
+    _notify_progress("Preparing startup...", 0)
     startup_diag_sim, _, warmup_report = _build_startup_sim(effective_cfg)
     startup_snapshot = _startup_solver_snapshot(startup_diag_sim)
     startup_diag = _startup_diagnostics(startup_diag_sim, snapshot=startup_snapshot)
@@ -1000,7 +1012,8 @@ def run_simulation(n_quarters: int = 80, cfg: Dict[str, Any] | None = None) -> S
     before = _population_distribution_snapshot(sim, sol=before_sol) if before_sol is not None else None
     quarter_diag_q0: Dict[str, Any] | None = None
     quarter_diag_q10: Dict[str, Any] | None = None
-    for _ in range(int(n_quarters)):
+    _notify_progress("Running visible quarters...", 0)
+    for step_idx in range(total_quarters):
         sim.step()
         visible_t = len(sim.history) - visible_history_start - 1
         if visible_t == 0:
@@ -1015,6 +1028,7 @@ def run_simulation(n_quarters: int = 80, cfg: Dict[str, Any] | None = None) -> S
                 _quarter_state_diagnostics(sim, snapshot=quarter_diag_q10_snapshot)
                 if quarter_diag_q10_snapshot is not None else None
             )
+        _notify_progress("Running visible quarters...", step_idx + 1)
     after_sol = sim.solve_within_tick_population(allow_income_support_trigger=False)
     after = _population_distribution_snapshot(sim, sol=after_sol) if after_sol is not None else None
     pop_dist = {"before": before, "after": after} if (before is not None and after is not None) else None
@@ -1026,6 +1040,7 @@ def run_simulation(n_quarters: int = 80, cfg: Dict[str, Any] | None = None) -> S
     quarter_compare = _quarter_comparison(quarter_diag_q0, quarter_diag_q10)
     if quarter_compare is not None:
         startup_diag_out["quarter_comparison"] = quarter_compare
+    _notify_progress("Completed.", total_quarters)
     return SimulationRun(
         sim=sim,
         rows=_visible_rows(sim.history, start_idx=visible_history_start),

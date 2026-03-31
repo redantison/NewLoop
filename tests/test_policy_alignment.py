@@ -698,6 +698,56 @@ class PolicyAlignmentTests(unittest.TestCase):
         self.assertGreater(delayed_supports[trigger_idx + 2], 0.0)
         self.assertGreater(delayed_supports[trigger_idx + 3], delayed_supports[trigger_idx + 2])
 
+    def test_sector_tfp_multiplier_scales_linearly_with_completed_automation(self):
+        cfg = make_cfg()
+        cfg["parameters"]["sector_tfp_alpha_info"] = 0.50
+        cfg["parameters"]["sector_tfp_alpha_phys"] = 0.25
+
+        sim = NewLoop(cfg)
+        sim.state["automation_info"] = 0.60
+        sim.state["automation_phys"] = 0.40
+
+        self.assertAlmostEqual(sim._sector_tfp_multiplier("FA"), 1.30, places=9)
+        self.assertAlmostEqual(sim._sector_tfp_multiplier("FH"), 1.10, places=9)
+
+    def test_positive_sector_tfp_alpha_increases_sector_capacity(self):
+        cfg_base = make_cfg()
+        cfg_tfp = make_cfg()
+        cfg_tfp["parameters"]["sector_tfp_alpha_info"] = 0.50
+        cfg_tfp["parameters"]["sector_tfp_alpha_phys"] = 0.25
+
+        sim_base = NewLoop(cfg_base)
+        sim_tfp = NewLoop(cfg_tfp)
+
+        for _ in range(20):
+            sim_base.step()
+            sim_tfp.step()
+
+        row_base = sim_base.history[-1]
+        row_tfp = sim_tfp.history[-1]
+
+        self.assertGreater(float(row_tfp.sector_tfp_mult_info), 1.0)
+        self.assertGreater(float(row_tfp.sector_tfp_mult_physical), 1.0)
+        self.assertGreater(float(row_tfp.sector_capacity_info_per_h), float(row_base.sector_capacity_info_per_h))
+        self.assertGreater(float(row_tfp.sector_capacity_physical_per_h), float(row_base.sector_capacity_physical_per_h))
+
+    def test_positive_sector_tfp_alpha_lowers_price_level(self):
+        cfg_base = make_cfg()
+        cfg_tfp = make_cfg()
+        cfg_tfp["parameters"]["sector_tfp_alpha_info"] = 0.50
+        cfg_tfp["parameters"]["sector_tfp_alpha_phys"] = 0.25
+
+        sim_base = NewLoop(cfg_base)
+        sim_tfp = NewLoop(cfg_tfp)
+
+        for _ in range(20):
+            sim_base.step()
+            sim_tfp.step()
+
+        row_base = sim_base.history[-1]
+        row_tfp = sim_tfp.history[-1]
+        self.assertLess(float(row_tfp.price_level), float(row_base.price_level))
+
     def test_neutral_warmup_makes_before_wealth_snapshot_common_across_support_modes(self):
         cfg_uis = make_cfg()
         cfg_ubi = make_cfg()

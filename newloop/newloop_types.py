@@ -117,6 +117,8 @@ class TickResult:
     automation_info_flow: float
     automation_phys: float
     automation_phys_flow: float
+    sector_tfp_mult_info: float
+    sector_tfp_mult_physical: float
 
     price_level: float
     inflation: float

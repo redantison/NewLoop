@@ -267,6 +267,8 @@ config = {
         "automation_bi": 4.0,
         "automation_kp": 0.11,
         "automation_tp": 32.0,
+        "sector_tfp_alpha_info": 0.0,
+        "sector_tfp_alpha_phys": 0.0,
     },
     "nodes": {
         # Firms: deposit accounts used as transactional hubs

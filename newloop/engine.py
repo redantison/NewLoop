@@ -61,6 +61,8 @@ class NewLoop:
         self.state = {
             "t": 0,
             "automation": 0.0,
+            "sector_tfp_mult_info": 1.0,
+            "sector_tfp_mult_phys": 1.0,
             "trust_active": False,
 
             # Price level state
@@ -1086,6 +1088,17 @@ class NewLoop:
         key = "sector_capacity_per_k_info" if firm_id == "FA" else "sector_capacity_per_k_phys"
         return max(0.0, float(self.params.get(key, 0.0)))
 
+    def _sector_tfp_alpha(self, firm_id: str) -> float:
+        key = "sector_tfp_alpha_info" if firm_id == "FA" else "sector_tfp_alpha_phys"
+        return max(0.0, float(self.params.get(key, 0.0)))
+
+    def _sector_tfp_multiplier(self, firm_id: str) -> float:
+        if firm_id == "FA":
+            auto = max(0.0, float(self.state.get("automation_info", self.state.get("automation", 0.0))))
+        else:
+            auto = max(0.0, float(self.state.get("automation_phys", self.state.get("automation", 0.0))))
+        return max(1.0, 1.0 + (self._sector_tfp_alpha(firm_id) * auto))
+
     def _sector_capacity_multiplier(self, firm_id: str) -> float:
         if firm_id == "FA":
             auto = max(0.0, float(self.state.get("automation_info", self.state.get("automation", 0.0))))
@@ -1093,7 +1106,7 @@ class NewLoop:
         else:
             auto = max(0.0, float(self.state.get("automation_phys", self.state.get("automation", 0.0))))
             bonus = max(0.0, float(self.params.get("sector_automation_capacity_bonus_phys", 0.0)))
-        return max(1.0, 1.0 + (bonus * auto))
+        return max(1.0, (1.0 + (bonus * auto)) * self._sector_tfp_multiplier(firm_id))
 
     def _ensure_sector_capacity_anchors(
         self,
@@ -3610,6 +3623,8 @@ class NewLoop:
             self.state["automation_info_flow"] = float(res["info_flow"])
             self.state["automation_phys"] = float(res["phys_level"])
             self.state["automation_phys_flow"] = float(res["phys_flow"])
+        self.state["sector_tfp_mult_info"] = float(self._sector_tfp_multiplier("FA"))
+        self.state["sector_tfp_mult_phys"] = float(self._sector_tfp_multiplier("FH"))
 
         # Price level
         # Competitive pass-through: P_comp = P0 / (1 + beta*A)
@@ -3640,8 +3655,17 @@ class NewLoop:
         if K_scale <= 0:
             K_scale = 1.0
 
-        # Productivity multiplier (>=1). This is the channel through which reinvestment raises output capacity.
+        # Productivity multiplier (>=1). Capital deepening and the optional sector TFP experiment
+        # both feed the competitive price channel, so extra productivity can show up as lower prices
+        # rather than only as unused slack capacity.
         prod_mult = 1.0 + (kappa * (K_per_h / K_scale))
+        tfp_mult_info = float(self.state.get("sector_tfp_mult_info", 1.0))
+        tfp_mult_phys = float(self.state.get("sector_tfp_mult_phys", 1.0))
+        w_info = max(0.0, min(1.0, float(self.params.get("automation_w_info", 0.65))))
+        tfp_mult_agg = (w_info * tfp_mult_info) + ((1.0 - w_info) * tfp_mult_phys)
+        if tfp_mult_agg < 1.0:
+            tfp_mult_agg = 1.0
+        prod_mult *= tfp_mult_agg
         if prod_mult < 1.0:
             prod_mult = 1.0
         self.state["capital_productivity_mult"] = float(prod_mult)
@@ -3971,6 +3995,8 @@ class NewLoop:
                 automation_info_flow=float(self.state.get("automation_info_flow", 0.0)),
                 automation_phys=float(self.state.get("automation_phys", 0.0)),
                 automation_phys_flow=float(self.state.get("automation_phys_flow", 0.0)),
+                sector_tfp_mult_info=float(self.state.get("sector_tfp_mult_info", 1.0)),
+                sector_tfp_mult_physical=float(self.state.get("sector_tfp_mult_phys", 1.0)),
                 price_level=float(self.state.get("price_level", 1.0)),
                 inflation=float(self.state.get("inflation", 0.0)),
                 gini=float(gini_disp),

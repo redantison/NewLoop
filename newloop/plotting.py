@@ -14,6 +14,8 @@ METRIC_LABELS: Dict[str, str] = {
     "automation_info_flow": "Automation Flow (Info, Δ/q)",
     "automation_phys": "Automation (Physical)",
     "automation_phys_flow": "Automation Flow (Physical, Δ/q)",
+    "sector_tfp_mult_info": "TFP Multiplier (Info)",
+    "sector_tfp_mult_physical": "TFP Multiplier (Physical)",
     "price_level": "Price Level",
     "price_level_deflated": "Real Price Level",
     "inflation": "Inflation",
