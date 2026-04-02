@@ -10,10 +10,11 @@ from typing import Any, Dict, List, Sequence
 
 import numpy as np
 
-from .config import get_default_config
+from .config import apply_economic_regime_overrides, get_default_config
 from .engine import NewLoop
 from .income_support import make_income_support_policy
 from .newloop_types import TickResult
+from .tax_policy import make_tax_policy
 
 COMPREHENSIVE_WEALTH_DISTRIBUTION = True
 
@@ -508,6 +509,13 @@ def _startup_solver_snapshot(
     p_now = max(float(sim.state.get("price_level", 1.0)), 1e-9)
     p_cons = p_now * (1.0 + float(sim._effective_vat_rate()))
 
+    if sol is None:
+        sim.tax_policy.warm_start_anchor_if_needed(
+            state=sim.state,
+            baseline_wages_i=hh.wages0_q,
+            price_level=float(sim.state.get("price_level", 1.0)),
+        )
+
     if sol is None and not bool(sim.params.get("disable_income_support", False)):
         sim.income_support_policy.warm_start_anchor_if_needed(
             state=sim.state,
@@ -943,8 +951,9 @@ def _reset_post_warmup_sector_planner_state(sim: NewLoop) -> None:
 
 def _build_startup_sim(cfg: Dict[str, Any]) -> tuple[NewLoop, int, Dict[str, Any]]:
     """Create a startup sim, optionally run hidden neutral warm-up quarters, and return the visible start index plus warm-up diagnostics."""
-    warmup_quarters = max(0, int(cfg.get("parameters", {}).get("neutral_warmup_quarters", 0)))
-    startup_cfg = _neutral_warmup_regime_cfg(cfg) if warmup_quarters > 0 else copy.deepcopy(cfg)
+    effective_cfg = apply_economic_regime_overrides(cfg)
+    warmup_quarters = max(0, int(effective_cfg.get("parameters", {}).get("neutral_warmup_quarters", 0)))
+    startup_cfg = _neutral_warmup_regime_cfg(effective_cfg) if warmup_quarters > 0 else copy.deepcopy(effective_cfg)
     sim = NewLoop(startup_cfg)
     _prepare_startup_sim(sim)
     legacy_planner_seed: Dict[str, float] | None = None
@@ -966,8 +975,9 @@ def _build_startup_sim(cfg: Dict[str, Any]) -> tuple[NewLoop, int, Dict[str, Any
             warmup_report["completed_quarters"] = int(idx + 1)
         _prepare_startup_sim(sim)
         legacy_planner_seed = _extract_sector_planner_seed(sim)
-        sim.params = copy.deepcopy(cfg["parameters"])
+        sim.params = copy.deepcopy(effective_cfg["parameters"])
         sim.income_support_policy = make_income_support_policy(sim.params)
+        sim.tax_policy = make_tax_policy(sim.params)
         _reset_post_warmup_sector_planner_state(sim)
         _sync_startup_household_state(sim)
         _apply_sector_planner_seed(sim, legacy_planner_seed)
@@ -999,7 +1009,7 @@ def run_simulation(
         if progress_callback is not None:
             progress_callback(str(stage), int(completed), int(total_quarters))
 
-    base_cfg = copy.deepcopy(get_default_config() if cfg is None else cfg)
+    base_cfg = apply_economic_regime_overrides(copy.deepcopy(get_default_config() if cfg is None else cfg))
     effective_cfg, baseline_calibration = _run_baseline_calibration(base_cfg)
 
     _notify_progress("Preparing startup...", 0)

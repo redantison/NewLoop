@@ -52,6 +52,40 @@ class PolicyAlignmentTests(unittest.TestCase):
         cfg = make_cfg()
         self.assertEqual(str(cfg["parameters"].get("income_support_mode", "")).upper(), "UBI")
 
+    def test_old_loop_regime_forces_expected_policy_overrides(self):
+        cfg = make_cfg()
+        params = cfg["parameters"]
+        params["economic_regime"] = "OldLoop"
+        params["disable_trust"] = False
+        params["disable_income_support"] = False
+        params["disable_mortgage_relief"] = False
+        params["disable_vat"] = False
+        params["mortgage_turnover_enabled"] = False
+        params["gov_tax_rebate_rate"] = 0.25
+
+        sim = NewLoop(cfg)
+
+        self.assertEqual(str(sim.params.get("economic_regime", "")), "OldLoop")
+        self.assertEqual(str(sim.params.get("tax_policy_mode", "")), "old_loop")
+        self.assertTrue(bool(sim.params.get("disable_trust", False)))
+        self.assertTrue(bool(sim.params.get("disable_income_support", False)))
+        self.assertTrue(bool(sim.params.get("disable_mortgage_relief", False)))
+        self.assertTrue(bool(sim.params.get("disable_vat", False)))
+        self.assertTrue(bool(sim.params.get("mortgage_turnover_enabled", False)))
+        self.assertAlmostEqual(float(sim.params.get("gov_tax_rebate_rate", 1.0)), 0.0, places=9)
+
+    def test_automation_start_quarter_delays_curve_until_after_start_tick(self):
+        cfg = make_cfg()
+        params = cfg["parameters"]
+        params["automation_start_quarter"] = 6
+
+        sim = NewLoop(cfg)
+        for _ in range(10):
+            sim.step()
+
+        self.assertTrue(all(abs(float(row.automation)) <= 1e-12 for row in sim.history[:6]))
+        self.assertGreater(float(sim.history[7].automation), 0.0)
+
     def test_default_run_stays_stock_flow_consistent(self):
         sim = NewLoop(make_cfg())
         for _ in range(12):

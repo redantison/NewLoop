@@ -50,6 +50,14 @@ SECTION_ORDER: tuple[str, ...] = (
 
 
 PARAMETER_CONTROLS: tuple[ParamControl, ...] = (
+    ParamControl(
+        ("economic_regime",),
+        "Economic Regime",
+        POLICY_SWITCHES_SECTION,
+        "select",
+        options=("NewLoop", "OldLoop"),
+        help_text="`OldLoop` forces trust, income support, mortgage assistance, VAT/prebate, and GOV surplus rebate off, keeps mortgage turnover on, and switches to the modular Old Loop tax regime.",
+    ),
     ParamControl(("disable_trust",), "Disable Trust", POLICY_SWITCHES_SECTION, "bool", help_text="Prevent trust activation, launch, and dilution."),
     ParamControl(("disable_mortgage_relief",), "Disable Mortgage Relief", POLICY_SWITCHES_SECTION, "bool", help_text="Turn off the mortgage-relief regime so households follow the plain contractual mortgage path without indexed relief or bank neutralization support."),
     ParamControl(("mortgage_turnover_enabled",), "Enable Mortgage Turnover", POLICY_SWITCHES_SECTION, "bool", help_text="Re-originate mortgage credit to plausible households so amortized mortgage stock can turn over instead of shrinking away."),
@@ -192,6 +200,12 @@ PARAMETER_CONTROLS: tuple[ParamControl, ...] = (
     ParamControl(("gov_rebate_buffer_quarters",), "Government Rebate Buffer (quarters)", "Taxes", "int", 0, 16, 1),
     ParamControl(("gov_rebate_start_delay_quarters",), "Government Rebate Start Delay (quarters)", "Taxes", "int", 0, 40, 1),
     ParamControl(("gov_rebate_ramp_quarters",), "Government Rebate Ramp (quarters)", "Taxes", "int", 0, 80, 1),
+    ParamControl(("old_loop_tax_rate_lower",), "Old Loop Tax Rate: Middle Band", "Taxes", "float", 0.0, 1.0, 0.01, help_text="Marginal household income-tax rate between the lower and upper Old Loop thresholds."),
+    ParamControl(("old_loop_tax_rate_upper",), "Old Loop Tax Rate: Upper Band", "Taxes", "float", 0.0, 1.0, 0.01, help_text="Marginal household income-tax rate above the upper Old Loop threshold."),
+    ParamControl(("old_loop_tax_threshold_lower_pct",), "Old Loop Lower Threshold Percentile", "Taxes", "float", 0.0, 100.0, 0.5, help_text="Startup market-income percentile used to anchor the first Old Loop tax threshold."),
+    ParamControl(("old_loop_tax_threshold_upper_pct",), "Old Loop Upper Threshold Percentile", "Taxes", "float", 0.0, 100.0, 0.5, help_text="Startup market-income percentile used to anchor the top Old Loop tax threshold."),
+    ParamControl(("old_loop_corporate_tax_rate",), "Old Loop Corporate Tax Rate", "Taxes", "float", 0.0, 1.0, 0.01, help_text="Fixed corporate income-tax rate used by the Old Loop tax regime."),
+    ParamControl(("old_loop_mortgage_interest_deduction",), "Old Loop Mortgage Interest Deduction", "Taxes", "bool", help_text="Subtract contractual mortgage interest due from household taxable income in the Old Loop tax regime."),
     ParamControl(INCOME_SUPPORT_MODE_PATH, "Income Support Mode", INCOME_SUPPORT_SECTION, "select", options=("UIS", "UBI")),
     ParamControl(
         ("income_support_start_delay_quarters",),
@@ -226,6 +240,7 @@ PARAMETER_CONTROLS: tuple[ParamControl, ...] = (
     ParamControl(("mortgage_fixed_rate_q",), "Mortgage Fixed Rate (Annual)", MORTGAGES_SECTION, "float", 0.0, 0.20, 0.0025, help_text="Annualized fixed coupon used for new mortgages. Stored internally as a quarterly rate."),
     ParamControl(("mortgage_term_quarters",), "Mortgage Term (Years)", MORTGAGES_SECTION, "int", 1, 40, 1, help_text="Fixed mortgage term shown in years. Stored internally in quarters."),
     ParamControl(("automation_path",), "Automation Path", "Automation", "select", options=("two_hump", "linear")),
+    ParamControl(("automation_start_quarter",), "Automation Start Quarter", "Automation", "int", 0, 240, 1, help_text="Automation remains at zero until this quarter, then the configured curve starts from its own quarter 0. Set above the run horizon to keep automation off for the whole run."),
     ParamControl(("hh_demand_info_share",), "HH Demand Share: Info", "Automation", "float", 0.0, 1.0, 0.01, help_text="Fixed household demand share allocated to the Info sector before any fulfillment rationing."),
     ParamControl(("automation_horizon_quarters",), "Automation Horizon Quarters", "Automation", "float", 4.0, 240.0, 1.0),
     ParamControl(("automation_w_info",), "Automation Weight: Info", "Automation", "float", 0.0, 1.0, 0.01),

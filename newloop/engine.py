@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
+from .config import apply_economic_regime_overrides, normalize_economic_regime_name
 from .mathutils import _as_np, _pct, _pct_np, automation_two_hump, calculate_gini_np
 from .mortgage import (
     FixedRateMortgageSchedule,
@@ -21,6 +22,7 @@ from .mortgage import (
 )
 from .income_support import apply_income_support_payment, make_income_support_policy
 from .newloop_types import HouseholdState, Node, TickResult
+from .tax_policy import make_tax_policy
 
 _WARNED_MORT_CORRIDOR_LOGSPACE_FALLBACK = False
 
@@ -41,23 +43,25 @@ class NewLoop:
     """
 
     def __init__(self, config: Dict[str, Any]) -> None:
-        self._validate_config(config)
-        self.params = config["parameters"]
+        effective_config = apply_economic_regime_overrides(config)
+        self._validate_config(effective_config)
+        self.params = effective_config["parameters"]
         pop_cfg = self.params.get("population_config", {}) if isinstance(self.params.get("population_config", {}), dict) else {}
         rng_seed = int(pop_cfg.get("seed", 7919))
         self.rng = np.random.Generator(np.random.PCG64(rng_seed))
         self.income_support_policy = make_income_support_policy(self.params)
-        p0 = float(config["parameters"].get("price_level_initial", 1.0))
-        base_rate_q = max(0.0, float(config["parameters"].get("loan_rate_per_quarter", 0.0)))
+        self.tax_policy = make_tax_policy(self.params)
+        p0 = float(self.params.get("price_level_initial", 1.0))
+        base_rate_q = max(0.0, float(self.params.get("loan_rate_per_quarter", 0.0)))
         self._default_mortgage_schedule: FixedRateMortgageSchedule = get_fixed_rate_mortgage_schedule(
-            max(0.0, float(config["parameters"].get("mortgage_fixed_rate_q", base_rate_q))),
-            max(1, int(config["parameters"].get("mortgage_term_quarters", 60))),
+            max(0.0, float(self.params.get("mortgage_fixed_rate_q", base_rate_q))),
+            max(1, int(self.params.get("mortgage_term_quarters", 60))),
         )
         self._mortgage_contract_state_dirty = True
         self._mortgage_contract_cache: Dict[str, np.ndarray] | None = None
         self._mortgage_contract_cache_rate_q: float | None = None
         self._mortgage_contract_cache_term_q: int | None = None
-        payout_firms_base = max(0.0, min(1.0, float(config["parameters"].get("dividend_payout_rate_firms", 1.0))))
+        payout_firms_base = max(0.0, min(1.0, float(self.params.get("dividend_payout_rate_firms", 1.0))))
         self.state = {
             "t": 0,
             "automation": 0.0,
@@ -141,7 +145,7 @@ class NewLoop:
 
         self.nodes: Dict[str, Node] = {
             nid: Node(nid, nd.get("stocks", {}).copy(), nd.get("memo", {}).copy())
-            for nid, nd in config["nodes"].items()
+            for nid, nd in effective_config["nodes"].items()
         }
 
         # Ensure required nodes exist (population-mode core only)
@@ -2249,33 +2253,6 @@ class NewLoop:
             trust_interest = fund_loan * rL
             bank_interest_ex_mort = float(rev_interest.sum() + trust_interest + fa_interest + fh_interest)
 
-            # Corporate income tax policy:
-            # - Distributed dividends are NOT taxed at the corporate level.
-            # - Retained earnings are taxed after a depreciation allowance on the capital stock.
-            # Household recipients are still taxed via income_tax_i; FUND is untaxed.
-            # Optional policy: raise tax rate as wages fall relative to baseline.
-            corp_tax_rate = float(self.params.get("corporate_tax_rate", 0.0))
-            corp_tax_rate = max(0.0, min(1.0, corp_tax_rate))
-            corp_tax_depr_rate_q = float(self.params.get("corporate_tax_depr_rate_q", 0.025))
-            corp_tax_depr_rate_q = max(0.0, min(1.0, corp_tax_depr_rate_q))
-
-            if bool(self.params.get("corporate_tax_dynamic_with_wages", False)):
-                wage_baseline = float(self.state.get("baseline_wages_total_pop", 0.0))
-                if wage_baseline > 0.0:
-                    wage_index = max(0.0, min(1.0, float(w_total) / wage_baseline))
-                else:
-                    wage_index = 1.0
-
-                base_rate = float(self.params.get("corporate_tax_rate_base", corp_tax_rate))
-                slope = float(self.params.get("corporate_tax_wage_sensitivity", 0.0))
-                tax_min = float(self.params.get("corporate_tax_rate_min", 0.0))
-                tax_max = float(self.params.get("corporate_tax_rate_max", 1.0))
-                tax_min = max(0.0, min(1.0, tax_min))
-                tax_max = max(tax_min, min(1.0, tax_max))
-
-                corp_tax_rate = base_rate + slope * (1.0 - wage_index)
-                corp_tax_rate = max(tax_min, min(tax_max, corp_tax_rate))
-
             # 4) Income-support policy (mode selected by parameters)
             if self._income_support_disabled():
                 uis = 0.0
@@ -2320,14 +2297,25 @@ class NewLoop:
             mort_dln_i = _as_np(mort_terms.get("mort_dln_i", mort_zero_vec), dtype=float)
             mort_dln_sm_i = _as_np(mort_terms.get("mort_dln_sm_i", mort_zero_vec), dtype=float)
             bank_profit_pre_tax = float(bank_interest_ex_mort + np.sum(np.maximum(0.0, mort_interest_paid_i)))
-
-            corp_tax_depr_fa = max(0.0, float(self.nodes["FA"].get("K", 0.0))) * P * corp_tax_depr_rate_q
-            corp_tax_depr_fh = max(0.0, float(self.nodes["FH"].get("K", 0.0))) * P * corp_tax_depr_rate_q
-            corp_tax_base_fa = max(0.0, p_fa_pre_tax - corp_tax_depr_fa)
-            corp_tax_base_fh = max(0.0, p_fh_pre_tax - corp_tax_depr_fh)
-            corp_tax_fa = corp_tax_rate * corp_tax_base_fa
-            corp_tax_fh = corp_tax_rate * corp_tax_base_fh
-            corp_tax_bk = corp_tax_rate * max(0.0, bank_profit_pre_tax)
+            corporate_tax = self.tax_policy.compute_corporate_taxes(
+                p_fa_pre_tax=float(p_fa_pre_tax),
+                p_fh_pre_tax=float(p_fh_pre_tax),
+                bank_profit_pre_tax=float(bank_profit_pre_tax),
+                price_level=float(P),
+                wages_total=float(w_total),
+                state=self.state,
+                fa_capital_real=float(self.nodes["FA"].get("K", 0.0)),
+                fh_capital_real=float(self.nodes["FH"].get("K", 0.0)),
+            )
+            corp_tax_rate = float(corporate_tax.corp_tax_rate)
+            corp_tax_depr_rate_q = float(corporate_tax.corp_tax_depr_rate_q)
+            corp_tax_depr_fa = float(corporate_tax.corp_tax_depr_fa)
+            corp_tax_depr_fh = float(corporate_tax.corp_tax_depr_fh)
+            corp_tax_base_fa = float(corporate_tax.corp_tax_base_fa)
+            corp_tax_base_fh = float(corporate_tax.corp_tax_base_fh)
+            corp_tax_fa = float(corporate_tax.corp_tax_fa)
+            corp_tax_fh = float(corporate_tax.corp_tax_fh)
+            corp_tax_bk = float(corporate_tax.corp_tax_bk)
 
             after_tax_profit_fa = max(0.0, p_fa_pre_tax - corp_tax_fa)
             after_tax_profit_fh = max(0.0, p_fh_pre_tax - corp_tax_fh)
@@ -2392,46 +2380,33 @@ class NewLoop:
             wages_i = w0 * wage_scale
             div_i = w_weights * float(div_house_total)
 
-            # --- Taxes & VAT credit (computed endogenously inside the solver) ---
-            taxable_income = wages_i + div_i  # excludes income support by policy
-
-            # Income tax: 15% marginal above a percentile threshold (nearest-rank)
-            it_rate = self._effective_income_tax_rate()
-            taxable_scale = float((w_total + float(div_house_total)) / w0_sum)
-            it_thr = it_anchor_w0 * taxable_scale
-            income_tax_i = it_rate * np.maximum(0.0, taxable_income - it_thr)
-
-            # VAT credit ("prebate"): vat_rate * poverty-line consumption, with a linear
-            # phaseout over the configured eligibility-income percentile band.
-            elig_income = taxable_income + float(uis)  # user policy: eligibility uses taxable income + income support
-            vc_thr_start = (vc_start_anchor_w0 * taxable_scale) + float(uis)
-            vc_thr_end = (vc_end_anchor_w0 * taxable_scale) + float(uis)
-
-            if vc_thr_end <= (vc_thr_start + 1e-12):
-                vat_credit_weight_i = (elig_income <= vc_thr_start).astype(float)
-            else:
-                vat_credit_weight_i = np.ones_like(elig_income, dtype=float)
-                hi_mask = elig_income >= vc_thr_end
-                mid_mask = (elig_income > vc_thr_start) & (~hi_mask)
-                vat_credit_weight_i[hi_mask] = 0.0
-                vat_credit_weight_i[mid_mask] = (
-                    (vc_thr_end - elig_income[mid_mask]) / (vc_thr_end - vc_thr_start)
-                )
-
             # Poverty-line consumption in real units is anchored to baseline average real consumption per household.
             # If baseline is not yet stored, initialize it from the current iteration (baseline quarter t==0).
             base_real_avg = self.state.get("baseline_real_cons_per_h", None)
             if base_real_avg is None:
                 base_real_avg = float(np.mean(c_real)) if c_real.size else 0.0
                 self.state["baseline_real_cons_per_h"] = float(base_real_avg)
-
-            pov_frac = float(self.params.get("vat_poverty_cons_frac", 0.0))
-            if pov_frac < 0:
-                pov_frac = 0.0
-            pov_real = float(pov_frac) * float(base_real_avg)
-            pov_nom = P * pov_real
-            vat_credit_per_h = vat_rate * pov_nom
-            vat_credit_i = vat_credit_per_h * vat_credit_weight_i
+            household_tax = self.tax_policy.compute_household_taxes(
+                wages_i=wages_i,
+                div_i=div_i,
+                mort_interest_due_i=mort_interest_due_i,
+                support_per_h=float(uis),
+                price_level=float(P),
+                state=self.state,
+                base_real_avg=float(base_real_avg),
+                baseline_wages_i=w0,
+                current_tax_anchor_wage=float(it_anchor_w0),
+                current_vc_start_anchor_wage=float(vc_start_anchor_w0),
+                current_vc_end_anchor_wage=float(vc_end_anchor_w0),
+            )
+            taxable_income = _as_np(household_tax.taxable_income_i, dtype=float)
+            taxable_income_before_deductions_i = _as_np(household_tax.taxable_income_before_deductions_i, dtype=float)
+            mortgage_interest_deduction_i = _as_np(household_tax.mortgage_interest_deduction_i, dtype=float)
+            income_tax_i = _as_np(household_tax.income_tax_i, dtype=float)
+            vat_credit_i = _as_np(household_tax.vat_credit_i, dtype=float)
+            it_thr = float(household_tax.threshold_lower)
+            vc_thr_start = float(household_tax.threshold_lower)
+            vc_thr_end = float(household_tax.threshold_upper)
 
             # Disposable income used by the consumption rule.
             # Households service the full required mortgage payment plus revolving interest
@@ -2540,6 +2515,8 @@ class NewLoop:
                     "y_series_now": float(mort_terms.get("y_series_now", max(1e-9, w_total + div_house_total + float(uis) * float(hh.n)))),
                     "rev_interest_i": rev_interest,
                     "taxable_income": taxable_income,
+                    "taxable_income_before_deductions_i": taxable_income_before_deductions_i,
+                    "mortgage_interest_deduction_i": mortgage_interest_deduction_i,
                     "income_tax_i": income_tax_i,
                     "vat_credit_i": vat_credit_i,
                     "it_threshold": float(it_thr),
@@ -3586,9 +3563,12 @@ class NewLoop:
         # Automation path (levels + per-quarter flow for visualization)
         t = int(self.state["t"])
         automation_disabled = bool(self.params.get("automation_disabled", False))
+        automation_start_q = max(0, int(self.params.get("automation_start_quarter", 0)))
+        automation_active = (not automation_disabled) and (t >= automation_start_q)
+        effective_t = max(0, t - automation_start_q)
         path = str(self.params.get("automation_path", "two_hump")).lower()
 
-        if automation_disabled:
+        if not automation_active:
             self.state["automation"] = 0.0
             self.state["automation_flow"] = 0.0
             self.state["automation_info"] = 0.0
@@ -3597,8 +3577,8 @@ class NewLoop:
             self.state["automation_phys_flow"] = 0.0
         elif path == "linear":
             horizon_q = float(self.params.get("automation_horizon_quarters", 60.0))
-            a = min(1.0, t / horizon_q) if horizon_q > 0 else 1.0
-            a_prev = min(1.0, (t - 1) / horizon_q) if (horizon_q > 0 and t > 0) else 0.0
+            a = min(1.0, effective_t / horizon_q) if horizon_q > 0 else 1.0
+            a_prev = min(1.0, (effective_t - 1) / horizon_q) if (horizon_q > 0 and effective_t > 0) else 0.0
             self.state["automation"] = float(a)
             self.state["automation_flow"] = float(a - a_prev)
             self.state["automation_info"] = 0.0
@@ -3616,7 +3596,7 @@ class NewLoop:
 
             info_cap = float(self.params.get("automation_info_cap", 1.0))
             phys_cap = float(self.params.get("automation_phys_cap", 1.0))
-            res = automation_two_hump(t, w_info=w_info, ki=ki, ti=ti, bi=bi, kp=kp, tp=tp, info_cap=info_cap, phys_cap=phys_cap)
+            res = automation_two_hump(effective_t, w_info=w_info, ki=ki, ti=ti, bi=bi, kp=kp, tp=tp, info_cap=info_cap, phys_cap=phys_cap)
             self.state["automation"] = float(res["level"])
             self.state["automation_flow"] = float(res["flow"])
             self.state["automation_info"] = float(res["info_level"])
@@ -3706,6 +3686,11 @@ class NewLoop:
         if use_pop_dyn:
             self._refresh_mortgage_contract_state()
             # Allow policy modules to initialize first-tick anchors before solving.
+            self.tax_policy.warm_start_anchor_if_needed(
+                state=self.state,
+                baseline_wages_i=self.hh.wages0_q,
+                price_level=float(self.state.get("price_level", 1.0)),
+            )
             if not self._income_support_disabled():
                 self.income_support_policy.warm_start_anchor_if_needed(
                     state=self.state,
@@ -4140,6 +4125,9 @@ class NewLoop:
             raise ValueError("This build requires parameters['use_population']=True.")
         if not bool(params.get("population_dynamics", False)):
             raise ValueError("This build requires parameters['population_dynamics']=True.")
+        regime = normalize_economic_regime_name(params.get("economic_regime", "NewLoop"))
+        if regime not in {"NewLoop", "OldLoop"}:
+            raise ValueError("parameters['economic_regime'] must be 'NewLoop' or 'OldLoop'.")
         automation_path = params.get("automation_path", "two_hump")
         if not isinstance(automation_path, str):
             raise TypeError("parameters['automation_path'] must be a string.")

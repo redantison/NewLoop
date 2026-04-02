@@ -8,6 +8,8 @@ from typing import Any, Dict
 
 config = {
     "parameters": {
+        "economic_regime": "NewLoop",    # "NewLoop" | "OldLoop"
+        "tax_policy_mode": "auto",       # "auto" | "current" | "old_loop"
         # Policy
         "disable_trust": False,
         "disable_mortgage_relief": False,
@@ -155,6 +157,12 @@ config = {
         "gov_rebate_buffer_quarters": 4,    # keep one year of trailing GOV obligations before surplus recycling
         "gov_rebate_start_delay_quarters": 4, # wait one year before any GOV surplus rebate begins
         "gov_rebate_ramp_quarters": 20,     # linear ramp from zero to full rebate rate over five years
+        "old_loop_tax_rate_lower": 0.15,
+        "old_loop_tax_rate_upper": 0.28,
+        "old_loop_tax_threshold_lower_pct": 30.0,
+        "old_loop_tax_threshold_upper_pct": 80.0,
+        "old_loop_corporate_tax_rate": 0.35,
+        "old_loop_mortgage_interest_deduction": True,
         "hard_assert_sfc": False,          # set True to hard-fail on any mismatch
         # Dashboard display mode for money columns: "nominal" or "price_normalized" (base-period dollars).
         "dashboard_value_mode": "price_normalized",
@@ -253,6 +261,7 @@ config = {
 
         # Automation path ("two_hump" recommended; "linear" available as fallback)
         "automation_disabled": False,
+        "automation_start_quarter": 0,
         "automation_path": "two_hump",
         "automation_horizon_quarters": 60.0,  # used only if automation_path == "linear"
 
@@ -297,6 +306,48 @@ config = {
         }},
     },
 }
+
+
+def normalize_economic_regime_name(value: Any) -> str:
+    """Return a canonical economic-regime name."""
+    raw = str(value or "NewLoop").strip().lower().replace("-", "").replace("_", "")
+    if raw == "oldloop":
+        return "OldLoop"
+    return "NewLoop"
+
+
+def resolve_tax_policy_mode(params: Dict[str, Any]) -> str:
+    """Return the active tax-policy mode after considering regime defaults."""
+    mode_raw = str(params.get("tax_policy_mode", "auto") or "auto").strip().lower().replace("-", "_")
+    if mode_raw in {"current", "old_loop"}:
+        return mode_raw
+    regime = normalize_economic_regime_name(params.get("economic_regime", "NewLoop"))
+    return "old_loop" if regime == "OldLoop" else "current"
+
+
+def apply_economic_regime_overrides(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a deep-copied config with any regime-level overrides applied."""
+    effective_cfg = copy.deepcopy(cfg)
+    params = effective_cfg.setdefault("parameters", {})
+    regime = normalize_economic_regime_name(params.get("economic_regime", "NewLoop"))
+    params["economic_regime"] = regime
+
+    if regime == "OldLoop":
+        params["disable_trust"] = True
+        params["disable_income_support"] = True
+        params["disable_mortgage_relief"] = True
+        params["disable_mortgage_index"] = True
+        params["disable_mortgage_policy"] = True
+        params["disable_vat"] = True
+        params["disable_income_tax"] = False
+        params["mortgage_turnover_enabled"] = True
+        params["policy_rate_rule_enabled"] = False
+        params["corporate_tax_dynamic_with_wages"] = False
+        params["gov_tax_rebate_rate"] = 0.0
+
+    params["tax_policy_mode"] = resolve_tax_policy_mode(params)
+    effective_cfg["parameters"] = params
+    return effective_cfg
 
 
 def get_default_config() -> Dict[str, Any]:

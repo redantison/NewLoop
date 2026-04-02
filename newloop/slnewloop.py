@@ -25,7 +25,7 @@ from .plotting import (
     plot_metric_lines,
     plot_wealth_distributions_full_zoom,
 )
-from .config import get_default_config
+from .config import apply_economic_regime_overrides, get_default_config
 from .results import run_simulation
 from .streamlit_params import (
     INCOME_SUPPORT_MODE_PATH,
@@ -114,7 +114,7 @@ DECIMAL_COLUMNS = {
 }
 
 DISPLAY_VALUE_MODES: tuple[str, str] = ("nominal", "real")
-CONTROL_DEFAULTS_VERSION = 13
+CONTROL_DEFAULTS_VERSION = 14
 UBI_PERCENTILE_PARAM_KEY = "param__ubi_target_percentile"
 UBI_PERCENTILE_UI_KEY = "ui__ubi_target_percentile"
 MORTGAGE_RATE_PARAM_PATH: tuple[str, ...] = ("mortgage_fixed_rate_q",)
@@ -452,7 +452,7 @@ def _build_cfg_from_state(st: Any, base_cfg: Dict[str, Any]) -> Dict[str, Any]:
             params["ubi_target_percentile"] = 30.0
 
     cfg["parameters"] = params
-    return cfg
+    return apply_economic_regime_overrides(cfg)
 
 
 def _cfg_json(cfg: Dict[str, Any]) -> str:
@@ -651,6 +651,11 @@ def _render_parameter_controls(
             format_func=lambda m: "Nominal" if m == "nominal" else "Real (Price-normalized)",
             help="Controls how monetary values are displayed in charts/tables. Simulation mechanics are unchanged.",
         )
+        if str(st.session_state.get("param__economic_regime", "NewLoop")).strip() == "OldLoop":
+            st.caption(
+                "Old Loop forces trust, income support, mortgage assistance, VAT/prebate, "
+                "and GOV surplus rebate off, keeps mortgage turnover on, and uses the Old Loop tax regime."
+            )
 
         for section in SECTION_ORDER:
             controls = grouped_controls.get(section, [])
