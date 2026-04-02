@@ -175,6 +175,13 @@ PARAMETER_CONTROLS: tuple[ParamControl, ...] = (
         "bool",
         help_text="Re-seed household deposits to the solver's live liquidity-buffer target during baseline calibration.",
     ),
+    ParamControl(
+        ("old_loop_startup_preserve_deposits",),
+        "Old Loop Preserve Startup Deposits",
+        STARTUP_SECTION,
+        "bool",
+        help_text="When `OldLoop` is active, skip the aggressive startup deposit reseed and keep the generated household deposit distribution much closer to its raw starting state.",
+    ),
     ParamControl(("trust_trigger_dti",), "Trust Trigger Debt-Service-to-Income (DTI)", "Trust", "float", 0.0, 1.0, 0.01),
     ParamControl(("trust_launch_loan",), "Trust Launch Loan", "Trust", "float", 0.0, 50000.0, 500.0),
     ParamControl(("trust_launch_target_pct",), "Trust Launch Target %", "Trust", "float", 0.0, 1.0, 0.01),

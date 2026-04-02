@@ -12,7 +12,9 @@ from newloop.config import get_default_config
 from newloop.engine import NewLoop
 from newloop.results import (
     _population_distribution_snapshot,
+    _startup_deposit_blend,
     _prepare_startup_sim,
+    _startup_reset_deposits_enabled,
     _quarter_state_diagnostics,
     _startup_diagnostics,
     _startup_solver_snapshot,
@@ -73,6 +75,19 @@ class PolicyAlignmentTests(unittest.TestCase):
         self.assertTrue(bool(sim.params.get("disable_vat", False)))
         self.assertTrue(bool(sim.params.get("mortgage_turnover_enabled", False)))
         self.assertAlmostEqual(float(sim.params.get("gov_tax_rebate_rate", 1.0)), 0.0, places=9)
+
+    def test_old_loop_preserves_startup_deposits_by_default(self):
+        cfg = make_cfg()
+        cfg["parameters"]["economic_regime"] = "OldLoop"
+        sim = NewLoop(cfg)
+        self.assertFalse(_startup_reset_deposits_enabled(sim))
+        self.assertAlmostEqual(float(_startup_deposit_blend(sim)), 0.0, places=9)
+
+    def test_newloop_keeps_startup_deposit_reset_behavior_by_default(self):
+        cfg = make_cfg()
+        sim = NewLoop(cfg)
+        self.assertFalse(_startup_reset_deposits_enabled(sim))
+        self.assertAlmostEqual(float(_startup_deposit_blend(sim)), float(sim.params.get("startup_buffer_alignment_deposit_blend", 0.0)), places=9)
 
     def test_automation_start_quarter_delays_curve_until_after_start_tick(self):
         cfg = make_cfg()

@@ -19,6 +19,22 @@ from .tax_policy import make_tax_policy
 COMPREHENSIVE_WEALTH_DISTRIBUTION = True
 
 
+def _startup_reset_deposits_enabled(sim: NewLoop) -> bool:
+    """Return whether startup alignment should reseed household deposits."""
+    regime = str(sim.params.get("economic_regime", "NewLoop")).strip()
+    if regime == "OldLoop" and bool(sim.params.get("old_loop_startup_preserve_deposits", True)):
+        return False
+    return bool(sim.params.get("baseline_calibration_reset_deposits_to_runtime_target", True))
+
+
+def _startup_deposit_blend(sim: NewLoop) -> float:
+    """Return the startup deposit blend share after regime-specific overrides."""
+    regime = str(sim.params.get("economic_regime", "NewLoop")).strip()
+    if regime == "OldLoop" and bool(sim.params.get("old_loop_startup_preserve_deposits", True)):
+        return 0.0
+    return max(0.0, min(1.0, float(sim.params.get("startup_buffer_alignment_deposit_blend", 0.0))))
+
+
 @dataclass
 class SimulationRun:
     """Container for one simulation run and its row-oriented outputs."""
@@ -615,7 +631,7 @@ def _apply_startup_income_buffer_reset(
     prev_deposits = np.asarray(hh.deposits, dtype=float).copy()
     prev_income = np.asarray(hh.prev_income, dtype=float).copy()
     last_snapshot: Dict[str, Any] | None = None
-    deposit_blend = max(0.0, min(1.0, float(sim.params.get("startup_buffer_alignment_deposit_blend", 0.0))))
+    deposit_blend = _startup_deposit_blend(sim)
     for _ in range(max(1, int(max_iter))):
         snapshot = _startup_solver_snapshot(sim)
         if snapshot is None:
@@ -828,7 +844,7 @@ def _prepare_startup_sim(sim: NewLoop) -> Dict[str, Any] | None:
     reset_stats = _apply_startup_income_buffer_reset(
         sim,
         max_iter=int(sim.params.get("startup_buffer_alignment_max_iters", 8)),
-        reset_deposits=bool(sim.params.get("baseline_calibration_reset_deposits_to_runtime_target", True)),
+        reset_deposits=_startup_reset_deposits_enabled(sim),
     )
     sim._bootstrap_startup_lagged_retained()
     return reset_stats
