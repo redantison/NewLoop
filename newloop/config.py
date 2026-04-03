@@ -85,6 +85,8 @@ config = {
             (95.0, 0.78),
             (100.0, 0.70),
         ),
+        "old_loop_gov_sector_spend_rate": 0.00,
+        "old_loop_gov_sector_spend_info_share": 0.50,
         # Capital -> productivity feedback (A_eff = clamp(A + kappa*(K_per_h/K_scale)))
         "capital_productivity_k": 0.25,
         "capital_productivity_scale": 5000.0,

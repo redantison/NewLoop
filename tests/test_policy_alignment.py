@@ -181,12 +181,50 @@ class PolicyAlignmentTests(unittest.TestCase):
             baseline_wages_i=hh.wages0_q,
             p_cons=1.0,
             rev_interest_nom=np.zeros(n, dtype=float),
+            rev_balance_nom=np.zeros(n, dtype=float),
             mort_payment_nom=np.zeros(n, dtype=float),
             renter_rent_q=np.zeros(n, dtype=float),
         )
 
         c_real_core = np.asarray(targets["c_real_core"], dtype=float)
         self.assertAlmostEqual(float(np.mean(c_real_core)), 123.0, places=6)
+
+    def test_old_loop_consumption_targets_prioritize_arrears_and_revolver_paydown(self):
+        cfg = make_cfg()
+        params = cfg["parameters"]
+        params["economic_regime"] = "OldLoop"
+        params["old_loop_perm_income_update_rate_q"] = 1.0
+        params["old_loop_transitory_mpc_scale"] = 1.0
+        params["revolving_principal_pay_rate_q"] = 0.10
+
+        sim = NewLoop(cfg)
+        assert sim.hh is not None
+        hh = sim.hh
+        n = hh.n
+        self.assertGreater(n, 0)
+
+        hh.base_real_cons_q = np.full(n, 50.0, dtype=float)
+        hh.prev_perm_income = np.full(n, 200.0, dtype=float)
+        hh.mort_interest_arrears_q = np.full(n, 20.0, dtype=float)
+        hh.mort_principal_arrears_q = np.full(n, 30.0, dtype=float)
+
+        targets = sim._household_consumption_targets(
+            y_guess=np.full(n, 200.0, dtype=float),
+            dep0=np.full(n, 50.0, dtype=float),
+            base_real=hh.base_real_cons_q,
+            mpc=hh.mpc_q,
+            liquid_buffer_months_target=hh.liquid_buffer_months_target,
+            baseline_wages_i=hh.wages0_q,
+            p_cons=1.0,
+            rev_interest_nom=np.zeros(n, dtype=float),
+            rev_balance_nom=np.full(n, 100.0, dtype=float),
+            mort_payment_nom=np.zeros(n, dtype=float),
+            renter_rent_q=np.zeros(n, dtype=float),
+        )
+
+        c_des = np.asarray(targets["c_hh_nom_des"], dtype=float)
+        self.assertTrue(np.all(c_des >= 50.0))
+        self.assertTrue(np.all(c_des <= 190.0 + 1e-9))
 
     def test_old_loop_step_updates_smoothed_permanent_income(self):
         cfg = make_cfg()
@@ -831,6 +869,29 @@ class PolicyAlignmentTests(unittest.TestCase):
         self.assertEqual(int(run.rows[-1]["t"]), 119)
         self.assertGreater(float(run.rows[-1]["private_eq_per_h"]), 0.0)
         self.assertGreater(float(run.rows[-1]["real_consumption"]), 0.0)
+
+    def test_old_loop_visible_start_preserves_meaningful_mortgage_stock(self):
+        cfg = make_cfg()
+        cfg["parameters"]["economic_regime"] = "OldLoop"
+        cfg["parameters"]["automation_disabled"] = True
+
+        run = run_simulation(n_quarters=1, cfg=cfg)
+
+        self.assertEqual(len(run.rows), 1)
+        self.assertGreater(float(run.rows[0]["hh_mortgage_active_count"]), 1000.0)
+
+    def test_old_loop_small_gov_procurement_runs_and_records_spend(self):
+        cfg = make_cfg()
+        cfg["parameters"]["economic_regime"] = "OldLoop"
+        cfg["parameters"]["automation_disabled"] = True
+        cfg["parameters"]["old_loop_gov_sector_spend_rate"] = 0.01
+
+        run = run_simulation(n_quarters=40, cfg=cfg)
+
+        self.assertEqual(len(run.rows), 40)
+        self.assertGreater(float(run.rows[-1]["real_consumption"]), 0.0)
+        self.assertGreater(float(run.rows[-1]["gov_dep_per_h"]), 0.0)
+        self.assertTrue(any(float(row.get("gov_spend_per_h", 0.0)) > 0.0 for row in run.rows[1:]))
 
     def test_uis_starts_at_zero_and_anchors_from_q0_wages(self):
         cfg = make_cfg()

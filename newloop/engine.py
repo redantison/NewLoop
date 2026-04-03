@@ -80,6 +80,9 @@ class NewLoop:
             "uis_issued_total": 0.0,
             "income_support_trigger_t": None,
             "tax_rebate_total": 0.0,
+            "gov_sector_spend_prev_nom": 0.0,
+            "gov_sector_spend_to_info_prev_nom": 0.0,
+            "gov_sector_spend_to_phys_prev_nom": 0.0,
             # Lagged private equity stock used for private payout-yield proxy.
             "private_equity_prev_total": 0.0,
             "corporate_equity_prev_total": 0.0,
@@ -843,6 +846,8 @@ class NewLoop:
             hh.mort_term_q[inactive] = 0.0
             hh.mort_payment_sched_q[inactive] = 0.0
             hh.mort_orig_principal[inactive] = 0.0
+            hh.mort_interest_arrears_q[inactive] = 0.0
+            hh.mort_principal_arrears_q[inactive] = 0.0
             hh.mort_P0[inactive] = 0.0
             hh.mort_Y0[inactive] = 0.0
             hh.mort_t0[inactive] = -1
@@ -1163,6 +1168,7 @@ class NewLoop:
         baseline_wages_i: np.ndarray,
         p_cons: float,
         rev_interest_nom: np.ndarray,
+        rev_balance_nom: np.ndarray,
         mort_payment_nom: np.ndarray,
         renter_rent_q: np.ndarray,
     ) -> Dict[str, np.ndarray]:
@@ -1176,6 +1182,7 @@ class NewLoop:
         mpc_arr = np.asarray(mpc, dtype=float)
         target_months_arr = np.asarray(liquid_buffer_months_target, dtype=float)
         rev_interest_arr = np.maximum(0.0, np.asarray(rev_interest_nom, dtype=float))
+        rev_balance_arr = np.maximum(0.0, np.asarray(rev_balance_nom, dtype=float))
         mort_payment_arr = np.maximum(0.0, np.asarray(mort_payment_nom, dtype=float))
         renter_rent_arr = np.maximum(0.0, np.asarray(renter_rent_q, dtype=float))
 
@@ -1193,12 +1200,21 @@ class NewLoop:
             # Use that initialized baseline as the runtime core anchor so the
             # housing initializer and the in-run consumption rule stay aligned.
             c_real_core = np.maximum(0.0, base_real_arr)
+            core_nom = p_cons * c_real_core
             transitory_nom = np.maximum(0.0, y_guess_arr - y_perm_nom)
             c_real_transitory = np.maximum(0.0, (transitory_scale * mpc_arr * transitory_nom) / max(p_cons, 1e-9))
             c_hh_nom_income = p_cons * (c_real_core + c_real_transitory)
-            debt_service_nom = rev_interest_arr + mort_payment_arr
+            arrears_nom = (
+                np.maximum(0.0, np.asarray(hh.mort_interest_arrears_q, dtype=float))
+                + np.maximum(0.0, np.asarray(hh.mort_principal_arrears_q, dtype=float))
+                if (hh is not None and hh.mort_interest_arrears_q.shape[0] == y_guess_arr.shape[0] and hh.mort_principal_arrears_q.shape[0] == y_guess_arr.shape[0])
+                else np.zeros_like(y_guess_arr, dtype=float)
+            )
+            rev_pay_rate = max(0.0, min(1.0, float(self.params.get("revolving_principal_pay_rate_q", 0.0))))
+            debt_priority_nom = arrears_nom + (rev_pay_rate * rev_balance_arr)
+            debt_service_nom = rev_interest_arr + mort_payment_arr + arrears_nom
             target_buffer_nom = (target_months_arr / 3.0) * (
-                (p_cons * c_real_core)
+                core_nom
                 + debt_service_nom
                 + renter_rent_arr
             )
@@ -1208,6 +1224,8 @@ class NewLoop:
             c_real_transitory = np.zeros_like(c_real_core, dtype=float)
             y_perm_nom = np.maximum(0.0, y_guess_arr)
             c_hh_nom_income = p_cons * c_real_core
+            core_nom = c_hh_nom_income.copy()
+            debt_priority_nom = np.zeros_like(c_hh_nom_income, dtype=float)
             target_buffer_nom = (target_months_arr / 3.0) * c_hh_nom_income
 
         buffer_gap_nom = dep0_arr - target_buffer_nom
@@ -1216,6 +1234,10 @@ class NewLoop:
             + (spend_excess_rate * np.maximum(0.0, buffer_gap_nom))
             - (conserve_shortfall_rate * np.maximum(0.0, -buffer_gap_nom))
         )
+        if regime == "OldLoop":
+            # In OldLoop, positive slack is used to cure mortgage arrears and
+            # revolver principal before it expands discretionary consumption.
+            c_hh_nom_des = np.maximum(core_nom, c_hh_nom_des - debt_priority_nom)
         c_hh_nom_des = np.maximum(0.0, c_hh_nom_des)
 
         return {
@@ -1464,6 +1486,10 @@ class NewLoop:
         hh_share_fa = self._sector_hh_demand_share_fa()
         hh_demand_fa_real = hh_share_fa * hh_demand_total_real
         hh_demand_fh_real = (1.0 - hh_share_fa) * hh_demand_total_real
+        gov_spend_info_nom = max(0.0, float(self.state.get("gov_sector_spend_to_info_prev_nom", 0.0)))
+        gov_spend_phys_nom = max(0.0, float(self.state.get("gov_sector_spend_to_phys_prev_nom", 0.0)))
+        gov_sales_fa_real = gov_spend_info_nom / p_now
+        gov_sales_fh_real = gov_spend_phys_nom / p_now
         ums_recycle_rate = max(0.0, min(1.0, float(self.params.get("ums_recycle_rate_q", 0.0))))
         ums_recycle_total_nom = max(0.0, float(self.nodes["UMS"].get("deposits", 0.0))) * ums_recycle_rate
         rev_prev_fa = max(0.0, float(self.nodes["FA"].memo.get("revenue_prev", 0.0)))
@@ -1533,6 +1559,8 @@ class NewLoop:
         return {
             "hh_demand_fa_real": float(hh_demand_fa_real),
             "hh_demand_fh_real": float(hh_demand_fh_real),
+            "gov_demand_fa_real": float(gov_sales_fa_real),
+            "gov_demand_fh_real": float(gov_sales_fh_real),
             "capacity_fa_real": float(capacity_fa_real),
             "capacity_fh_real": float(capacity_fh_real),
             "install_limit_fa_nom": float(install_limit_fa_nom),
@@ -1555,9 +1583,11 @@ class NewLoop:
             "ums_recycle_total_nom": float(ums_recycle_total_nom),
             "hh_sales_fa_real": float(hh_sales_fa_real),
             "hh_sales_fh_real": float(hh_sales_fh_real),
+            "gov_sales_fa_real": float(gov_sales_fa_real),
+            "gov_sales_fh_real": float(gov_sales_fh_real),
             "hh_fulfillment_ratio": float(hh_fulfillment_ratio),
-            "rev_fa": float((p_now * hh_sales_fa_real) + supplier_sales_fa_nom + ums_recycle_fa_nom),
-            "rev_fh": float((p_now * hh_sales_fh_real) + supplier_sales_fh_nom + ums_recycle_fh_nom),
+            "rev_fa": float((p_now * (hh_sales_fa_real + gov_sales_fa_real)) + supplier_sales_fa_nom + ums_recycle_fa_nom),
+            "rev_fh": float((p_now * (hh_sales_fh_real + gov_sales_fh_real)) + supplier_sales_fh_nom + ums_recycle_fh_nom),
         }
 
     def _neutralize_stress_active(self) -> bool:
@@ -2210,6 +2240,7 @@ class NewLoop:
 
         hh = self.hh
         hh.ensure_memos()
+        regime_name = normalize_economic_regime_name(self.params.get("economic_regime", "NewLoop"))
 
         auto = float(self.state["automation"])
         auto_eff = float(self.state.get("automation_eff", auto))
@@ -2331,6 +2362,7 @@ class NewLoop:
                 baseline_wages_i=w0,
                 p_cons=P_cons,
                 rev_interest_nom=rev_interest_pre,
+                rev_balance_nom=rev,
                 mort_payment_nom=mort_payment_sched_q,
                 renter_rent_q=renter_rent_q,
             )
@@ -2640,6 +2672,10 @@ class NewLoop:
                     "ums_recycle_total_nom": float(ums_recycle_total_nom),
                     "hh_sales_fa_real": float(hh_sales_fa_real),
                     "hh_sales_fh_real": float(hh_sales_fh_real),
+                    "gov_demand_fa_real": float(sector_step.get("gov_demand_fa_real", 0.0)),
+                    "gov_demand_fh_real": float(sector_step.get("gov_demand_fh_real", 0.0)),
+                    "gov_sales_fa_real": float(sector_step.get("gov_sales_fa_real", 0.0)),
+                    "gov_sales_fh_real": float(sector_step.get("gov_sales_fh_real", 0.0)),
                     "hh_demand_fa_real": float(hh_demand_fa_real),
                     "hh_demand_fh_real": float(hh_demand_fh_real),
                     "capacity_fa_real": float(capacity_fa_real),
@@ -2718,6 +2754,7 @@ class NewLoop:
 
         hh = self.hh
         hh.ensure_memos()
+        regime_name = normalize_economic_regime_name(self.params.get("economic_regime", "NewLoop"))
 
         auto = float(self.state["automation"])
         auto_eff = float(self.state.get("automation_eff", auto))
@@ -2727,6 +2764,8 @@ class NewLoop:
         deposits = hh.deposits
         mort = hh.mortgage_loans
         rev = hh.revolving_loans
+        mort_interest_arrears = np.maximum(0.0, np.asarray(hh.mort_interest_arrears_q, dtype=float))
+        mort_principal_arrears = np.maximum(0.0, np.asarray(hh.mort_principal_arrears_q, dtype=float))
 
         # Solver vectors (accept list or ndarray)
         c_firm_nom = _as_np(sol.get("c_firm_nom", []), dtype=float)
@@ -2804,13 +2843,26 @@ class NewLoop:
         capacity_fh_real = float(sol.get("capacity_fh_real", 0.0))
         hh_demand_fa_real = float(sol.get("hh_demand_fa_real", 0.0))
         hh_demand_fh_real = float(sol.get("hh_demand_fh_real", 0.0))
+        gov_demand_fa_real = float(sol.get("gov_demand_fa_real", 0.0))
+        gov_demand_fh_real = float(sol.get("gov_demand_fh_real", 0.0))
         hh_sales_fa_real = float(sol.get("hh_sales_fa_real", 0.0))
         hh_sales_fh_real = float(sol.get("hh_sales_fh_real", 0.0))
+        gov_sales_fa_real = float(sol.get("gov_sales_fa_real", 0.0))
+        gov_sales_fh_real = float(sol.get("gov_sales_fh_real", 0.0))
 
         # -------------------------------------------------
         # 1) Consumption: households -> firms, VAT remitted to GOV
         # -------------------------------------------------
         vat_rate = self._effective_vat_rate()
+
+        # OldLoop solver consumption is budgeted off beginning deposits plus
+        # current-quarter net household income. Credit wage/dividend cash to HH
+        # before consumption so the settlement order matches that budgeting
+        # assumption and does not create artificial mortgage shortfalls.
+        old_loop_precredited_income = False
+        if regime_name == "OldLoop":
+            deposits[:] = deposits + wages_i + div_i
+            old_loop_precredited_income = True
 
         deposits[:] = deposits - c_hh_nom
 
@@ -2818,6 +2870,12 @@ class NewLoop:
         p_now = float(self.state.get("price_level", 1.0))
         self.nodes["FA"].add("deposits", p_now * hh_sales_fa_real)
         self.nodes["FH"].add("deposits", p_now * hh_sales_fh_real)
+        gov_sector_spend_nom = p_now * max(0.0, gov_sales_fa_real + gov_sales_fh_real)
+        if gov_sector_spend_nom > 0.0:
+            self.nodes["GOV"].add("deposits", -gov_sector_spend_nom)
+            self.nodes["FA"].add("deposits", p_now * max(0.0, gov_sales_fa_real))
+            self.nodes["FH"].add("deposits", p_now * max(0.0, gov_sales_fh_real))
+        self.state["gov_sector_spend_total"] = float(max(0.0, gov_sector_spend_nom))
 
         # GOV receives VAT receipts
         vat_total = float(np.sum(c_hh_nom - c_firm_nom))
@@ -2887,7 +2945,8 @@ class NewLoop:
         w_fh = float(sol.get("w_fh", 0.0))
         self.nodes["FA"].add("deposits", -w_fa)
         self.nodes["FH"].add("deposits", -w_fh)
-        deposits[:] = deposits + wages_i
+        if not old_loop_precredited_income:
+            deposits[:] = deposits + wages_i
 
         # -------------------------------------------------
         # 2a) Sector overhead: firms -> GOV sink
@@ -2988,7 +3047,8 @@ class NewLoop:
         # Cash to households (distributed via solver weights)
         self.nodes["FA"].add("deposits", -(div_fa_total * (1.0 - f_fa)))
         self.nodes["FH"].add("deposits", -(div_fh_total * (1.0 - f_fh)))
-        deposits[:] = deposits + div_i
+        if not old_loop_precredited_income:
+            deposits[:] = deposits + div_i
 
         # Bank dividends are paid out of equity and create new deposits for recipients
         if div_bk_total > 0:
@@ -3097,6 +3157,14 @@ class NewLoop:
         mort_int_paid_total = float(np.sum(np.maximum(0.0, actual_mort_interest_paid_i)))
         mort_prin_paid_total = float(np.sum(np.maximum(0.0, actual_mort_principal_paid_i)))
         self.state["mort_principal_paid_total"] = float(mort_prin_paid_total)
+
+        # Track missed mortgage cashflow explicitly instead of folding it back
+        # into next-quarter "income". Interest arrears remain a separate claim;
+        # principal arrears remain eligible for later cure and also persist in
+        # the outstanding mortgage balance until actually repaid.
+        if regime_name == "OldLoop":
+            mort_interest_arrears[:] = mort_interest_arrears + np.maximum(0.0, mort_interest_gap_i)
+            mort_principal_arrears[:] = mort_principal_arrears + np.maximum(0.0, mort_principal_gap_i)
 
         if mort_int_paid_total > 0.0:
             bank.add("deposit_liab", -mort_int_paid_total)
@@ -3289,6 +3357,27 @@ class NewLoop:
                     deposits[:] = deposits + (tax_rebate_total / float(n))
 
         self.state["tax_rebate_total"] = float(max(0.0, tax_rebate_total))
+        gov_inflow_total = float(
+            max(0.0, vat_total)
+            + max(0.0, overhead_total)
+            + max(0.0, corp_tax_total)
+            + max(0.0, income_tax_total)
+        )
+        regime = str(self.params.get("economic_regime", "NewLoop")).strip()
+        if regime == "OldLoop":
+            gov_spend_rate = max(0.0, min(1.0, float(self.params.get("old_loop_gov_sector_spend_rate", 0.0))))
+            gov_spend_info_share = max(0.0, min(1.0, float(self.params.get("old_loop_gov_sector_spend_info_share", 0.5))))
+            next_gov_spend_nom = min(
+                max(0.0, gov_inflow_total * gov_spend_rate),
+                max(0.0, float(self.nodes["GOV"].get("deposits", 0.0))),
+            )
+            self.state["gov_sector_spend_prev_nom"] = float(next_gov_spend_nom)
+            self.state["gov_sector_spend_to_info_prev_nom"] = float(next_gov_spend_nom * gov_spend_info_share)
+            self.state["gov_sector_spend_to_phys_prev_nom"] = float(next_gov_spend_nom * (1.0 - gov_spend_info_share))
+        else:
+            self.state["gov_sector_spend_prev_nom"] = 0.0
+            self.state["gov_sector_spend_to_info_prev_nom"] = 0.0
+            self.state["gov_sector_spend_to_phys_prev_nom"] = 0.0
         self.state["gov_obligation_total"] = float(max(0.0, current_gov_obligation))
         self.state["gov_rebate_rate_eff"] = float(max(0.0, rebate_rate))
         buffer_target = self._gov_rebate_buffer_amount()
@@ -3300,8 +3389,33 @@ class NewLoop:
             self.gov_obligation_history = self.gov_obligation_history[-keep:]
 
         # -------------------------------------------------
-        # 6b) Household principal repayment (revolving first, then mortgage)
+        # 6b) Household arrears cure and principal repayment
         # -------------------------------------------------
+        mort_interest_arrears_paid_total = 0.0
+        mort_principal_arrears_paid_total = 0.0
+        if regime_name == "OldLoop":
+            positive_cash_i = np.maximum(0.0, deposits)
+            mort_interest_arrears_paid_i = np.minimum(positive_cash_i, mort_interest_arrears)
+            mort_interest_arrears_paid_total = float(np.sum(np.maximum(0.0, mort_interest_arrears_paid_i)))
+            if mort_interest_arrears_paid_total > 0.0:
+                deposits[:] = deposits - mort_interest_arrears_paid_i
+                mort_interest_arrears[:] = np.maximum(0.0, mort_interest_arrears - mort_interest_arrears_paid_i)
+                bank.add("deposit_liab", -mort_interest_arrears_paid_total)
+                bank.add("equity", +mort_interest_arrears_paid_total)
+
+            positive_cash_i = np.maximum(0.0, deposits)
+            mort_principal_arrears_paid_i = np.minimum(positive_cash_i, mort_principal_arrears)
+            mort_principal_arrears_paid_total = float(np.sum(np.maximum(0.0, mort_principal_arrears_paid_i)))
+            if mort_principal_arrears_paid_total > 0.0:
+                deposits[:] = deposits - mort_principal_arrears_paid_i
+                mort_principal_arrears[:] = np.maximum(0.0, mort_principal_arrears - mort_principal_arrears_paid_i)
+                mort[:] = np.maximum(0.0, mort - mort_principal_arrears_paid_i)
+                bank.add("loan_assets", -mort_principal_arrears_paid_total)
+                bank.add("deposit_liab", -mort_principal_arrears_paid_total)
+                self.state["mort_principal_paid_total"] = float(
+                    float(self.state.get("mort_principal_paid_total", 0.0)) + mort_principal_arrears_paid_total
+                )
+
         rev_pay_rate = float(self.params.get("revolving_principal_pay_rate_q", 0.0))
         rL = float(self.state.get("policy_rate_q", self.params.get("loan_rate_per_quarter", 0.0)))
         regime = normalize_economic_regime_name(self.params.get("economic_regime", "NewLoop"))
@@ -3354,6 +3468,10 @@ class NewLoop:
         self.state["mortgage_turnover_zero_income_room_count"] = 0.0
         self.state["mortgage_turnover_renter_entry_count"] = 0.0
         self.state["mortgage_turnover_supply_released_count"] = 0.0
+        self.state["mort_interest_arrears_total"] = float(np.sum(np.maximum(0.0, mort_interest_arrears))) if regime_name == "OldLoop" else 0.0
+        self.state["mort_principal_arrears_total"] = float(np.sum(np.maximum(0.0, mort_principal_arrears))) if regime_name == "OldLoop" else 0.0
+        self.state["mort_interest_arrears_paid_total"] = float(mort_interest_arrears_paid_total)
+        self.state["mort_principal_arrears_paid_total"] = float(mort_principal_arrears_paid_total)
 
         if rev_pay_rate > 0.0:
             # desired paydown is a fraction of outstanding revolver
@@ -3624,6 +3742,8 @@ class NewLoop:
                 hh.mort_age_q[retired_old_mort_mask] = 0.0
                 hh.mort_payment_sched_q[retired_old_mort_mask] = 0.0
                 hh.mort_orig_principal[retired_old_mort_mask] = 0.0
+                mort_interest_arrears[retired_old_mort_mask] = 0.0
+                mort_principal_arrears[retired_old_mort_mask] = 0.0
                 hh.mort_t0[retired_old_mort_mask] = -1
 
             mort_turnover_total = float(np.sum(np.maximum(0.0, allocation)))
@@ -3637,6 +3757,8 @@ class NewLoop:
                 # Turnover creates a fresh mortgage on the next housing-finance event.
                 hh.mort_payment_sched_q[new_mask] = new_schedule.payment_from_orig_principal(allocation[new_mask])
                 hh.mort_orig_principal[new_mask] = allocation[new_mask]
+                mort_interest_arrears[new_mask] = 0.0
+                mort_principal_arrears[new_mask] = 0.0
                 hh.mort_t0[new_mask] = -1
                 renter_rent_q[new_mask] = 0.0
                 self.nodes["BANK"].add("loan_assets", mort_turnover_total)
@@ -3695,9 +3817,14 @@ class NewLoop:
             float(self.state.get("housing_financing_deposits_total", 0.0)),
         )
         self.nodes["HH"].set("loans", hh_total_loan)
+        hh.mort_interest_arrears_q = mort_interest_arrears.astype(float, copy=True)
+        hh.mort_principal_arrears_q = mort_principal_arrears.astype(float, copy=True)
 
         if y_vec.shape[0] == n:
-            realized_disp_i = (y_vec + mort_unpaid_cash_shortfall_i).astype(float, copy=True)
+            if regime_name == "OldLoop":
+                realized_disp_i = np.asarray(y_vec, dtype=float).astype(float, copy=True)
+            else:
+                realized_disp_i = (y_vec + mort_unpaid_cash_shortfall_i).astype(float, copy=True)
             hh.prev_income = realized_disp_i
             prev_perm_income = (
                 np.asarray(hh.prev_perm_income, dtype=float)
@@ -3747,11 +3874,13 @@ class NewLoop:
         unmet_phys_real = float(max(0.0, hh_demand_fh_real - hh_sales_fh_real))
         load_info_real = (
             float(sol.get("hh_demand_fa_real", 0.0))
+            + float(sol.get("gov_sales_fa_real", 0.0))
             + float(sol.get("supplier_sales_fa_real", 0.0))
             + (float(sol.get("ums_recycle_fa_nom", 0.0)) / p_now)
         )
         load_phys_real = (
             float(sol.get("hh_demand_fh_real", 0.0))
+            + float(sol.get("gov_sales_fh_real", 0.0))
             + float(sol.get("supplier_sales_fh_real", 0.0))
             + (float(sol.get("ums_recycle_fh_nom", 0.0)) / p_now)
         )
@@ -4308,6 +4437,7 @@ class NewLoop:
                 corp_tax_rate_eff=float(self.state.get("corp_tax_rate_eff", self.params.get("corporate_tax_rate", 0.0))),
                 vat_credit_per_h=float(self.state.get("vat_credit_total", 0.0)) / float(self.hh.n),
                 gov_dep_per_h=float(self.nodes["GOV"].get("deposits", 0.0)) / float(self.hh.n),
+                gov_spend_per_h=float(self.state.get("gov_sector_spend_total", 0.0)) / float(self.hh.n),
                 fund_dep_per_h=float(self.nodes["FUND"].get("deposits", 0.0)) / float(self.hh.n),
                 fund_dividend_inflow_per_h=float(solp.get("div_fund", 0.0)) / float(self.hh.n),
                 ums_drain_to_fund_per_h=float(self.state.get("ums_drain_to_fund_total", 0.0)) / float(self.hh.n),

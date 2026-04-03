@@ -32,6 +32,7 @@ POLICY_SWITCHES_SECTION = "Policy Switches"
 STARTUP_SECTION = "Startup"
 INCOME_SUPPORT_SECTION = "Income Support"
 MORTGAGES_SECTION = "Mortgages"
+GOVERNMENT_SECTION = "Government Sector"
 INCOME_SUPPORT_MODE_PATH: tuple[str, ...] = ("income_support_mode",)
 INCOME_SUPPORT_MODE_WIDGET_KEY = "param__income_support_mode"
 
@@ -41,6 +42,7 @@ SECTION_ORDER: tuple[str, ...] = (
     STARTUP_SECTION,
     "Trust",
     "Taxes",
+    GOVERNMENT_SECTION,
     INCOME_SUPPORT_SECTION,
     MORTGAGES_SECTION,
     "Automation",
@@ -186,8 +188,8 @@ PARAMETER_CONTROLS: tuple[ParamControl, ...] = (
     ParamControl(("trust_launch_loan",), "Trust Launch Loan", "Trust", "float", 0.0, 50000.0, 500.0),
     ParamControl(("trust_launch_target_pct",), "Trust Launch Target %", "Trust", "float", 0.0, 1.0, 0.01),
     ParamControl(("trust_equity_cap",), "Trust Equity Cap", "Trust", "float", 0.0, 1.0, 0.01),
-    ParamControl(("send_fund_residual_to_gov",), "Sweep Fund Residual To GOV", "Trust", "bool"),
-    ParamControl(("fund_residual_to_gov_share",), "Fund Residual To GOV Share", "Trust", "float", 0.0, 1.0, 0.01),
+    ParamControl(("send_fund_residual_to_gov",), "Sweep Fund Residual To GOV", GOVERNMENT_SECTION, "bool", help_text="Send a share of residual FUND deposits to GOV after FUND debt service is handled."),
+    ParamControl(("fund_residual_to_gov_share",), "Fund Residual To GOV Share", GOVERNMENT_SECTION, "float", 0.0, 1.0, 0.01, help_text="Share of residual FUND deposits swept to GOV each quarter after trust debt-first treatment."),
     ParamControl(("vat_rate",), "VAT Rate", "Taxes", "float", 0.0, 1.0, 0.01),
     ParamControl(("vat_credit_phaseout_start_pct",), "VAT Credit Phaseout Start Percentile", "Taxes", "float", 0.0, 100.0, 0.5),
     ParamControl(("vat_credit_phaseout_end_pct",), "VAT Credit Phaseout End Percentile", "Taxes", "float", 0.0, 100.0, 0.5),
@@ -203,16 +205,18 @@ PARAMETER_CONTROLS: tuple[ParamControl, ...] = (
     ParamControl(("corporate_tax_wage_sensitivity",), "Corporate Tax Wage Sensitivity", "Taxes", "float", 0.0, 1.0, 0.01),
     ParamControl(("corporate_tax_rate_min",), "Corporate Tax Min Rate", "Taxes", "float", 0.0, 1.0, 0.01),
     ParamControl(("corporate_tax_rate_max",), "Corporate Tax Max Rate", "Taxes", "float", 0.0, 1.0, 0.01),
-    ParamControl(("gov_tax_rebate_rate",), "Government Surplus Rebate Rate", "Taxes", "float", 0.0, 1.0, 0.01),
-    ParamControl(("gov_rebate_buffer_quarters",), "Government Rebate Buffer (quarters)", "Taxes", "int", 0, 16, 1),
-    ParamControl(("gov_rebate_start_delay_quarters",), "Government Rebate Start Delay (quarters)", "Taxes", "int", 0, 40, 1),
-    ParamControl(("gov_rebate_ramp_quarters",), "Government Rebate Ramp (quarters)", "Taxes", "int", 0, 80, 1),
     ParamControl(("old_loop_tax_rate_lower",), "Old Loop Tax Rate: Middle Band", "Taxes", "float", 0.0, 1.0, 0.01, help_text="Marginal household income-tax rate between the lower and upper Old Loop thresholds."),
     ParamControl(("old_loop_tax_rate_upper",), "Old Loop Tax Rate: Upper Band", "Taxes", "float", 0.0, 1.0, 0.01, help_text="Marginal household income-tax rate above the upper Old Loop threshold."),
     ParamControl(("old_loop_tax_threshold_lower_pct",), "Old Loop Lower Threshold Percentile", "Taxes", "float", 0.0, 100.0, 0.5, help_text="Startup market-income percentile used to anchor the first Old Loop tax threshold."),
     ParamControl(("old_loop_tax_threshold_upper_pct",), "Old Loop Upper Threshold Percentile", "Taxes", "float", 0.0, 100.0, 0.5, help_text="Startup market-income percentile used to anchor the top Old Loop tax threshold."),
     ParamControl(("old_loop_corporate_tax_rate",), "Old Loop Corporate Tax Rate", "Taxes", "float", 0.0, 1.0, 0.01, help_text="Fixed corporate income-tax rate used by the Old Loop tax regime."),
     ParamControl(("old_loop_mortgage_interest_deduction",), "Old Loop Mortgage Interest Deduction", "Taxes", "bool", help_text="Subtract contractual mortgage interest due from household taxable income in the Old Loop tax regime."),
+    ParamControl(("gov_tax_rebate_rate",), "Government Surplus Rebate Rate", GOVERNMENT_SECTION, "float", 0.0, 1.0, 0.01, help_text="Share of available GOV deposits rebated back out each quarter once the GOV buffer rule allows it."),
+    ParamControl(("gov_rebate_buffer_quarters",), "Government Rebate Buffer (quarters)", GOVERNMENT_SECTION, "int", 0, 16, 1, help_text="Number of trailing quarters of GOV obligations held back before surplus rebates begin."),
+    ParamControl(("gov_rebate_start_delay_quarters",), "Government Rebate Start Delay (quarters)", GOVERNMENT_SECTION, "int", 0, 40, 1, help_text="Delay before the GOV surplus rebate mechanism can begin paying out."),
+    ParamControl(("gov_rebate_ramp_quarters",), "Government Rebate Ramp (quarters)", GOVERNMENT_SECTION, "int", 0, 80, 1, help_text="Linear ramp length for the GOV surplus rebate rate."),
+    ParamControl(("old_loop_gov_sector_spend_rate",), "Old Loop GOV Procurement Rate", GOVERNMENT_SECTION, "float", 0.0, 1.0, 0.01, help_text="Share of current GOV inflow recycled next quarter into lagged IS/PS procurement in Old Loop mode."),
+    ParamControl(("old_loop_gov_sector_spend_info_share",), "Old Loop GOV Spend Share: Info", GOVERNMENT_SECTION, "float", 0.0, 1.0, 0.01, help_text="Share of Old Loop GOV procurement routed to the Info sector; the remainder goes to the Physical sector."),
     ParamControl(INCOME_SUPPORT_MODE_PATH, "Income Support Mode", INCOME_SUPPORT_SECTION, "select", options=("UIS", "UBI")),
     ParamControl(
         ("income_support_start_delay_quarters",),

@@ -45,6 +45,8 @@ class HouseholdState:
     mort_term_q: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=float))
     mort_payment_sched_q: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=float))
     mort_orig_principal: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=float))
+    mort_interest_arrears_q: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=float))
+    mort_principal_arrears_q: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=float))
     liquid_buffer_months_target: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=float))
     initial_tenure_code: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=int))
 
@@ -82,6 +84,10 @@ class HouseholdState:
             self.mort_payment_sched_q = np.zeros(self.n, dtype=float)
         if (self.mort_orig_principal.size == 0) or (self.mort_orig_principal.shape[0] != self.n):
             self.mort_orig_principal = np.zeros(self.n, dtype=float)
+        if (self.mort_interest_arrears_q.size == 0) or (self.mort_interest_arrears_q.shape[0] != self.n):
+            self.mort_interest_arrears_q = np.zeros(self.n, dtype=float)
+        if (self.mort_principal_arrears_q.size == 0) or (self.mort_principal_arrears_q.shape[0] != self.n):
+            self.mort_principal_arrears_q = np.zeros(self.n, dtype=float)
         if (self.initial_tenure_code.size == 0) or (self.initial_tenure_code.shape[0] != self.n):
             initial_renters = (self.mortgage_loans <= 1e-12) & (self.housing_escrow <= 1e-12)
             initial_owners = (self.mortgage_loans <= 1e-12) & (self.housing_escrow > 1e-12)
@@ -159,6 +165,7 @@ class TickResult:
     corp_tax_rate_eff: float
     vat_credit_per_h: float
     gov_dep_per_h: float
+    gov_spend_per_h: float
     fund_dep_per_h: float
     fund_dividend_inflow_per_h: float
     ums_drain_to_fund_per_h: float

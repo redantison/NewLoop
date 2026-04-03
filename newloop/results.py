@@ -586,6 +586,7 @@ def _startup_solver_snapshot(
         baseline_wages_i=wages_i,
         p_cons=p_cons,
         rev_interest_nom=np.maximum(0.0, rev_interest_i),
+        rev_balance_nom=np.maximum(0.0, rev_i),
         mort_payment_nom=np.maximum(0.0, mort_pay_req_i if mort_pay_req_i.shape == wages_i.shape else mort_payment_sched_q),
         renter_rent_q=renter_rent_q,
     )
@@ -1136,11 +1137,6 @@ def _build_startup_sim(cfg: Dict[str, Any]) -> tuple[NewLoop, int, Dict[str, Any
         sim.tax_policy = make_tax_policy(sim.params)
         _reset_post_warmup_sector_planner_state(sim)
         _sync_startup_household_state(sim)
-        housing_reset = _reunderwrite_old_loop_startup_housing(sim)
-        if housing_reset is not None:
-            warmup_report["old_loop_startup_housing_reunderwrite"] = dict(housing_reset)
-            _prepare_startup_sim(sim)
-            _sync_startup_household_state(sim)
         _apply_sector_planner_seed(sim, legacy_planner_seed)
         reseed_stats = _reseed_visible_start_capacity(sim)
         if reseed_stats is not None:
@@ -1148,10 +1144,6 @@ def _build_startup_sim(cfg: Dict[str, Any]) -> tuple[NewLoop, int, Dict[str, Any
             warmup_report["visible_start_capex_seed"] = dict(legacy_planner_seed or {})
     else:
         legacy_planner_seed = _build_legacy_sector_planner_seed(cfg)
-        housing_reset = _reunderwrite_old_loop_startup_housing(sim)
-        if housing_reset is not None:
-            warmup_report["old_loop_startup_housing_reunderwrite"] = dict(housing_reset)
-            _prepare_startup_sim(sim)
         _apply_sector_planner_seed(sim, legacy_planner_seed)
         reseed_stats = _reseed_visible_start_capacity(sim)
         if reseed_stats is not None:
