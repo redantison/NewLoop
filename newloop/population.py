@@ -224,10 +224,10 @@ class PopulationConfig:
     renter_housing_income_mult_sigma: float = 0.40
     renter_rent_payment_mult_median: float = 0.95
     renter_rent_payment_mult_sigma: float = 0.15
-    old_loop_housing_share_target: float = 0.20
-    old_loop_housing_share_cap: float = 0.25
-    old_loop_housing_headroom_share: float = 0.08
-    old_loop_housing_headroom_floor_q: float = 15.0
+    old_loop_housing_share_target: float = 0.16
+    old_loop_housing_share_cap: float = 0.20
+    old_loop_housing_headroom_share: float = 0.12
+    old_loop_housing_headroom_floor_q: float = 25.0
     old_loop_core_nonhousing_floor_q: float = 150.0
     disable_income_tax: bool = False
     old_loop_tax_rate_lower: float = 0.15

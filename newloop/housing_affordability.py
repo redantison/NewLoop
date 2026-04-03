@@ -104,16 +104,16 @@ def compute_affordable_housing_profile(
         _DEFAULT_CORE_NONHOUSING_KAPPA_BY_INCOME_PCT,
     )
     core_kappa = _assign_linear_by_percentile_rank(base_income_q, kappa_schedule)
-    headroom_share = max(0.0, min(1.0, float(params.get("old_loop_housing_headroom_share", 0.08))))
-    headroom_floor_q = max(0.0, float(params.get("old_loop_housing_headroom_floor_q", 15.0)))
+    headroom_share = max(0.0, min(1.0, float(params.get("old_loop_housing_headroom_share", 0.12))))
+    headroom_floor_q = max(0.0, float(params.get("old_loop_housing_headroom_floor_q", 25.0)))
     headroom_q = np.maximum(headroom_floor_q, headroom_share * disp_perm_q)
     core_floor_q = max(0.0, float(params.get("old_loop_core_nonhousing_floor_q", 150.0)))
     core_nonhousing_raw_q = np.maximum(core_floor_q, core_kappa * disp_perm_q)
     core_nonhousing_cap_q = np.maximum(0.0, disp_perm_q - headroom_q - fixed_obligations_q)
     core_nonhousing_q = np.minimum(core_nonhousing_raw_q, core_nonhousing_cap_q)
 
-    housing_share_target = max(0.0, min(1.0, float(params.get("old_loop_housing_share_target", 0.20))))
-    housing_share_cap = max(housing_share_target, min(1.0, float(params.get("old_loop_housing_share_cap", 0.25))))
+    housing_share_target = max(0.0, min(1.0, float(params.get("old_loop_housing_share_target", 0.16))))
+    housing_share_cap = max(housing_share_target, min(1.0, float(params.get("old_loop_housing_share_cap", 0.20))))
     target_housing_q = housing_share_target * disp_perm_q
     hard_housing_cap_q = housing_share_cap * disp_perm_q
     residual_budget_q = np.maximum(0.0, disp_perm_q - core_nonhousing_q - headroom_q - fixed_obligations_q)
