@@ -31,7 +31,8 @@ import math
 import random
 import statistics
 
-from .mortgage import balance_from_orig_principal, payment_from_orig_principal, remaining_term
+from .housing_affordability import compute_affordable_housing_profile
+from .mortgage import annuity_factor, balance_from_orig_principal, payment_from_orig_principal, remaining_term
 
 # ----------------------------
 # Utilities
@@ -165,6 +166,7 @@ def fmt_money(x: float) -> str:
 
 @dataclass(frozen=True)
 class PopulationConfig:
+    economic_regime: str = "NewLoop"
     # Size / reproducibility
     n_families: int = 20000
     seed: int = 7919    # 1000th prime
@@ -216,10 +218,29 @@ class PopulationConfig:
     mortgage_startup_ltv_sigma: float = 0.12
     mortgage_startup_ltv_min: float = 0.60
     mortgage_startup_ltv_max: float = 1.15
+    housing_value_income_mult_cap: float = 6.0
+    mortgage_income_mult_cap: float = 4.0
     renter_housing_income_mult_median: float = 5.00
     renter_housing_income_mult_sigma: float = 0.40
     renter_rent_payment_mult_median: float = 0.95
     renter_rent_payment_mult_sigma: float = 0.15
+    old_loop_housing_share_target: float = 0.20
+    old_loop_housing_share_cap: float = 0.25
+    old_loop_housing_headroom_share: float = 0.08
+    old_loop_housing_headroom_floor_q: float = 15.0
+    old_loop_core_nonhousing_floor_q: float = 150.0
+    disable_income_tax: bool = False
+    old_loop_tax_rate_lower: float = 0.15
+    old_loop_tax_rate_upper: float = 0.28
+    old_loop_tax_threshold_lower_pct: float = 30.0
+    old_loop_tax_threshold_upper_pct: float = 80.0
+    old_loop_core_nonhousing_kappa_by_income_pct: Tuple[Tuple[float, float], ...] = (
+        (20.0, 0.72),
+        (50.0, 0.64),
+        (80.0, 0.56),
+        (95.0, 0.50),
+        (100.0, 0.44),
+    )
     revolving_income_mult_median: float = 0.06  # revolving principal as multiple of annual wage
     revolving_income_mult_sigma: float = 0.80
     revolving_balance_mult_by_wealth_pct: Tuple[Tuple[float, float], ...] = (
@@ -476,14 +497,26 @@ def generate_population(cfg: PopulationConfig) -> Population:
         employed = rng.random(n) < float(cfg.employment_rate)
         wages = wages * employed
 
-    # --- Baseline consumption target (used in both startup calibration and in-run behavior) ---
-    # Use interpolation between percentile anchors so households within a bucket can vary smoothly.
+    # --- Baseline consumption target and housing affordability basis ---
     wealth_signal = np.asarray(wage_potential, dtype=float)
-    base_schedule = tuple((float(pct), float(val)) for pct, val in getattr(cfg, "base_real_cons_by_wealth_pct", ()))
-    if len(base_schedule) > 0:
-        base_real = _assign_linear_by_percentile_rank(wealth_signal, base_schedule)
-    else:
-        base_real = np.full(n, float(cfg.base_real_cons_q), dtype=float)
+    preliminary_affordability = compute_affordable_housing_profile(
+        np.asarray(wages, dtype=float),
+        np.asarray(wage_potential, dtype=float),
+        {
+            "disable_income_tax": bool(cfg.disable_income_tax),
+            "old_loop_tax_rate_lower": float(cfg.old_loop_tax_rate_lower),
+            "old_loop_tax_rate_upper": float(cfg.old_loop_tax_rate_upper),
+            "old_loop_tax_threshold_lower_pct": float(cfg.old_loop_tax_threshold_lower_pct),
+            "old_loop_tax_threshold_upper_pct": float(cfg.old_loop_tax_threshold_upper_pct),
+            "old_loop_housing_share_target": float(cfg.old_loop_housing_share_target),
+            "old_loop_housing_share_cap": float(cfg.old_loop_housing_share_cap),
+            "old_loop_housing_headroom_share": float(cfg.old_loop_housing_headroom_share),
+            "old_loop_housing_headroom_floor_q": float(cfg.old_loop_housing_headroom_floor_q),
+            "old_loop_core_nonhousing_floor_q": float(cfg.old_loop_core_nonhousing_floor_q),
+            "old_loop_core_nonhousing_kappa_by_income_pct": tuple(cfg.old_loop_core_nonhousing_kappa_by_income_pct),
+        },
+    )
+    base_real = np.maximum(0.0, np.asarray(preliminary_affordability["core_nonhousing_q"], dtype=float))
 
     # --- Liquid-buffer target (used both for initialization and in-run consumption behavior) ---
     # Interpolate between percentile anchors so the precautionary-buffer rule does not
@@ -597,9 +630,9 @@ def generate_population(cfg: PopulationConfig) -> Population:
 
     # Rebuild spendable deposits around each household's own precautionary
     # buffer target so startup liquidity differs meaningfully by tenure.
+    dep_mult = np.ones(n, dtype=float)
     if deposit_mode != "legacy_mixture":
         target_buffer = np.maximum(0.0, (target_months / 3.0) * np.maximum(0.0, base_real))
-        dep_mult = np.ones(n, dtype=float)
         if np.any(renter_mask):
             dep_mult[renter_mask] = rng.lognormal(
                 mean=math.log(max(cfg.renter_deposit_target_mult_median, 1e-12)),
@@ -639,74 +672,10 @@ def generate_population(cfg: PopulationConfig) -> Population:
     rev_p = np.clip(rev_p * rev_tenure_factor, 0.0, 1.0)
     rev_p = _rescale_probabilities_to_target(rev_p, has_wage, float(cfg.revolving_share))
 
-    mortgage_loans = np.zeros(n, dtype=float)
     revolving_loans = np.zeros(n, dtype=float)
-    housing_values = np.zeros(n, dtype=float)
-    renter_rent_q = np.zeros(n, dtype=float)
-    mortgage_rate_q = np.zeros(n, dtype=float)
-    mortgage_age_q = np.zeros(n, dtype=float)
-    mortgage_term_q = np.zeros(n, dtype=float)
-    mortgage_payment_sched_q = np.zeros(n, dtype=float)
-    mortgage_orig_principal = np.zeros(n, dtype=float)
     term_q = float(max(1, int(getattr(cfg, "mortgage_term_quarters", 60))))
     rate_q = float(max(0.0, float(cfg.mortgage_rate_effective) / 4.0))
-
-    if mort_mask.any():
-        mort_mult = rng.lognormal(
-            mean=math.log(max(cfg.mortgage_income_mult_median, 1e-12)),
-            sigma=float(cfg.mortgage_income_mult_sigma),
-            size=int(mort_mask.sum()),
-        )
-        orig_principal = np.maximum(0.0, mort_mult * wages_annual[mort_mask])
-        ages = rng.integers(0, int(term_q), size=int(mort_mask.sum()), endpoint=False).astype(float)
-        payment_q = payment_from_orig_principal(orig_principal, rate_q, term_q)
-        current_balance = balance_from_orig_principal(orig_principal, rate_q, term_q, ages)
-        mortgage_loans[mort_mask] = current_balance
-        mortgage_rate_q[mort_mask] = rate_q
-        mortgage_age_q[mort_mask] = ages
-        mortgage_term_q[mort_mask] = term_q
-        mortgage_payment_sched_q[mort_mask] = payment_q
-        mortgage_orig_principal[mort_mask] = orig_principal
-        ltv_draw = rng.normal(
-            loc=float(cfg.mortgage_startup_ltv_median),
-            scale=float(cfg.mortgage_startup_ltv_sigma),
-            size=int(mort_mask.sum()),
-        )
-        ltv_draw = np.clip(
-            ltv_draw,
-            float(cfg.mortgage_startup_ltv_min),
-            float(cfg.mortgage_startup_ltv_max),
-        )
-        # Let startup LTV above 1.0 create modest negative home equity instead of
-        # flooring mortgagors at zero housing equity.
-        housing_values[mort_mask] = np.maximum(
-            0.0,
-            current_balance / np.maximum(ltv_draw, 1e-9),
-        )
-
-    if owner_mask.any():
-        owner_mult = rng.lognormal(
-            mean=math.log(max(cfg.owner_home_value_income_mult_median, 1e-12)),
-            sigma=float(cfg.owner_home_value_income_mult_sigma),
-            size=int(owner_mask.sum()),
-        )
-        housing_values[owner_mask] = np.maximum(0.0, owner_mult * wage_potential[owner_mask] * 4.0)
-
-    if renter_mask.any():
-        renter_home_mult = rng.lognormal(
-            mean=math.log(max(cfg.renter_housing_income_mult_median, 1e-12)),
-            sigma=float(cfg.renter_housing_income_mult_sigma),
-            size=int(renter_mask.sum()),
-        )
-        renter_principal = np.maximum(0.0, renter_home_mult * wage_potential[renter_mask] * 4.0)
-        renter_owner_equiv_payment_q = payment_from_orig_principal(renter_principal, rate_q, term_q)
-        rent_mult = rng.lognormal(
-            mean=math.log(max(cfg.renter_rent_payment_mult_median, 1e-12)),
-            sigma=float(cfg.renter_rent_payment_mult_sigma),
-            size=int(renter_mask.sum()),
-        )
-        renter_rent_q[renter_mask] = np.maximum(0.0, renter_owner_equiv_payment_q * rent_mult)
-
+    rev_rate_q = float(max(0.0, float(cfg.revolving_rate_effective) / 4.0))
     rev_mask = has_wage & (rng.random(n) < rev_p)
     if rev_mask.any():
         rev_balance_schedule = tuple(
@@ -730,6 +699,155 @@ def generate_population(cfg: PopulationConfig) -> Population:
         )
         cap_deposits = float(cfg.revolving_cap_deposits_mult) * effective_deposits
         revolving_loans[rev_mask] = np.maximum(0.0, np.minimum.reduce([raw, cap_income, cap_deposits]))
+
+    affordability = compute_affordable_housing_profile(
+        np.asarray(wages, dtype=float),
+        np.asarray(wage_potential, dtype=float),
+        {
+            "disable_income_tax": bool(cfg.disable_income_tax),
+            "old_loop_tax_rate_lower": float(cfg.old_loop_tax_rate_lower),
+            "old_loop_tax_rate_upper": float(cfg.old_loop_tax_rate_upper),
+            "old_loop_tax_threshold_lower_pct": float(cfg.old_loop_tax_threshold_lower_pct),
+            "old_loop_tax_threshold_upper_pct": float(cfg.old_loop_tax_threshold_upper_pct),
+            "old_loop_housing_share_target": float(cfg.old_loop_housing_share_target),
+            "old_loop_housing_share_cap": float(cfg.old_loop_housing_share_cap),
+            "old_loop_housing_headroom_share": float(cfg.old_loop_housing_headroom_share),
+            "old_loop_housing_headroom_floor_q": float(cfg.old_loop_housing_headroom_floor_q),
+            "old_loop_core_nonhousing_floor_q": float(cfg.old_loop_core_nonhousing_floor_q),
+            "old_loop_core_nonhousing_kappa_by_income_pct": tuple(cfg.old_loop_core_nonhousing_kappa_by_income_pct),
+        },
+        existing_fixed_obligations_q=(revolving_loans * rev_rate_q),
+    )
+    base_real = np.maximum(0.0, np.asarray(affordability["core_nonhousing_q"], dtype=float))
+    if deposit_mode != "legacy_mixture":
+        target_buffer = np.maximum(0.0, (target_months / 3.0) * np.maximum(0.0, base_real))
+        deposits = np.maximum(0.0, target_buffer * dep_mult)
+        if rev_mask.any():
+            cap_income = float(cfg.revolving_cap_income_mult) * wages_annual[rev_mask]
+            effective_deposits = np.maximum(
+                deposits[rev_mask],
+                float(cfg.revolving_cap_deposit_floor_income_mult) * wages_annual[rev_mask],
+            )
+            cap_deposits = float(cfg.revolving_cap_deposits_mult) * effective_deposits
+            revolving_loans[rev_mask] = np.maximum(0.0, np.minimum.reduce([revolving_loans[rev_mask], cap_income, cap_deposits]))
+
+    if deposit_mode != "legacy_mixture" and str(getattr(cfg, "economic_regime", "NewLoop")).strip() == "OldLoop":
+        affordability = compute_affordable_housing_profile(
+            np.asarray(wages, dtype=float),
+            np.asarray(wage_potential, dtype=float),
+            {
+                "disable_income_tax": bool(cfg.disable_income_tax),
+                "old_loop_tax_rate_lower": float(cfg.old_loop_tax_rate_lower),
+                "old_loop_tax_rate_upper": float(cfg.old_loop_tax_rate_upper),
+                "old_loop_tax_threshold_lower_pct": float(cfg.old_loop_tax_threshold_lower_pct),
+                "old_loop_tax_threshold_upper_pct": float(cfg.old_loop_tax_threshold_upper_pct),
+                "old_loop_housing_share_target": float(cfg.old_loop_housing_share_target),
+                "old_loop_housing_share_cap": float(cfg.old_loop_housing_share_cap),
+                "old_loop_housing_headroom_share": float(cfg.old_loop_housing_headroom_share),
+                "old_loop_housing_headroom_floor_q": float(cfg.old_loop_housing_headroom_floor_q),
+                "old_loop_core_nonhousing_floor_q": float(cfg.old_loop_core_nonhousing_floor_q),
+                "old_loop_core_nonhousing_kappa_by_income_pct": tuple(cfg.old_loop_core_nonhousing_kappa_by_income_pct),
+            },
+            existing_fixed_obligations_q=(revolving_loans * rev_rate_q),
+        )
+        base_real = np.maximum(0.0, np.asarray(affordability["core_nonhousing_q"], dtype=float))
+        deposits = np.maximum(0.0, np.asarray(affordability["headroom_q"], dtype=float))
+
+    # Recompute MPC after the final affordability-aware deposit assignment.
+    mpc_q = _assign_mpc_from_deposits(deposits.tolist(), cfg.mpc_by_wealth_pct)
+
+    mortgage_loans = np.zeros(n, dtype=float)
+    housing_values = np.zeros(n, dtype=float)
+    renter_rent_q = np.zeros(n, dtype=float)
+    mortgage_rate_q = np.zeros(n, dtype=float)
+    mortgage_age_q = np.zeros(n, dtype=float)
+    mortgage_term_q = np.zeros(n, dtype=float)
+    mortgage_payment_sched_q = np.zeros(n, dtype=float)
+    mortgage_orig_principal = np.zeros(n, dtype=float)
+    disp_perm_q = np.maximum(0.0, np.asarray(affordability["disp_perm_q"], dtype=float))
+    housing_payment_target_q = np.maximum(0.0, np.asarray(affordability["housing_payment_target_q"], dtype=float))
+    housing_value_income_mult_cap = max(0.0, float(getattr(cfg, "housing_value_income_mult_cap", 6.0)))
+    mortgage_income_mult_cap = max(0.0, float(getattr(cfg, "mortgage_income_mult_cap", 4.0)))
+    payment_annuity_factor = annuity_factor(rate_q, term_q)
+
+    if mort_mask.any():
+        mort_mult = rng.lognormal(
+            mean=math.log(max(cfg.mortgage_income_mult_median, 1e-12)),
+            sigma=float(cfg.mortgage_income_mult_sigma),
+            size=int(mort_mask.sum()),
+        )
+        raw_principal = np.maximum(0.0, mort_mult * wages_annual[mort_mask])
+        annual_disp = 4.0 * disp_perm_q[mort_mask]
+        target_payment_q = housing_payment_target_q[mort_mask]
+        target_principal = np.maximum(0.0, target_payment_q * payment_annuity_factor)
+        principal_cap_income = mortgage_income_mult_cap * annual_disp
+        ltv_draw = rng.normal(
+            loc=float(cfg.mortgage_startup_ltv_median),
+            scale=float(cfg.mortgage_startup_ltv_sigma),
+            size=int(mort_mask.sum()),
+        )
+        ltv_draw = np.clip(
+            ltv_draw,
+            float(cfg.mortgage_startup_ltv_min),
+            float(cfg.mortgage_startup_ltv_max),
+        )
+        housing_value_cap = housing_value_income_mult_cap * annual_disp
+        principal_cap_housing = housing_value_cap * ltv_draw
+        orig_principal = np.maximum(
+            0.0,
+            np.minimum.reduce([raw_principal, target_principal, principal_cap_income, principal_cap_housing]),
+        )
+        supported_mask = orig_principal > 1e-9
+        supported_idx = np.where(mort_mask)[0][supported_mask]
+        unsupported_idx = np.where(mort_mask)[0][~supported_mask]
+        ages = rng.integers(0, int(term_q), size=int(mort_mask.sum()), endpoint=False).astype(float)
+        payment_q = payment_from_orig_principal(orig_principal, rate_q, term_q)
+        current_balance = balance_from_orig_principal(orig_principal, rate_q, term_q, ages)
+        mortgage_loans[supported_idx] = current_balance[supported_mask]
+        mortgage_rate_q[supported_idx] = rate_q
+        mortgage_age_q[supported_idx] = ages[supported_mask]
+        mortgage_term_q[supported_idx] = term_q
+        mortgage_payment_sched_q[supported_idx] = payment_q[supported_mask]
+        mortgage_orig_principal[supported_idx] = orig_principal[supported_mask]
+        housing_values[supported_idx] = np.maximum(
+            0.0,
+            current_balance[supported_mask] / np.maximum(ltv_draw[supported_mask], 1e-9),
+        )
+        if unsupported_idx.size > 0:
+            renter_mask[unsupported_idx] = True
+            mort_mask[unsupported_idx] = False
+
+    if owner_mask.any():
+        owner_mult = rng.lognormal(
+            mean=math.log(max(cfg.owner_home_value_income_mult_median, 1e-12)),
+            sigma=float(cfg.owner_home_value_income_mult_sigma),
+            size=int(owner_mask.sum()),
+        )
+        annual_disp = 4.0 * disp_perm_q[owner_mask]
+        housing_values[owner_mask] = np.maximum(
+            0.0,
+            np.minimum(owner_mult * wage_potential[owner_mask] * 4.0, housing_value_income_mult_cap * annual_disp),
+        )
+
+    if renter_mask.any():
+        renter_home_mult = rng.lognormal(
+            mean=math.log(max(cfg.renter_housing_income_mult_median, 1e-12)),
+            sigma=float(cfg.renter_housing_income_mult_sigma),
+            size=int(renter_mask.sum()),
+        )
+        annual_disp = 4.0 * disp_perm_q[renter_mask]
+        renter_principal = np.maximum(
+            0.0,
+            np.minimum(renter_home_mult * wage_potential[renter_mask] * 4.0, housing_value_income_mult_cap * annual_disp),
+        )
+        renter_owner_equiv_payment_q = payment_from_orig_principal(renter_principal, rate_q, term_q)
+        rent_mult = rng.lognormal(
+            mean=math.log(max(cfg.renter_rent_payment_mult_median, 1e-12)),
+            sigma=float(cfg.renter_rent_payment_mult_sigma),
+            size=int(renter_mask.sum()),
+        )
+        raw_rent_q = np.maximum(0.0, renter_owner_equiv_payment_q * rent_mult)
+        renter_rent_q[renter_mask] = np.minimum(raw_rent_q, housing_payment_target_q[renter_mask])
 
     loans = mortgage_loans + revolving_loans
 

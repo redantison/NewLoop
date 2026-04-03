@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT))
 
 from newloop.config import get_default_config
 from newloop.engine import NewLoop
+from newloop.housing_affordability import compute_affordable_housing_profile
 from newloop.mortgage import (
     balance_from_orig_principal,
     get_fixed_rate_mortgage_schedule,
@@ -180,6 +181,40 @@ class MortgageScheduleTests(unittest.TestCase):
             )
         )
 
+    def test_startup_base_consumption_matches_affordability_core_nonhousing(self):
+        sim = NewLoop(make_cfg())
+        hh = sim.hh
+        self.assertIsNotNone(hh)
+        assert hh is not None
+
+        wages_q = np.asarray(hh.wages0_q, dtype=float)
+        profile = compute_affordable_housing_profile(wages_q, wages_q, sim.params)
+        base_real_q = np.asarray(hh.base_real_cons_q, dtype=float)
+        disp_perm_q = np.asarray(profile["disp_perm_q"], dtype=float)
+        headroom_q = np.asarray(profile["headroom_q"], dtype=float)
+        self.assertTrue(
+            np.all(base_real_q <= np.maximum(0.0, disp_perm_q - headroom_q) + 1e-9)
+        )
+
+    def test_startup_housing_costs_respect_affordability_target(self):
+        sim = NewLoop(make_cfg())
+        hh = sim.hh
+        self.assertIsNotNone(hh)
+        assert hh is not None
+
+        wages_q = np.asarray(hh.wages0_q, dtype=float)
+        profile = compute_affordable_housing_profile(wages_q, wages_q, sim.params)
+        payment_target_q = np.asarray(profile["housing_payment_target_q"], dtype=float)
+        mortgage_payment_q = np.asarray(hh.mort_payment_sched_q, dtype=float)
+        renter_rent_q = np.asarray(hh.renter_rent_q, dtype=float)
+
+        active_mort = mortgage_payment_q > 1e-12
+        active_rent = renter_rent_q > 1e-12
+        self.assertTrue(bool(np.any(active_mort)))
+        self.assertTrue(bool(np.any(active_rent)))
+        self.assertTrue(np.all(mortgage_payment_q[active_mort] <= payment_target_q[active_mort] + 2.0))
+        self.assertTrue(np.all(renter_rent_q[active_rent] <= payment_target_q[active_rent] + 1.0))
+
     def test_cached_contract_snapshot_matches_legacy_components(self):
         sim = NewLoop(make_cfg())
         sim.step()
@@ -324,11 +359,13 @@ class MortgageScheduleTests(unittest.TestCase):
         self.assertIsNotNone(hh)
         assert hh is not None
 
-        housing_before = np.asarray(hh.housing_escrow, dtype=float).copy()
         sim.step()
         sim.step()
 
-        new_mask = (np.asarray(hh.housing_escrow, dtype=float) - housing_before) > 1e-12
+        new_mask = (
+            (np.asarray(hh.mort_age_q, dtype=float) == 0.0)
+            & (np.asarray(hh.mortgage_loans, dtype=float) > 1e-9)
+        )
         self.assertGreater(float(sim.state.get("mort_turnover_total", 0.0)), 0.0)
         self.assertTrue(bool(np.any(new_mask)))
         self.assertTrue(np.all(np.asarray(hh.mort_age_q, dtype=float)[new_mask] <= 1.0))
@@ -406,6 +443,83 @@ class MortgageScheduleTests(unittest.TestCase):
         self.assertTrue(np.all(rolled_sched > 0.0))
         self.assertGreaterEqual(int(sim.state.get("mortgage_maturity_roll_count", 0.0)), active_idx.size)
         self.assertGreater(float(sim.state.get("mortgage_maturity_roll_total", 0.0)), 0.0)
+
+    def test_old_loop_maturing_mortgages_reissue_without_fresh_underwriting(self):
+        cfg = make_cfg()
+        params = cfg["parameters"]
+        params["economic_regime"] = "OldLoop"
+        params["hard_assert_sfc"] = False
+        params["mortgage_turnover_enabled"] = True
+        params["mortgage_maturity_roll_enabled"] = True
+        params["housing_turnover_rate_mortgagor_q"] = 0.0
+        params["housing_turnover_rate_owner_q"] = 0.0
+        params["mortgage_turnover_dti_cap"] = 0.05
+        params["mortgage_turnover_income_mult_cap"] = 0.10
+        params["mortgage_turnover_min_wage_q"] = 1000.0
+
+        sim = NewLoop(cfg)
+        hh = sim.hh
+        self.assertIsNotNone(hh)
+        assert hh is not None
+
+        active_idx = np.where(np.asarray(hh.mortgage_loans, dtype=float) > 1e-12)[0][:3]
+        self.assertEqual(active_idx.size, 3)
+
+        hh.wages0_q[active_idx] = 1.0
+        hh.deposits[active_idx] = 0.0
+        hh.revolving_loans[active_idx] = 0.0
+        hh.housing_escrow[active_idx] = 30000.0
+        hh.mortgage_loans[active_idx] = 10000.0
+        hh.mort_rate_q[active_idx] = float(params["mortgage_fixed_rate_q"])
+        hh.mort_term_q[active_idx] = float(params["mortgage_term_quarters"])
+        hh.mort_age_q[active_idx] = float(params["mortgage_term_quarters"]) - 1.0
+        hh.mort_orig_principal[active_idx] = 10000.0
+        hh.mort_payment_sched_q[active_idx] = payment_from_orig_principal(
+            np.full(active_idx.size, 10000.0, dtype=float),
+            float(params["mortgage_fixed_rate_q"]),
+            float(params["mortgage_term_quarters"]),
+        )
+        hh.mort_t0[active_idx] = -1
+        sim._invalidate_mortgage_contract_state()
+
+        sim.step()
+
+        rolled_loans = np.asarray(hh.mortgage_loans, dtype=float)[active_idx]
+        rolled_ages = np.asarray(hh.mort_age_q, dtype=float)[active_idx]
+        self.assertTrue(np.all(rolled_loans > 1e-9))
+        self.assertTrue(np.all(rolled_ages <= 1e-9))
+        self.assertGreaterEqual(int(sim.state.get("mortgage_maturity_roll_count", 0.0)), active_idx.size)
+
+    def test_old_loop_refresh_does_not_write_down_bank_equity_for_matured_residuals(self):
+        cfg = make_cfg()
+        params = cfg["parameters"]
+        params["economic_regime"] = "OldLoop"
+        params["hard_assert_sfc"] = False
+        params["mortgage_maturity_roll_enabled"] = True
+
+        sim = NewLoop(cfg)
+        hh = sim.hh
+        self.assertIsNotNone(hh)
+        assert hh is not None
+
+        idx = int(np.where(np.asarray(hh.mortgage_loans, dtype=float) > 1e-12)[0][0])
+        before_equity = float(sim.nodes["BANK"].get("equity", 0.0))
+        before_balance = float(np.asarray(hh.mortgage_loans, dtype=float)[idx])
+        term_q = float(params["mortgage_term_quarters"])
+
+        hh.mort_rate_q[idx] = float(params["mortgage_fixed_rate_q"])
+        hh.mort_term_q[idx] = term_q
+        hh.mort_age_q[idx] = term_q
+        sim._invalidate_mortgage_contract_state()
+        sim._refresh_mortgage_contract_state()
+
+        after_equity = float(sim.nodes["BANK"].get("equity", 0.0))
+        after_balance = float(np.asarray(hh.mortgage_loans, dtype=float)[idx])
+        after_age = float(np.asarray(hh.mort_age_q, dtype=float)[idx])
+
+        self.assertAlmostEqual(after_equity, before_equity, places=9)
+        self.assertAlmostEqual(after_balance, before_balance, places=9)
+        self.assertAlmostEqual(after_age, term_q - 1.0, places=9)
 
     def test_one_quarter_remaining_mortgages_do_not_roll_early(self):
         cfg = make_cfg()

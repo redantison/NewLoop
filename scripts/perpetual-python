@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+export PYTHONPYCACHEPREFIX="${PYTHONPYCACHEPREFIX:-/tmp/newloop-pycache}"
+mkdir -p "${PYTHONPYCACHEPREFIX}"
+
+exec conda run -n perpetual python "$@"

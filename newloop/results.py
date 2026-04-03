@@ -12,7 +12,9 @@ import numpy as np
 
 from .config import apply_economic_regime_overrides, get_default_config
 from .engine import NewLoop
+from .housing_affordability import compute_affordable_housing_profile
 from .income_support import make_income_support_policy
+from .mortgage import annuity_factor, balance_from_orig_principal, payment_from_orig_principal
 from .newloop_types import TickResult
 from .tax_policy import make_tax_policy
 
@@ -617,12 +619,15 @@ def _sync_startup_household_state(sim: NewLoop) -> None:
         "deposits",
         float(sim.state.get("housing_financing_deposits_total", 0.0)),
     )
+    sim.nodes["HH"].set("loans", hh.sum_loans())
     bank = sim.nodes["BANK"]
     dep_liab = float(sim._sum_deposits_all())
+    loan_assets = float(sim._sum_loans_borrowers())
     bank.set("deposit_liab", dep_liab)
+    bank.set("loan_assets", loan_assets)
     bank.set(
         "reserves",
-        dep_liab + float(bank.get("equity", 0.0)) - float(bank.get("loan_assets", 0.0)),
+        dep_liab + float(bank.get("equity", 0.0)) - loan_assets,
     )
     sim._assert_sfc_ok(context="startup_state_sync")
 
@@ -883,6 +888,108 @@ def _prepare_startup_sim(sim: NewLoop) -> Dict[str, Any] | None:
     return reset_stats
 
 
+def _reunderwrite_old_loop_startup_housing(sim: NewLoop) -> Dict[str, Any] | None:
+    """Reset OldLoop startup housing burdens to the model's own settled income path."""
+    regime = str(sim.params.get("economic_regime", "NewLoop")).strip()
+    if regime != "OldLoop" or sim.hh is None or sim.hh.n <= 0:
+        return None
+
+    hh = sim.hh
+    hh.ensure_memos()
+    snapshot = _startup_solver_snapshot(sim)
+    if snapshot is None:
+        return None
+    sol = snapshot.get("sol")
+    if not isinstance(sol, dict):
+        return None
+
+    n = int(hh.n)
+    wages_i = np.asarray(sol.get("wages_i", hh.wages0_q), dtype=float)
+    if wages_i.shape[0] != n:
+        wages_i = np.asarray(hh.wages0_q, dtype=float)
+    div_i = np.asarray(sol.get("div_i", np.zeros(n, dtype=float)), dtype=float)
+    if div_i.shape[0] != n:
+        div_i = np.zeros(n, dtype=float)
+    rev_interest_i = np.asarray(sol.get("rev_interest_i", np.zeros(n, dtype=float)), dtype=float)
+    if rev_interest_i.shape[0] != n:
+        rev_interest_i = np.zeros(n, dtype=float)
+    uis = max(0.0, float(sol.get("uis", 0.0)))
+
+    gross_income_q = np.maximum(0.0, wages_i) + np.maximum(0.0, div_i) + uis
+    affordability = compute_affordable_housing_profile(
+        gross_income_q,
+        np.maximum(0.0, np.asarray(hh.wages0_q, dtype=float)),
+        sim.params,
+        existing_fixed_obligations_q=np.maximum(0.0, rev_interest_i),
+    )
+    housing_payment_target_q = np.maximum(
+        0.0,
+        np.asarray(affordability["housing_payment_target_q"], dtype=float),
+    )
+
+    mortgage_loans = np.asarray(hh.mortgage_loans, dtype=float)
+    mort_rate_q = np.asarray(hh.mort_rate_q, dtype=float)
+    mort_term_q = np.asarray(hh.mort_term_q, dtype=float)
+    mort_age_q = np.asarray(hh.mort_age_q, dtype=float)
+    active_mort = mortgage_loans > 1e-9
+
+    if np.any(active_mort):
+        active_rate_q = np.maximum(0.0, mort_rate_q.copy())
+        default_rate_q = float(sim.params.get("mortgage_fixed_rate_q", 0.0))
+        active_rate_q = np.where(active_rate_q > 1e-12, active_rate_q, default_rate_q)
+
+        active_term_q = np.maximum(1.0, mort_term_q.copy())
+        default_term_q = float(sim.params.get("mortgage_term_quarters", 60.0))
+        active_term_q = np.where(active_term_q > 1e-12, active_term_q, default_term_q)
+        supportable_orig_principal = np.zeros(n, dtype=float)
+        supportable_orig_principal[active_mort] = (
+            housing_payment_target_q[active_mort]
+            * annuity_factor(active_rate_q[active_mort], active_term_q[active_mort])
+        )
+        supportable_balance = np.zeros(n, dtype=float)
+        supportable_balance[active_mort] = balance_from_orig_principal(
+            supportable_orig_principal[active_mort],
+            active_rate_q[active_mort],
+            active_term_q[active_mort],
+            mort_age_q[active_mort],
+        )
+
+        new_orig_principal = np.asarray(hh.mort_orig_principal, dtype=float).copy()
+        new_payment_sched_q = np.asarray(hh.mort_payment_sched_q, dtype=float).copy()
+        new_balance = mortgage_loans.copy()
+
+        new_orig_principal[active_mort] = np.minimum(
+            np.maximum(0.0, np.asarray(hh.mort_orig_principal, dtype=float)[active_mort]),
+            np.maximum(0.0, supportable_orig_principal[active_mort]),
+        )
+        new_payment_sched_q[active_mort] = payment_from_orig_principal(
+            new_orig_principal[active_mort],
+            active_rate_q[active_mort],
+            active_term_q[active_mort],
+        )
+        new_balance[active_mort] = np.minimum(
+            np.maximum(0.0, mortgage_loans[active_mort]),
+            np.maximum(0.0, supportable_balance[active_mort]),
+        )
+        hh.mortgage_loans = new_balance.astype(float, copy=True)
+        hh.mort_orig_principal = new_orig_principal.astype(float, copy=True)
+        hh.mort_payment_sched_q = new_payment_sched_q.astype(float, copy=True)
+
+    renter_rent_q = np.asarray(hh.renter_rent_q, dtype=float)
+    hh.renter_rent_q = np.minimum(
+        np.maximum(0.0, renter_rent_q),
+        housing_payment_target_q,
+    ).astype(float, copy=True)
+
+    _sync_startup_household_state(sim)
+    return {
+        "active_mortgages": float(np.sum(active_mort)),
+        "mean_target_housing_payment_q": float(np.mean(housing_payment_target_q)) if housing_payment_target_q.size else 0.0,
+        "mean_mortgage_payment_q": float(np.mean(np.asarray(hh.mort_payment_sched_q, dtype=float)[active_mort])) if np.any(active_mort) else 0.0,
+        "mean_rent_q": float(np.mean(np.asarray(hh.renter_rent_q, dtype=float))) if hh.renter_rent_q.size else 0.0,
+    }
+
+
 def _reseed_visible_start_capacity(sim: NewLoop) -> Dict[str, Any] | None:
     """Re-anchor sector capacity after neutral warmup using visible-regime demand."""
     snapshot = _startup_solver_snapshot(sim)
@@ -1029,6 +1136,11 @@ def _build_startup_sim(cfg: Dict[str, Any]) -> tuple[NewLoop, int, Dict[str, Any
         sim.tax_policy = make_tax_policy(sim.params)
         _reset_post_warmup_sector_planner_state(sim)
         _sync_startup_household_state(sim)
+        housing_reset = _reunderwrite_old_loop_startup_housing(sim)
+        if housing_reset is not None:
+            warmup_report["old_loop_startup_housing_reunderwrite"] = dict(housing_reset)
+            _prepare_startup_sim(sim)
+            _sync_startup_household_state(sim)
         _apply_sector_planner_seed(sim, legacy_planner_seed)
         reseed_stats = _reseed_visible_start_capacity(sim)
         if reseed_stats is not None:
@@ -1036,6 +1148,10 @@ def _build_startup_sim(cfg: Dict[str, Any]) -> tuple[NewLoop, int, Dict[str, Any
             warmup_report["visible_start_capex_seed"] = dict(legacy_planner_seed or {})
     else:
         legacy_planner_seed = _build_legacy_sector_planner_seed(cfg)
+        housing_reset = _reunderwrite_old_loop_startup_housing(sim)
+        if housing_reset is not None:
+            warmup_report["old_loop_startup_housing_reunderwrite"] = dict(housing_reset)
+            _prepare_startup_sim(sim)
         _apply_sector_planner_seed(sim, legacy_planner_seed)
         reseed_stats = _reseed_visible_start_capacity(sim)
         if reseed_stats is not None:

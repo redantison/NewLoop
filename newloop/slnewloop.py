@@ -116,14 +116,27 @@ DECIMAL_COLUMNS = {
 }
 
 DISPLAY_VALUE_MODES: tuple[str, str] = ("nominal", "real")
-CONTROL_DEFAULTS_VERSION = 15
+CONTROL_DEFAULTS_VERSION = 16
 LOOP_MODE_SELECT_KEY = "run__economic_regime_select"
 LOOP_MODE_PLACEHOLDER = "(Select loop mode)"
 UBI_PERCENTILE_PARAM_KEY = "param__ubi_target_percentile"
 UBI_PERCENTILE_UI_KEY = "ui__ubi_target_percentile"
 MORTGAGE_RATE_PARAM_PATH: tuple[str, ...] = ("mortgage_fixed_rate_q",)
 MORTGAGE_TERM_PARAM_PATH: tuple[str, ...] = ("mortgage_term_quarters",)
-_TITLE_MODE_SUFFIX_RE = re.compile(r"\s+\((?:UIS|UBI|Stale)\)\s*$", re.IGNORECASE)
+REGIME_UI_SYNC_PATHS: tuple[tuple[str, ...], ...] = (
+    ("economic_regime",),
+    ("disable_trust",),
+    ("disable_mortgage_relief",),
+    ("mortgage_turnover_enabled",),
+    ("disable_income_tax",),
+    ("disable_vat",),
+    ("disable_income_support",),
+    ("automation_disabled",),
+    ("policy_rate_rule_enabled",),
+    ("corporate_tax_dynamic_with_wages",),
+    ("gov_tax_rebate_rate",),
+)
+_TITLE_MODE_SUFFIX_RE = re.compile(r"\s+\((?:UIS|UBI|OL|Stale)\)\s*$", re.IGNORECASE)
 
 
 def _annualize_quarterly_rate(value: float) -> float:
@@ -391,6 +404,7 @@ def _apply_control_defaults(st: Any, base_params: Dict[str, Any]) -> None:
             default_value = max(1, int(round(float(default_value) / 4.0)))
         st.session_state[key] = default_value
     st.session_state[LOOP_MODE_SELECT_KEY] = LOOP_MODE_PLACEHOLDER
+    st.session_state["app__last_applied_regime_ui"] = ""
     st.session_state["run__quarters"] = RUN_DEFAULT_QUARTERS
     raw_mode = str(base_params.get("dashboard_value_mode", "nominal")).strip().lower()
     st.session_state["view__value_mode"] = "real" if raw_mode in {"price_normalized", "price-normalized", "real"} else "nominal"
@@ -463,6 +477,33 @@ def _build_cfg_from_state(st: Any, base_cfg: Dict[str, Any]) -> Dict[str, Any]:
 
     cfg["parameters"] = params
     return apply_economic_regime_overrides(cfg)
+
+
+def _apply_regime_ui_defaults(session_state: Dict[str, Any], base_cfg: Dict[str, Any], selected_regime: str) -> bool:
+    regime = str(selected_regime).strip()
+    if regime not in {"NewLoop", "OldLoop"}:
+        return False
+
+    regime_cfg = copy.deepcopy(base_cfg)
+    regime_params = regime_cfg.setdefault("parameters", {})
+    regime_params["economic_regime"] = regime
+    effective_cfg = apply_economic_regime_overrides(regime_cfg)
+    effective_params = effective_cfg.get("parameters", {})
+
+    session_state["param__economic_regime"] = regime
+    for control in PARAMETER_CONTROLS:
+        path = tuple(control.path)
+        if path not in REGIME_UI_SYNC_PATHS:
+            continue
+        value = get_by_path(effective_params, control.path, resolve_control_default(control, effective_params))
+        if path == MORTGAGE_RATE_PARAM_PATH and value is not None:
+            value = _annualize_quarterly_rate(float(value))
+        elif path == MORTGAGE_TERM_PARAM_PATH and value is not None:
+            value = max(1, int(round(float(value) / 4.0)))
+        session_state[control_widget_key(control)] = value
+
+    session_state["app__last_applied_regime_ui"] = regime
+    return True
 
 
 def _cfg_json(cfg: Dict[str, Any]) -> str:
@@ -658,7 +699,9 @@ def _render_parameter_controls(
             help="Choose the loop mode before running the model.",
         )
         if loop_mode in {"NewLoop", "OldLoop"}:
-            st.session_state["param__economic_regime"] = loop_mode
+            last_regime = str(st.session_state.get("app__last_applied_regime_ui", "")).strip()
+            if loop_mode != last_regime:
+                _apply_regime_ui_defaults(st.session_state, {"parameters": copy.deepcopy(base_params)}, loop_mode)
 
         quarters = st.slider(
             "Quarters",
@@ -679,7 +722,8 @@ def _render_parameter_controls(
         if str(st.session_state.get(LOOP_MODE_SELECT_KEY, "")).strip() == "OldLoop":
             st.caption(
                 "Old Loop forces trust, income support, mortgage assistance, VAT/prebate, "
-                "and GOV surplus rebate off, keeps mortgage turnover on, and uses the Old Loop tax regime."
+                "and GOV surplus rebate off, keeps mortgage turnover on, disables automation entirely for now, "
+                "and uses the Old Loop tax regime."
             )
 
         for section in SECTION_ORDER:
@@ -877,6 +921,8 @@ def main() -> None:
     support_mode = str(support_debug.get("mode", support_mode_cfg)).strip().upper()
     if support_mode not in {"UIS", "UBI"}:
         support_mode = support_mode_cfg
+    economic_regime = str(current_cfg.get("parameters", {}).get("economic_regime", "NewLoop")).strip()
+    plot_mode = "OL" if economic_regime == "OldLoop" else support_mode
 
     _render_startup_diagnostics_panel(
         dict(st.session_state.get("startup_diagnostics", {})),
@@ -931,7 +977,7 @@ def main() -> None:
             primary_ylabel=primary_ylabel,
             secondary_metrics=secondary_metrics,
             secondary_ylabel=secondary_ylabel,
-            support_mode=support_mode,
+            support_mode=plot_mode,
         )
         if config_stale:
             _mark_figure_stale(line_fig)
@@ -949,7 +995,7 @@ def main() -> None:
     )
 
     hh_count = int(support_debug.get("household_count", 0) or 0)
-    dashboard_fig = plot_default_dashboard(rows, support_mode=support_mode, household_count=hh_count)
+    dashboard_fig = plot_default_dashboard(rows, support_mode=plot_mode, household_count=hh_count)
     if config_stale:
         _mark_figure_stale(dashboard_fig)
     st.pyplot(dashboard_fig, clear_figure=False)
@@ -969,7 +1015,7 @@ def main() -> None:
         ],
         title="Corporate Equity",
         primary_ylabel="Equity / Household",
-        support_mode=support_mode,
+        support_mode=plot_mode,
         ax=ax_equity,
     )
     plot_metric_lines(
@@ -988,7 +1034,7 @@ def main() -> None:
             "sector_op_margin_phys",
         ],
         secondary_ylabel="ROE / Operating Margin (%)",
-        support_mode=support_mode,
+        support_mode=plot_mode,
         ax=ax_recycling,
     )
     if config_stale:
@@ -1009,7 +1055,7 @@ def main() -> None:
         primary_ylabel="Capacity / Household",
         secondary_metrics=["sector_hh_util_info", "sector_hh_util_physical"],
         secondary_ylabel="Household Utilization",
-        support_mode=support_mode,
+        support_mode=plot_mode,
         ax=ax_capacity,
     )
     plot_metric_lines(
@@ -1022,7 +1068,7 @@ def main() -> None:
         primary_ylabel="Total Utilization",
         secondary_metrics=["sector_util_info", "sector_util_physical"],
         secondary_ylabel="Total Utilization",
-        support_mode=support_mode,
+        support_mode=plot_mode,
         ax=ax_total_util,
     )
     plot_metric_lines(
@@ -1035,7 +1081,7 @@ def main() -> None:
         ],
         title="Unmet Household Demand",
         primary_ylabel="Real Units / Household",
-        support_mode=support_mode,
+        support_mode=plot_mode,
         ax=ax_shortfall,
     )
     if config_stale:
@@ -1051,7 +1097,7 @@ def main() -> None:
         title="Real Household Outcomes",
         secondary_metrics=["real_avg_income"],
         secondary_ylabel="Real Avg Income",
-        support_mode=support_mode,
+        support_mode=plot_mode,
         ax=ax_outcomes,
     )
 
@@ -1062,7 +1108,7 @@ def main() -> None:
         primary_ylabel="Rate",
         secondary_metrics=["wages_total"],
         secondary_ylabel="Total Wage Base",
-        support_mode=support_mode,
+        support_mode=plot_mode,
         ax=ax_corp_tax,
     )
     _corp_axes = row_fig.get_axes()
@@ -1108,7 +1154,7 @@ def main() -> None:
                 income_before,
                 income_after,
                 value_label=value_label,
-                support_mode=support_mode,
+                support_mode=plot_mode,
             )
             if config_stale:
                 _mark_figure_stale(income_fig)
@@ -1149,7 +1195,7 @@ def main() -> None:
                     mortgage_stock_fig = plot_mortgage_stock_over_time(
                         rows,
                         value_label=value_label,
-                        support_mode=support_mode,
+                        support_mode=plot_mode,
                     )
                     if config_stale:
                         _mark_figure_stale(mortgage_stock_fig)
@@ -1170,7 +1216,7 @@ def main() -> None:
                 wealth_before,
                 wealth_after,
                 value_label=value_label,
-                support_mode=support_mode,
+                support_mode=plot_mode,
             )
             if config_stale:
                 _mark_figure_stale(wealth_fig)

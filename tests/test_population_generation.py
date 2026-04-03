@@ -9,6 +9,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from newloop.housing_affordability import compute_affordable_housing_profile
 from newloop.population import PopulationConfig, generate_population
 
 
@@ -43,10 +44,10 @@ class PopulationGenerationTests(unittest.TestCase):
         for left, right in zip(month_medians, month_medians[1:]):
             self.assertLessEqual(left, right)
 
-        self.assertGreaterEqual(base_real_medians[0], 400.0)
-        self.assertLessEqual(base_real_medians[0], 500.0)
-        self.assertGreaterEqual(base_real_medians[-1], 625.0)
-        self.assertLessEqual(base_real_medians[-1], 725.0)
+        self.assertGreaterEqual(base_real_medians[0], 125.0)
+        self.assertLessEqual(base_real_medians[0], 200.0)
+        self.assertGreaterEqual(base_real_medians[-1], 400.0)
+        self.assertLessEqual(base_real_medians[-1], 500.0)
         self.assertGreaterEqual(realized_buffer_months[0], 0.6)
         self.assertLessEqual(realized_buffer_months[0], 3.0)
         self.assertGreaterEqual(realized_buffer_months[-1], 7.0)
@@ -99,6 +100,43 @@ class PopulationGenerationTests(unittest.TestCase):
         low_end_med = float(np.median(low_end_mort_pay))
         self.assertGreater(renter_med, 0.5 * low_end_med)
         self.assertLess(renter_med, 1.5 * low_end_med)
+
+    def test_old_loop_deposits_follow_affordability_headroom(self):
+        cfg = PopulationConfig(
+            n_families=3000,
+            seed=7919,
+            employment_rate=1.0,
+            economic_regime="OldLoop",
+            deposit_generation_mode="liquid_buffer_months",
+        )
+        pop = generate_population(cfg)
+
+        wages = np.asarray(pop.wages_q, dtype=float)
+        wage_potential = wages.copy()
+        revolving = np.asarray(pop.revolving_loans, dtype=float)
+        rev_rate_q = float(cfg.revolving_rate_effective) / 4.0
+        affordability = compute_affordable_housing_profile(
+            wages,
+            wage_potential,
+            {
+                "disable_income_tax": bool(cfg.disable_income_tax),
+                "old_loop_tax_rate_lower": float(cfg.old_loop_tax_rate_lower),
+                "old_loop_tax_rate_upper": float(cfg.old_loop_tax_rate_upper),
+                "old_loop_tax_threshold_lower_pct": float(cfg.old_loop_tax_threshold_lower_pct),
+                "old_loop_tax_threshold_upper_pct": float(cfg.old_loop_tax_threshold_upper_pct),
+                "old_loop_housing_share_target": float(cfg.old_loop_housing_share_target),
+                "old_loop_housing_share_cap": float(cfg.old_loop_housing_share_cap),
+                "old_loop_housing_headroom_share": float(cfg.old_loop_housing_headroom_share),
+                "old_loop_housing_headroom_floor_q": float(cfg.old_loop_housing_headroom_floor_q),
+                "old_loop_core_nonhousing_floor_q": float(cfg.old_loop_core_nonhousing_floor_q),
+                "old_loop_core_nonhousing_kappa_by_income_pct": tuple(cfg.old_loop_core_nonhousing_kappa_by_income_pct),
+            },
+            existing_fixed_obligations_q=(revolving * rev_rate_q),
+        )
+
+        deposits = np.asarray(pop.deposits, dtype=float)
+        headroom = np.asarray(affordability["headroom_q"], dtype=float)
+        self.assertTrue(np.allclose(deposits, headroom, rtol=0.0, atol=1e-9))
 
 
 if __name__ == "__main__":

@@ -173,6 +173,18 @@ config = {
         "old_loop_tax_threshold_upper_pct": 80.0,
         "old_loop_corporate_tax_rate": 0.35,
         "old_loop_mortgage_interest_deduction": True,
+        "old_loop_housing_share_target": 0.20,
+        "old_loop_housing_share_cap": 0.25,
+        "old_loop_housing_headroom_share": 0.08,
+        "old_loop_housing_headroom_floor_q": 15.0,
+        "old_loop_core_nonhousing_floor_q": 150.0,
+        "old_loop_core_nonhousing_kappa_by_income_pct": (
+            (20.0, 0.72),
+            (50.0, 0.64),
+            (80.0, 0.56),
+            (95.0, 0.50),
+            (100.0, 0.44),
+        ),
         "hard_assert_sfc": False,          # set True to hard-fail on any mismatch
         # Dashboard display mode for money columns: "nominal" or "price_normalized" (base-period dollars).
         "dashboard_value_mode": "price_normalized",
@@ -190,7 +202,7 @@ config = {
         "baseline_calibration_tol_pct": 0.02,
         "baseline_calibration_reset_deposits_to_runtime_target": False,
         "old_loop_startup_preserve_deposits": True,
-        "neutral_warmup_quarters": 2,
+        "neutral_warmup_quarters": 3,
         "startup_buffer_alignment_max_iters": 8,
         "startup_buffer_alignment_deposit_blend": 0.35,
         "population_config": {
@@ -233,10 +245,29 @@ config = {
             "mortgage_startup_ltv_sigma": 0.12,
             "mortgage_startup_ltv_min": 0.60,
             "mortgage_startup_ltv_max": 1.15,
+            "housing_value_income_mult_cap": 6.0,
+            "mortgage_income_mult_cap": 4.0,
             "renter_housing_income_mult_median": 5.00,
             "renter_housing_income_mult_sigma": 0.40,
             "renter_rent_payment_mult_median": 0.95,
             "renter_rent_payment_mult_sigma": 0.15,
+            "old_loop_housing_share_target": 0.20,
+            "old_loop_housing_share_cap": 0.25,
+            "old_loop_housing_headroom_share": 0.08,
+            "old_loop_housing_headroom_floor_q": 15.0,
+            "old_loop_core_nonhousing_floor_q": 150.0,
+            "disable_income_tax": False,
+            "old_loop_tax_rate_lower": 0.15,
+            "old_loop_tax_rate_upper": 0.28,
+            "old_loop_tax_threshold_lower_pct": 30.0,
+            "old_loop_tax_threshold_upper_pct": 80.0,
+            "old_loop_core_nonhousing_kappa_by_income_pct": (
+                (20.0, 0.72),
+                (50.0, 0.64),
+                (80.0, 0.56),
+                (95.0, 0.50),
+                (100.0, 0.44),
+            ),
             "revolving_income_mult_median": 0.06,
             "revolving_income_mult_sigma": 0.80,
             "revolving_balance_mult_by_wealth_pct": (
@@ -351,6 +382,7 @@ def apply_economic_regime_overrides(cfg: Dict[str, Any]) -> Dict[str, Any]:
         params["disable_mortgage_policy"] = True
         params["disable_vat"] = True
         params["disable_income_tax"] = False
+        params["automation_disabled"] = True
         params["mortgage_turnover_enabled"] = True
         params["policy_rate_rule_enabled"] = False
         params["corporate_tax_dynamic_with_wages"] = False

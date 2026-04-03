@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 
 from .config import apply_economic_regime_overrides, normalize_economic_regime_name
+from .housing_affordability import compute_affordable_housing_profile
 from .mathutils import _as_np, _pct, _pct_np, automation_two_hump, calculate_gini_np
 from .mortgage import (
     FixedRateMortgageSchedule,
@@ -175,6 +176,22 @@ class NewLoop:
             if not isinstance(overrides, dict):
                 raise TypeError("population_config must be a dict of PopulationConfig overrides")
             overrides = dict(overrides)
+            for key in (
+                "economic_regime",
+                "disable_income_tax",
+                "old_loop_tax_rate_lower",
+                "old_loop_tax_rate_upper",
+                "old_loop_tax_threshold_lower_pct",
+                "old_loop_tax_threshold_upper_pct",
+                "old_loop_housing_share_target",
+                "old_loop_housing_share_cap",
+                "old_loop_housing_headroom_share",
+                "old_loop_housing_headroom_floor_q",
+                "old_loop_core_nonhousing_floor_q",
+                "old_loop_core_nonhousing_kappa_by_income_pct",
+            ):
+                if key in self.params:
+                    overrides[key] = self.params.get(key)
 
             cfg = pop_mod.PopulationConfig(**overrides)
             pop = pop_mod.generate_population(cfg)
@@ -757,18 +774,27 @@ class NewLoop:
         hh = self.hh
         hh.ensure_memos()
         mort = _as_np(hh.mortgage_loans, dtype=float)
+        regime = str(self.params.get("economic_regime", "NewLoop")).strip()
         matured = (
             (mort > 1e-12)
             & (_as_np(hh.mort_term_q, dtype=float) > 1e-12)
             & (_as_np(hh.mort_age_q, dtype=float) >= (_as_np(hh.mort_term_q, dtype=float) - 1e-12))
         )
         if np.any(matured):
-            matured_total = float(np.sum(np.maximum(0.0, mort[matured])))
-            mort[matured] = 0.0
-            if matured_total > 0.0:
-                bank = self.nodes["BANK"]
-                bank.add("loan_assets", -matured_total)
-                bank.add("equity", -matured_total)
+            if regime == "OldLoop" and bool(self.params.get("mortgage_maturity_roll_enabled", True)):
+                # Keep matured residuals on-book in OldLoop so the rollover path can
+                # handle them without an immediate bank-equity write-down.
+                hh.mort_age_q[matured] = np.maximum(
+                    0.0,
+                    _as_np(hh.mort_term_q, dtype=float)[matured] - 1.0,
+                )
+            else:
+                matured_total = float(np.sum(np.maximum(0.0, mort[matured])))
+                mort[matured] = 0.0
+                if matured_total > 0.0:
+                    bank = self.nodes["BANK"]
+                    bank.add("loan_assets", -matured_total)
+                    bank.add("equity", -matured_total)
         active = mort > 1e-12
         inactive = ~active
 
@@ -1162,8 +1188,11 @@ class NewLoop:
             lambda_q = self._old_loop_perm_income_update_rate_q()
             transitory_scale = self._old_loop_transitory_mpc_scale()
             y_perm_nom = ((1.0 - lambda_q) * np.maximum(0.0, prev_perm_income)) + (lambda_q * np.maximum(0.0, y_guess_arr))
-            kappa_i = self._old_loop_consumption_kappa_i(np.asarray(baseline_wages_i, dtype=float))
-            c_real_core = np.maximum(0.0, (kappa_i * y_perm_nom) / max(p_cons, 1e-9))
+            # OldLoop startup housing is now assigned from an affordability
+            # construction that leaves room for baseline non-housing consumption.
+            # Use that initialized baseline as the runtime core anchor so the
+            # housing initializer and the in-run consumption rule stay aligned.
+            c_real_core = np.maximum(0.0, base_real_arr)
             transitory_nom = np.maximum(0.0, y_guess_arr - y_perm_nom)
             c_real_transitory = np.maximum(0.0, (transitory_scale * mpc_arr * transitory_nom) / max(p_cons, 1e-9))
             c_hh_nom_income = p_cons * (c_real_core + c_real_transitory)
@@ -2281,8 +2310,8 @@ class NewLoop:
         fa_interest = fa_loan * rL
         fh_interest = fh_loan * rL
 
-        overhead_fa = self._sector_overhead_nom("FA")
-        overhead_fh = self._sector_overhead_nom("FH")
+        overhead_target_fa = self._sector_overhead_nom("FA")
+        overhead_target_fh = self._sector_overhead_nom("FH")
         div_commit_fa = self._lagged_dividend_commit_nom("FA")
         div_commit_fh = self._lagged_dividend_commit_nom("FH")
         div_commit_bk = self._lagged_dividend_commit_nom("BANK")
@@ -2362,6 +2391,30 @@ class NewLoop:
             w_fa = rev_fa * ws_fa
             w_fh = rev_fh * ws_fh
             w_total = float(w_fa + w_fh)
+
+            # Overhead is a cash sink tied to lagged revenue. Under the no-new-debt
+            # sector rules it cannot exceed the quarter's actually available cash
+            # after production inputs, wages, and planned CAPEX are covered.
+            overhead_cash_room_fa = max(
+                0.0,
+                float(self.nodes["FA"].get("deposits", 0.0))
+                + rev_fa
+                - capex_fa_nom
+                - w_fa
+                - fa_interest
+                - input_cost_fa,
+            )
+            overhead_cash_room_fh = max(
+                0.0,
+                float(self.nodes["FH"].get("deposits", 0.0))
+                + rev_fh
+                - capex_fh_nom
+                - w_fh
+                - fh_interest
+                - input_cost_fh,
+            )
+            overhead_fa = min(overhead_target_fa, overhead_cash_room_fa)
+            overhead_fh = min(overhead_target_fh, overhead_cash_room_fh)
 
             # profits pre-tax (capex is not expensed; it's a cash outflow later)
             p_fa_pre_tax = max(0.0, rev_fa - w_fa - fa_interest - overhead_fa - input_cost_fa)
@@ -2473,10 +2526,10 @@ class NewLoop:
                     - div_cash_buffer_fh,
                 ),
             )
-            bank_dividend_capacity = max(
-                0.0,
-                float(self.nodes["BANK"].get("equity", 0.0)) + after_tax_profit_bk,
-            )
+            # Keep bank dividends constrained to current after-tax profit. Letting
+            # payouts draw down capital directly makes household direct equity drift
+            # downward even in otherwise stable OldLoop runs.
+            bank_dividend_capacity = max(0.0, after_tax_profit_bk)
             div_bk_total = min(div_commit_bk, bank_dividend_capacity)
 
             div_house_firms = (div_fa_total * (1.0 - f_fa)) + (div_fh_total * (1.0 - f_fh))
@@ -3251,6 +3304,7 @@ class NewLoop:
         # -------------------------------------------------
         rev_pay_rate = float(self.params.get("revolving_principal_pay_rate_q", 0.0))
         rL = float(self.state.get("policy_rate_q", self.params.get("loan_rate_per_quarter", 0.0)))
+        regime = normalize_economic_regime_name(self.params.get("economic_regime", "NewLoop"))
         rev_rollover_share = float(self.params.get("revolving_rollover_share", 0.0))
         mort_turnover_enabled = bool(self.params.get("mortgage_turnover_enabled", False))
         mort_maturity_roll_enabled = bool(self.params.get("mortgage_maturity_roll_enabled", True))
@@ -3338,6 +3392,7 @@ class NewLoop:
             hh_deposits_before_turnover = float(deposits.sum())
             support_income_q_i = np.full_like(wages_i, mort_turnover_support_income_weight * max(0.0, uis), dtype=float)
             underwriting_income_q_i = np.maximum(0.0, wages_i) + support_income_q_i
+            baseline_underwriting_income_q_i = np.maximum(0.0, _as_np(hh.wages0_q, dtype=float)) + support_income_q_i
             underwriting_income_annual_i = 4.0 * underwriting_income_q_i
             mort_cap_i = mort_turnover_income_mult_cap * underwriting_income_annual_i
             active_mort_i = mort > 1e-9
@@ -3348,6 +3403,13 @@ class NewLoop:
             )
 
             current_rev_interest_i = np.maximum(0.0, rev * rL)
+            affordability = compute_affordable_housing_profile(
+                underwriting_income_q_i,
+                baseline_underwriting_income_q_i,
+                self.params,
+                existing_fixed_obligations_q=current_rev_interest_i,
+            )
+            supportable_payment_i = np.maximum(0.0, _as_np(affordability["housing_payment_target_q"], dtype=float))
             housing_value_i = old_housing_value_i.copy()
             owner_mask_i = (~active_mort_i) & (housing_value_i > 1e-12)
             renter_mask_i = (~active_mort_i) & (housing_value_i <= 1e-12)
@@ -3385,7 +3447,7 @@ class NewLoop:
                 income_limit_payment_i,
                 income_limit_principal_i * max(0.0, unit_payment_q),
             )
-            desired_payment_i = np.minimum(dti_room_nom, income_limit_payment_i)
+            desired_payment_i = np.minimum(np.minimum(supportable_payment_i, dti_room_nom), income_limit_payment_i)
             desired_principal_i = np.minimum(
                 income_limit_principal_i,
                 desired_payment_i / max(1e-9, unit_payment_q),
@@ -3444,16 +3506,31 @@ class NewLoop:
 
             maturity_roll_eligible_i = np.zeros(hh.n, dtype=bool)
             if mort_maturity_roll_enabled:
-                maturity_roll_eligible_i = (
-                    mort_maturity_roll_candidate_i
-                    & (underwriting_income_q_i >= mort_turnover_min_wage_q)
-                    & (np.maximum(0.0, mort) <= (income_limit_principal_i + 1e-9))
-                    & (maturity_roll_payment_i <= (dti_room_nom + 1e-9))
-                )
+                if regime == "OldLoop":
+                    # OldLoop debugging mode: keep existing mortgagors on-book by
+                    # carrying forward the remaining balance at maturity rather than
+                    # forcing them back through fresh affordability underwriting.
+                    maturity_roll_eligible_i = mort_maturity_roll_candidate_i & (np.maximum(0.0, mort) > 1e-9)
+                else:
+                    maturity_roll_eligible_i = (
+                        mort_maturity_roll_candidate_i
+                        & (underwriting_income_q_i >= mort_turnover_min_wage_q)
+                        & (np.maximum(0.0, mort) <= (income_limit_principal_i + 1e-9))
+                        & (maturity_roll_payment_i <= (supportable_payment_i + 1e-9))
+                    )
                 if np.any(maturity_roll_eligible_i):
                     allocation[maturity_roll_eligible_i] = np.maximum(0.0, mort[maturity_roll_eligible_i])
                     acquired_house_value[maturity_roll_eligible_i] = housing_value_i[maturity_roll_eligible_i]
                 self.state["mortgage_maturity_roll_eligible_count"] = float(np.sum(maturity_roll_eligible_i))
+
+            if regime == "OldLoop":
+                existing_owner_reissue_i = mort_turnover_event_i & (np.maximum(0.0, mort) > 1e-9)
+                if np.any(existing_owner_reissue_i):
+                    allocation[existing_owner_reissue_i] = np.maximum(
+                        allocation[existing_owner_reissue_i],
+                        np.maximum(0.0, mort[existing_owner_reissue_i]),
+                    )
+                    acquired_house_value[existing_owner_reissue_i] = housing_value_i[existing_owner_reissue_i]
 
             turnover_exit_mask = turnover_event_i & ~(allocation > 1e-9)
             supply_idx = np.where(turnover_exit_mask & (housing_value_i > 1e-9))[0]
@@ -3481,6 +3558,7 @@ class NewLoop:
                             if principal_cap <= 1e-9:
                                 continue
                             desired_payment = min(
+                                float(supportable_payment_i[renter_idx]),
                                 float(dti_room_nom[renter_idx]),
                                 principal_cap * max(0.0, unit_payment_q),
                             )
