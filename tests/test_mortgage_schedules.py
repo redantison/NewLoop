@@ -313,6 +313,7 @@ class MortgageScheduleTests(unittest.TestCase):
         cfg = make_cfg()
         params = cfg["parameters"]
         params["mortgage_turnover_enabled"] = True
+        params["mortgage_maturity_roll_enabled"] = True
         params["mortgage_turnover_target_payment_floor_share"] = 1.0
         params["mortgage_turnover_dti_cap"] = 5.0
         params["mortgage_turnover_income_mult_cap"] = 20.0
@@ -354,10 +355,110 @@ class MortgageScheduleTests(unittest.TestCase):
         self.assertAlmostEqual(float(sim.nodes["HOUSING"].get("deposits", 0.0)), 0.0, places=7)
         self.assertAlmostEqual(float(sim.state.get("housing_financing_deposits_total", 0.0)), 0.0, places=7)
 
+
+    def test_maturing_mortgages_roll_into_fresh_contracts(self):
+        cfg = make_cfg()
+        params = cfg["parameters"]
+        params["hard_assert_sfc"] = False
+        params["mortgage_turnover_enabled"] = True
+        params["mortgage_maturity_roll_enabled"] = True
+        params["housing_turnover_rate_mortgagor_q"] = 0.0
+        params["housing_turnover_rate_owner_q"] = 0.0
+        params["mortgage_turnover_dti_cap"] = 5.0
+        params["mortgage_turnover_income_mult_cap"] = 20.0
+        params["mortgage_turnover_min_wage_q"] = 0.0
+
+        sim = NewLoop(cfg)
+        hh = sim.hh
+        self.assertIsNotNone(hh)
+        assert hh is not None
+
+        active_idx = np.where(np.asarray(hh.mortgage_loans, dtype=float) > 1e-12)[0][:5]
+        self.assertEqual(active_idx.size, 5)
+
+        hh.wages0_q[active_idx] = 20000.0
+        hh.deposits[active_idx] = 0.0
+        hh.revolving_loans[active_idx] = 0.0
+        hh.housing_escrow[active_idx] = 30000.0
+        hh.mortgage_loans[active_idx] = 10000.0
+        hh.mort_rate_q[active_idx] = float(params["mortgage_fixed_rate_q"])
+        hh.mort_term_q[active_idx] = float(params["mortgage_term_quarters"])
+        hh.mort_age_q[active_idx] = float(params["mortgage_term_quarters"]) - 1.0
+        hh.mort_orig_principal[active_idx] = 10000.0
+        hh.mort_payment_sched_q[active_idx] = payment_from_orig_principal(
+            np.full(active_idx.size, 10000.0, dtype=float),
+            float(params["mortgage_fixed_rate_q"]),
+            float(params["mortgage_term_quarters"]),
+        )
+        hh.mort_t0[active_idx] = -1
+        sim._invalidate_mortgage_contract_state()
+
+        sim.step()
+
+        rolled_loans = np.asarray(hh.mortgage_loans, dtype=float)[active_idx]
+        rolled_ages = np.asarray(hh.mort_age_q, dtype=float)[active_idx]
+        rolled_terms = np.asarray(hh.mort_term_q, dtype=float)[active_idx]
+        rolled_sched = np.asarray(hh.mort_payment_sched_q, dtype=float)[active_idx]
+
+        self.assertTrue(np.all(rolled_loans > 1e-9))
+        self.assertTrue(np.all(rolled_ages <= 1e-9))
+        self.assertTrue(np.allclose(rolled_terms, float(params["mortgage_term_quarters"])))
+        self.assertTrue(np.all(rolled_sched > 0.0))
+        self.assertGreaterEqual(int(sim.state.get("mortgage_maturity_roll_count", 0.0)), active_idx.size)
+        self.assertGreater(float(sim.state.get("mortgage_maturity_roll_total", 0.0)), 0.0)
+
+    def test_one_quarter_remaining_mortgages_do_not_roll_early(self):
+        cfg = make_cfg()
+        params = cfg["parameters"]
+        params["hard_assert_sfc"] = False
+        params["mortgage_turnover_enabled"] = True
+        params["mortgage_maturity_roll_enabled"] = True
+        params["housing_turnover_rate_mortgagor_q"] = 0.0
+        params["housing_turnover_rate_owner_q"] = 0.0
+        params["mortgage_turnover_dti_cap"] = 5.0
+        params["mortgage_turnover_income_mult_cap"] = 20.0
+        params["mortgage_turnover_min_wage_q"] = 0.0
+
+        sim = NewLoop(cfg)
+        hh = sim.hh
+        self.assertIsNotNone(hh)
+        assert hh is not None
+
+        idx = int(np.where(np.asarray(hh.mortgage_loans, dtype=float) > 1e-12)[0][0])
+        hh.wages0_q[idx] = 20000.0
+        hh.deposits[idx] = 50000.0
+        hh.revolving_loans[idx] = 0.0
+        hh.housing_escrow[idx] = 30000.0
+        hh.mortgage_loans[idx] = 10000.0
+        hh.mort_rate_q[idx] = float(params["mortgage_fixed_rate_q"])
+        hh.mort_term_q[idx] = float(params["mortgage_term_quarters"])
+        hh.mort_age_q[idx] = float(params["mortgage_term_quarters"]) - 2.0
+        hh.mort_orig_principal[idx] = 10000.0
+        hh.mort_payment_sched_q[idx] = float(
+            payment_from_orig_principal(
+                np.asarray([10000.0], dtype=float),
+                float(params["mortgage_fixed_rate_q"]),
+                float(params["mortgage_term_quarters"]),
+            )[0]
+        )
+        hh.mort_t0[idx] = -1
+        sim._invalidate_mortgage_contract_state()
+
+        sim.step()
+
+        self.assertGreater(float(np.asarray(hh.mortgage_loans, dtype=float)[idx]), 1e-9)
+        self.assertAlmostEqual(
+            float(np.asarray(hh.mort_age_q, dtype=float)[idx]),
+            float(params["mortgage_term_quarters"]) - 1.0,
+            places=7,
+        )
+        self.assertGreater(float(np.asarray(hh.mort_payment_sched_q, dtype=float)[idx]), 0.0)
+
     def test_newly_issued_mortgages_start_index_at_issue_date(self):
         cfg = make_cfg()
         params = cfg["parameters"]
         params["mortgage_turnover_enabled"] = True
+        params["mortgage_maturity_roll_enabled"] = True
         params["mortgage_turnover_target_payment_floor_share"] = 1.0
         params["mortgage_turnover_dti_cap"] = 5.0
         params["mortgage_turnover_income_mult_cap"] = 20.0

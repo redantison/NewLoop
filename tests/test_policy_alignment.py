@@ -83,6 +83,58 @@ class PolicyAlignmentTests(unittest.TestCase):
         self.assertFalse(_startup_reset_deposits_enabled(sim))
         self.assertAlmostEqual(float(_startup_deposit_blend(sim)), 0.0, places=9)
 
+    def test_old_loop_consumption_targets_follow_permanent_income(self):
+        cfg = make_cfg()
+        params = cfg["parameters"]
+        params["economic_regime"] = "OldLoop"
+        params["old_loop_perm_income_update_rate_q"] = 1.0
+        params["old_loop_transitory_mpc_scale"] = 0.0
+        params["old_loop_consumption_kappa_by_wage_pct"] = ((100.0, 0.5),)
+
+        sim = NewLoop(cfg)
+        assert sim.hh is not None
+        hh = sim.hh
+        n = hh.n
+        self.assertGreater(n, 0)
+
+        hh.base_real_cons_q = np.full(n, 5000.0, dtype=float)
+        hh.prev_perm_income = np.full(n, 200.0, dtype=float)
+
+        targets = sim._household_consumption_targets(
+            y_guess=np.full(n, 200.0, dtype=float),
+            dep0=np.zeros(n, dtype=float),
+            base_real=hh.base_real_cons_q,
+            mpc=hh.mpc_q,
+            liquid_buffer_months_target=hh.liquid_buffer_months_target,
+            baseline_wages_i=hh.wages0_q,
+            p_cons=1.0,
+            rev_interest_nom=np.zeros(n, dtype=float),
+            mort_payment_nom=np.zeros(n, dtype=float),
+            renter_rent_q=np.zeros(n, dtype=float),
+        )
+
+        c_real_core = np.asarray(targets["c_real_core"], dtype=float)
+        self.assertAlmostEqual(float(np.mean(c_real_core)), 100.0, places=6)
+        self.assertLess(float(np.mean(c_real_core)), 500.0)
+
+    def test_old_loop_step_updates_smoothed_permanent_income(self):
+        cfg = make_cfg()
+        params = cfg["parameters"]
+        params["economic_regime"] = "OldLoop"
+        params["old_loop_perm_income_update_rate_q"] = 0.5
+
+        sim = NewLoop(cfg)
+        assert sim.hh is not None
+        hh = sim.hh
+        n = hh.n
+        hh.prev_perm_income = np.zeros(n, dtype=float)
+        hh.prev_income = np.zeros(n, dtype=float)
+
+        sim.step()
+
+        expected_perm = 0.5 * np.maximum(0.0, np.asarray(hh.prev_income, dtype=float))
+        self.assertTrue(np.allclose(np.asarray(hh.prev_perm_income, dtype=float), expected_perm, atol=1e-9))
+
     def test_newloop_keeps_startup_deposit_reset_behavior_by_default(self):
         cfg = make_cfg()
         sim = NewLoop(cfg)
@@ -661,6 +713,41 @@ class PolicyAlignmentTests(unittest.TestCase):
         assert diag_fresh is not None
         assert diag_reuse is not None
         self.assert_nested_close(diag_fresh, diag_reuse)
+
+    def test_run_rows_include_household_shortfall_components(self):
+        cfg = make_cfg()
+        run = run_simulation(n_quarters=1, cfg=cfg)
+        self.assertTrue(run.rows)
+        row = run.rows[0]
+        for key in (
+            "hh_cash_income_per_h",
+            "hh_core_consumption_target_per_h",
+            "hh_desired_consumption_per_h",
+            "hh_realized_consumption_per_h",
+            "hh_mortgage_req_per_h",
+            "hh_actual_mortgage_payment_per_h",
+            "hh_rev_interest_per_h",
+            "hh_rent_per_h",
+            "hh_income_tax_cash_per_h",
+            "hh_mortgage_bridge_to_revolving_per_h",
+            "hh_overdraft_to_revolving_per_h",
+            "hh_mortgage_unpaid_shortfall_per_h",
+            "mortgagor_active_count",
+            "mortgagor_gross_cash_income_per_active",
+            "mortgagor_disp_pre_debt_per_active",
+            "mortgagor_income_tax_per_active",
+            "mortgagor_rev_interest_per_active",
+            "mortgagor_required_mortgage_per_active",
+            "mortgagor_actual_mortgage_per_active",
+            "mortgagor_mortgage_shortfall_per_active",
+            "mortgagor_revolving_bridge_per_active",
+            "mortgagor_mortgage_balance_per_active",
+            "mortgagor_revolving_balance_per_active",
+            "mortgage_maturity_roll_candidate_count",
+            "mortgage_maturity_roll_eligible_count",
+            "mortgage_maturity_roll_count",
+        ):
+            self.assertIn(key, row)
 
     def test_uis_starts_at_zero_and_anchors_from_q0_wages(self):
         cfg = make_cfg()

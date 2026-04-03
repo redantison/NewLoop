@@ -21,6 +21,8 @@ from .plotting import (
     plot_fund_inflows,
     plot_income_distribution_by_group,
     plot_income_distribution_dual,
+    plot_mortgagor_distress,
+    plot_household_shortfall_sources,
     plot_mortgage_stock_over_time,
     plot_metric_lines,
     plot_wealth_distributions_full_zoom,
@@ -114,7 +116,9 @@ DECIMAL_COLUMNS = {
 }
 
 DISPLAY_VALUE_MODES: tuple[str, str] = ("nominal", "real")
-CONTROL_DEFAULTS_VERSION = 14
+CONTROL_DEFAULTS_VERSION = 15
+LOOP_MODE_SELECT_KEY = "run__economic_regime_select"
+LOOP_MODE_PLACEHOLDER = "(Select loop mode)"
 UBI_PERCENTILE_PARAM_KEY = "param__ubi_target_percentile"
 UBI_PERCENTILE_UI_KEY = "ui__ubi_target_percentile"
 MORTGAGE_RATE_PARAM_PATH: tuple[str, ...] = ("mortgage_fixed_rate_q",)
@@ -386,6 +390,7 @@ def _apply_control_defaults(st: Any, base_params: Dict[str, Any]) -> None:
         elif tuple(control.path) == MORTGAGE_TERM_PARAM_PATH and default_value is not None:
             default_value = max(1, int(round(float(default_value) / 4.0)))
         st.session_state[key] = default_value
+    st.session_state[LOOP_MODE_SELECT_KEY] = LOOP_MODE_PLACEHOLDER
     st.session_state["run__quarters"] = RUN_DEFAULT_QUARTERS
     raw_mode = str(base_params.get("dashboard_value_mode", "nominal")).strip().lower()
     st.session_state["view__value_mode"] = "real" if raw_mode in {"price_normalized", "price-normalized", "real"} else "nominal"
@@ -408,6 +413,8 @@ def _ensure_control_defaults(st: Any, base_params: Dict[str, Any]) -> None:
             default_value = max(1, int(round(float(default_value) / 4.0)))
         if key not in st.session_state or st.session_state.get(key) is None:
             st.session_state[key] = default_value
+    if LOOP_MODE_SELECT_KEY not in st.session_state:
+        st.session_state[LOOP_MODE_SELECT_KEY] = LOOP_MODE_PLACEHOLDER
     if "run__quarters" not in st.session_state:
         st.session_state["run__quarters"] = RUN_DEFAULT_QUARTERS
     if "view__value_mode" not in st.session_state:
@@ -430,6 +437,9 @@ def _coerce_value(raw: Any, kind: str) -> Any:
 def _build_cfg_from_state(st: Any, base_cfg: Dict[str, Any]) -> Dict[str, Any]:
     cfg = copy.deepcopy(base_cfg)
     params = cfg.get("parameters", {})
+    selected_regime = str(st.session_state.get(LOOP_MODE_SELECT_KEY, "")).strip()
+    if selected_regime in {"NewLoop", "OldLoop"}:
+        st.session_state["param__economic_regime"] = selected_regime
     for control in PARAMETER_CONTROLS:
         key = control_widget_key(control)
         raw = st.session_state.get(key, resolve_control_default(control, params))
@@ -595,6 +605,13 @@ def _render_parameter_controls(
     def _request_reset_defaults() -> None:
         st.session_state["app__reset_requested"] = True
         st.session_state["app__force_stale_after_reset"] = True
+        st.session_state["rows"] = []
+        st.session_state["population_distributions"] = {}
+        st.session_state["startup_diagnostics"] = {}
+        st.session_state["baseline_calibration"] = {}
+        st.session_state["support_debug"] = {}
+        st.session_state["last_run_cfg_json"] = ""
+        st.session_state["last_run_quarters"] = 0
 
     def _render_control(control: Any) -> None:
         key = control_widget_key(control)
@@ -634,6 +651,14 @@ def _render_parameter_controls(
         col_run, col_reset = st.columns(2)
         run_clicked = col_run.button("Run Model", type="primary")
         reset_clicked = col_reset.button("Reset", on_click=_request_reset_defaults)
+        loop_mode = st.selectbox(
+            "Loop Type",
+            options=(LOOP_MODE_PLACEHOLDER, "NewLoop", "OldLoop"),
+            key=LOOP_MODE_SELECT_KEY,
+            help="Choose the loop mode before running the model.",
+        )
+        if loop_mode in {"NewLoop", "OldLoop"}:
+            st.session_state["param__economic_regime"] = loop_mode
 
         quarters = st.slider(
             "Quarters",
@@ -651,7 +676,7 @@ def _render_parameter_controls(
             format_func=lambda m: "Nominal" if m == "nominal" else "Real (Price-normalized)",
             help="Controls how monetary values are displayed in charts/tables. Simulation mechanics are unchanged.",
         )
-        if str(st.session_state.get("param__economic_regime", "NewLoop")).strip() == "OldLoop":
+        if str(st.session_state.get(LOOP_MODE_SELECT_KEY, "")).strip() == "OldLoop":
             st.caption(
                 "Old Loop forces trust, income support, mortgage assistance, VAT/prebate, "
                 "and GOV surplus rebate off, keeps mortgage turnover on, and uses the Old Loop tax regime."
@@ -724,6 +749,8 @@ def _render_parameter_controls(
                                 _render_control(control)
                 else:
                     for control in controls:
+                        if tuple(control.path) == ("economic_regime",):
+                            continue
                         _render_control(control)
     return run_clicked, reset_clicked, int(quarters), progress_bar
 
@@ -765,7 +792,7 @@ def main() -> None:
 
     st.set_page_config(page_title="NewLoop", layout="wide")
     _inject_selectbox_chevron_fallback(st)
-    st.title("NewLoop 2.3")
+    st.title("NewLoop 2.4")
     st.caption("Interactive simulation with parameterized runs and reusable plotting.")
 
     base_cfg = get_default_config()
@@ -799,7 +826,9 @@ def main() -> None:
 
     current_cfg = _build_cfg_from_state(st, base_cfg)
     current_cfg_json = _cfg_json(current_cfg)
-    should_run = run_clicked or (not st.session_state["rows"])
+    selected_regime = str(st.session_state.get(LOOP_MODE_SELECT_KEY, "")).strip()
+    has_selected_regime = selected_regime in {"NewLoop", "OldLoop"}
+    should_run = run_clicked and has_selected_regime
     if should_run:
         def _update_run_progress(_stage: str, completed: int, total: int) -> None:
             total_q = max(0, int(total))
@@ -858,6 +887,8 @@ def main() -> None:
     selected_metrics = _render_metric_selector(st, metric_map)
 
     if not rows:
+        if not has_selected_regime:
+            st.info("Select a loop mode under `Run Model`, then click `Run Model` to start the simulation.")
         return
 
     line_metrics = selected_metrics or [m for m in DEFAULT_LINE_METRICS if m not in {"gini_market", "gini_disp", "gini_wealth"}]
@@ -1046,6 +1077,20 @@ def main() -> None:
         _mark_figure_stale(row_fig)
     st.pyplot(row_fig, clear_figure=False)
     plt.close(row_fig)
+
+    shortfall_fig, shortfall_axes = plt.subplots(1, 2, figsize=(13, 4.5), constrained_layout=True)
+    plot_household_shortfall_sources(rows, axes=shortfall_axes)
+    if config_stale:
+        _mark_figure_stale(shortfall_fig)
+    st.pyplot(shortfall_fig, clear_figure=False)
+    plt.close(shortfall_fig)
+
+    mortgagor_fig, mortgagor_axes = plt.subplots(1, 2, figsize=(13, 4.5), constrained_layout=True)
+    plot_mortgagor_distress(rows, axes=mortgagor_axes)
+    if config_stale:
+        _mark_figure_stale(mortgagor_fig)
+    st.pyplot(mortgagor_fig, clear_figure=False)
+    plt.close(mortgagor_fig)
 
     if pop_dist is not None:
         before = pop_dist.get("before", {})

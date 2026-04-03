@@ -395,12 +395,16 @@ def _quarter_state_diagnostics(
     disposable_income_i = np.asarray(snapshot["disposable_income_i"], dtype=float)
     debt_service_i = np.asarray(snapshot["debt_service_i"], dtype=float)
     base_cons_gap_i = np.asarray(snapshot["base_consumption_gap_i"], dtype=float)
+    base_cons_nom_i = np.asarray(snapshot.get("base_consumption_nom_i", []), dtype=float)
     p_cons = max(float(snapshot["p_cons"]), 1e-9)
     base_real_i = np.asarray(hh.base_real_cons_q, dtype=float)
     mpc_i = np.asarray(hh.mpc_q, dtype=float)
     disp_income_real_i = disposable_income_i / p_cons
     mpc_income_real_i = mpc_i * disp_income_real_i
-    core_real_i = np.maximum(0.0, base_real_i + mpc_income_real_i)
+    if base_cons_nom_i.shape == base_real_i.shape:
+        core_real_i = np.maximum(0.0, base_cons_nom_i / p_cons)
+    else:
+        core_real_i = np.maximum(0.0, base_real_i + mpc_income_real_i)
 
     buffer_gap_i = deposits_i - target_buffer_i
     deposit_to_target_i = np.divide(
@@ -564,10 +568,28 @@ def _startup_solver_snapshot(
     else:
         debt_service_i = np.maximum(0.0, interest_hh_i) if interest_hh_i.shape == wages_i.shape else raw_interest_i
 
-    y_real_i = disposable_income_i / p_cons
-    c_real_core_i = np.maximum(0.0, base_real_i + (mpc_i * y_real_i))
-    target_buffer_i = (target_months_i / 3.0) * (p_cons * c_real_core_i)
-    base_consumption_nom_i = p_cons * np.maximum(0.0, base_real_i)
+    renter_rent_q = np.maximum(0.0, np.asarray(hh.renter_rent_q, dtype=float))
+    if renter_rent_q.shape != wages_i.shape:
+        renter_rent_q = np.zeros_like(wages_i, dtype=float)
+    mort_payment_sched_q = np.maximum(0.0, np.asarray(hh.mort_payment_sched_q, dtype=float))
+    if mort_payment_sched_q.shape != wages_i.shape:
+        mort_payment_sched_q = np.zeros_like(wages_i, dtype=float)
+
+    consumption_targets = sim._household_consumption_targets(
+        y_guess=disposable_income_i,
+        dep0=np.asarray(hh.deposits, dtype=float),
+        base_real=base_real_i,
+        mpc=mpc_i,
+        liquid_buffer_months_target=target_months_i,
+        baseline_wages_i=wages_i,
+        p_cons=p_cons,
+        rev_interest_nom=np.maximum(0.0, rev_interest_i),
+        mort_payment_nom=np.maximum(0.0, mort_pay_req_i if mort_pay_req_i.shape == wages_i.shape else mort_payment_sched_q),
+        renter_rent_q=renter_rent_q,
+    )
+    c_real_core_i = np.asarray(consumption_targets["c_real_core"], dtype=float)
+    target_buffer_i = np.asarray(consumption_targets["target_buffer_nom"], dtype=float)
+    base_consumption_nom_i = np.asarray(consumption_targets["c_hh_nom_income"], dtype=float)
     base_consumption_gap_i = disposable_income_i - base_consumption_nom_i
 
     return {
@@ -639,6 +661,17 @@ def _apply_startup_income_buffer_reset(
         last_snapshot = snapshot
 
         hh.prev_income = np.asarray(snapshot["disposable_income_i"], dtype=float).astype(float, copy=True)
+        if hasattr(hh, "prev_perm_income"):
+            prev_perm_income = (
+                np.asarray(hh.prev_perm_income, dtype=float)
+                if np.asarray(hh.prev_perm_income, dtype=float).shape == hh.prev_income.shape
+                else np.maximum(0.0, hh.prev_income)
+            )
+            lambda_q = sim._old_loop_perm_income_update_rate_q()
+            hh.prev_perm_income = (
+                ((1.0 - lambda_q) * np.maximum(0.0, prev_perm_income))
+                + (lambda_q * np.maximum(0.0, hh.prev_income))
+            ).astype(float, copy=True)
         if reset_deposits:
             target_i = np.maximum(0.0, np.asarray(snapshot["target_buffer_i"], dtype=float))
             hh.deposits = target_i.astype(float, copy=True)

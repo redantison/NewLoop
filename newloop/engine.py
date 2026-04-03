@@ -174,6 +174,7 @@ class NewLoop:
                 overrides = {}
             if not isinstance(overrides, dict):
                 raise TypeError("population_config must be a dict of PopulationConfig overrides")
+            overrides = dict(overrides)
 
             cfg = pop_mod.PopulationConfig(**overrides)
             pop = pop_mod.generate_population(cfg)
@@ -1080,6 +1081,123 @@ class NewLoop:
 
     def _sector_hh_demand_share_fa(self) -> float:
         return max(0.0, min(1.0, float(self.params.get("hh_demand_info_share", 0.5))))
+
+    def _old_loop_perm_income_update_rate_q(self) -> float:
+        return max(0.0, min(1.0, float(self.params.get("old_loop_perm_income_update_rate_q", 0.30))))
+
+    def _old_loop_transitory_mpc_scale(self) -> float:
+        return max(0.0, float(self.params.get("old_loop_transitory_mpc_scale", 1.0)))
+
+    def _assign_linear_percentile_rank(self, signal: np.ndarray, schedule: Any, fallback: float) -> np.ndarray:
+        values = np.asarray(signal, dtype=float)
+        if values.size <= 0:
+            return np.asarray([], dtype=float)
+
+        anchors: List[tuple[float, float]] = []
+        for item in schedule or ():
+            try:
+                pct, val = item
+                anchors.append((float(pct), float(val)))
+            except Exception:
+                continue
+        if not anchors:
+            return np.full(values.shape[0], float(fallback), dtype=float)
+
+        anchors = sorted(anchors, key=lambda item: item[0])
+        xp = np.asarray([max(0.0, min(100.0, pct)) for pct, _ in anchors], dtype=float)
+        fp = np.asarray([val for _, val in anchors], dtype=float)
+        if values.shape[0] <= 1:
+            return np.full(values.shape[0], float(fp[-1]), dtype=float)
+
+        order = np.argsort(values, kind="stable")
+        rank = np.empty(values.shape[0], dtype=float)
+        rank[order] = np.arange(values.shape[0], dtype=float)
+        pct_rank = 100.0 * rank / float(max(1, values.shape[0] - 1))
+        return np.interp(pct_rank, xp, fp, left=float(fp[0]), right=float(fp[-1])).astype(float, copy=False)
+
+    def _old_loop_consumption_kappa_i(self, baseline_wages_i: np.ndarray) -> np.ndarray:
+        schedule = self.params.get("old_loop_consumption_kappa_by_wage_pct", ())
+        return np.maximum(
+            0.0,
+            self._assign_linear_percentile_rank(
+                np.asarray(baseline_wages_i, dtype=float),
+                schedule,
+                fallback=0.85,
+            ),
+        )
+
+    def _household_consumption_targets(
+        self,
+        *,
+        y_guess: np.ndarray,
+        dep0: np.ndarray,
+        base_real: np.ndarray,
+        mpc: np.ndarray,
+        liquid_buffer_months_target: np.ndarray,
+        baseline_wages_i: np.ndarray,
+        p_cons: float,
+        rev_interest_nom: np.ndarray,
+        mort_payment_nom: np.ndarray,
+        renter_rent_q: np.ndarray,
+    ) -> Dict[str, np.ndarray]:
+        regime = normalize_economic_regime_name(self.params.get("economic_regime", "NewLoop"))
+        spend_excess_rate = max(0.0, min(1.0, float(self.params.get("hh_buffer_spend_excess_rate_q", 0.10))))
+        conserve_shortfall_rate = max(0.0, min(1.0, float(self.params.get("hh_buffer_shortfall_conserve_rate_q", 0.35))))
+
+        y_guess_arr = np.asarray(y_guess, dtype=float)
+        dep0_arr = np.asarray(dep0, dtype=float)
+        base_real_arr = np.asarray(base_real, dtype=float)
+        mpc_arr = np.asarray(mpc, dtype=float)
+        target_months_arr = np.asarray(liquid_buffer_months_target, dtype=float)
+        rev_interest_arr = np.maximum(0.0, np.asarray(rev_interest_nom, dtype=float))
+        mort_payment_arr = np.maximum(0.0, np.asarray(mort_payment_nom, dtype=float))
+        renter_rent_arr = np.maximum(0.0, np.asarray(renter_rent_q, dtype=float))
+
+        if regime == "OldLoop":
+            hh = self.hh
+            prev_perm_income = (
+                np.asarray(hh.prev_perm_income, dtype=float)
+                if (hh is not None and hh.prev_perm_income.shape[0] == y_guess_arr.shape[0]) else np.maximum(0.0, y_guess_arr)
+            )
+            lambda_q = self._old_loop_perm_income_update_rate_q()
+            transitory_scale = self._old_loop_transitory_mpc_scale()
+            y_perm_nom = ((1.0 - lambda_q) * np.maximum(0.0, prev_perm_income)) + (lambda_q * np.maximum(0.0, y_guess_arr))
+            kappa_i = self._old_loop_consumption_kappa_i(np.asarray(baseline_wages_i, dtype=float))
+            c_real_core = np.maximum(0.0, (kappa_i * y_perm_nom) / max(p_cons, 1e-9))
+            transitory_nom = np.maximum(0.0, y_guess_arr - y_perm_nom)
+            c_real_transitory = np.maximum(0.0, (transitory_scale * mpc_arr * transitory_nom) / max(p_cons, 1e-9))
+            c_hh_nom_income = p_cons * (c_real_core + c_real_transitory)
+            debt_service_nom = rev_interest_arr + mort_payment_arr
+            target_buffer_nom = (target_months_arr / 3.0) * (
+                (p_cons * c_real_core)
+                + debt_service_nom
+                + renter_rent_arr
+            )
+        else:
+            y_real = y_guess_arr / max(p_cons, 1e-9)
+            c_real_core = np.maximum(0.0, base_real_arr + (mpc_arr * y_real))
+            c_real_transitory = np.zeros_like(c_real_core, dtype=float)
+            y_perm_nom = np.maximum(0.0, y_guess_arr)
+            c_hh_nom_income = p_cons * c_real_core
+            target_buffer_nom = (target_months_arr / 3.0) * c_hh_nom_income
+
+        buffer_gap_nom = dep0_arr - target_buffer_nom
+        c_hh_nom_des = (
+            c_hh_nom_income
+            + (spend_excess_rate * np.maximum(0.0, buffer_gap_nom))
+            - (conserve_shortfall_rate * np.maximum(0.0, -buffer_gap_nom))
+        )
+        c_hh_nom_des = np.maximum(0.0, c_hh_nom_des)
+
+        return {
+            "c_real_core": c_real_core.astype(float, copy=False),
+            "c_real_transitory": c_real_transitory.astype(float, copy=False),
+            "c_hh_nom_income": np.asarray(c_hh_nom_income, dtype=float),
+            "target_buffer_nom": np.asarray(target_buffer_nom, dtype=float),
+            "buffer_gap_nom": np.asarray(buffer_gap_nom, dtype=float),
+            "c_hh_nom_des": np.asarray(c_hh_nom_des, dtype=float),
+            "perm_income_nom": np.asarray(y_perm_nom, dtype=float),
+        }
 
     def _sector_supplier_share_info(self, investor_id: str) -> float:
         if investor_id == "FA":
@@ -2128,6 +2246,9 @@ class NewLoop:
         renter_rent_q = np.maximum(0.0, _as_np(hh.renter_rent_q, dtype=float))
         if renter_rent_q.shape[0] != hh.n:
             renter_rent_q = np.zeros(hh.n, dtype=float)
+        mort_payment_sched_q = np.maximum(0.0, _as_np(hh.mort_payment_sched_q, dtype=float))
+        if mort_payment_sched_q.shape[0] != hh.n:
+            mort_payment_sched_q = np.zeros(hh.n, dtype=float)
         liquid_buffer_months_target = hh.liquid_buffer_months_target
         if liquid_buffer_months_target.shape[0] != hh.n:
             liquid_buffer_months_target = np.zeros(hh.n, dtype=float)
@@ -2167,30 +2288,29 @@ class NewLoop:
         div_commit_bk = self._lagged_dividend_commit_nom("BANK")
         div_cash_buffer_share = max(0.0, min(1.0, float(self.params.get("sector_dividend_cash_buffer_q", 0.0))))
         div_house_total_est = 0.0
-        spend_excess_rate = float(self.params.get("hh_buffer_spend_excess_rate_q", 0.10))
-        conserve_shortfall_rate = float(self.params.get("hh_buffer_shortfall_conserve_rate_q", 0.35))
-        spend_excess_rate = max(0.0, min(1.0, spend_excess_rate))
-        conserve_shortfall_rate = max(0.0, min(1.0, conserve_shortfall_rate))
 
         max_delta = float("inf")
         for iter_idx in range(1, max_iter + 1):
             # 1) Household consumption (nominal), vectorized
-            # Consumption decision uses the consumer price (includes VAT wedge)
-            y_real = y_guess / P_cons
-
-            # Desired real consumption: an income-driven core moderated by a precautionary
-            # liquid-buffer rule. Households spend only a fraction of buffer excess and
-            # begin conserving before the hard cash constraint binds.
-            c_real_core = np.maximum(0.0, base_real + mpc * y_real)
-            c_hh_nom_core = P_cons * c_real_core
-            target_buffer_nom = (liquid_buffer_months_target / 3.0) * c_hh_nom_core
-            buffer_gap_nom = dep0 - target_buffer_nom
-            c_hh_nom_des = (
-                c_hh_nom_core
-                + (spend_excess_rate * np.maximum(0.0, buffer_gap_nom))
-                - (conserve_shortfall_rate * np.maximum(0.0, -buffer_gap_nom))
+            rev_interest_pre = np.maximum(0.0, rev * rL)
+            consumption_targets = self._household_consumption_targets(
+                y_guess=y_guess,
+                dep0=dep0,
+                base_real=base_real,
+                mpc=mpc,
+                liquid_buffer_months_target=liquid_buffer_months_target,
+                baseline_wages_i=w0,
+                p_cons=P_cons,
+                rev_interest_nom=rev_interest_pre,
+                mort_payment_nom=mort_payment_sched_q,
+                renter_rent_q=renter_rent_q,
             )
-            c_hh_nom_des = np.maximum(0.0, c_hh_nom_des)
+            c_real_core = _as_np(consumption_targets["c_real_core"], dtype=float)
+            c_hh_nom_core = _as_np(consumption_targets["c_hh_nom_income"], dtype=float)
+            target_buffer_nom = _as_np(consumption_targets["target_buffer_nom"], dtype=float)
+            buffer_gap_nom = _as_np(consumption_targets["buffer_gap_nom"], dtype=float)
+            c_hh_nom_des = _as_np(consumption_targets["c_hh_nom_des"], dtype=float)
+            perm_income_nom = _as_np(consumption_targets["perm_income_nom"], dtype=float)
 
             # Cash-in-advance constraint (no new borrowing for consumption inside the solver):
             # available = beginning deposits + current-quarter disposable income guess.
@@ -2488,6 +2608,10 @@ class NewLoop:
                     "wages_i": wages_i,
                     "div_i": div_i,
                     "y": y_new,
+                    "perm_income_nom": perm_income_nom,
+                    "c_hh_nom_income_total": float(np.sum(np.maximum(0.0, c_hh_nom_core))),
+                    "c_hh_nom_des_total": float(np.sum(np.maximum(0.0, c_hh_nom_des))),
+                    "c_hh_nom_budgeted_total": float(np.sum(np.maximum(0.0, c_hh_nom_budgeted))),
                     "buffer_target_total": float(target_buffer_nom.sum()),
                     "buffer_gap_total": float(buffer_gap_nom.sum()),
                     "buffer_gap_positive_total": float(np.maximum(0.0, buffer_gap_nom).sum()),
@@ -2914,6 +3038,7 @@ class NewLoop:
         self.state["mort_overdraft_due_to_payment_total"] = float(np.sum(mort_overdraft_need))
         self.state["mort_overdraft_due_to_payment_count"] = float(np.sum(mort_overdraft_need > 1e-12))
         self.state["mort_revolving_bridge_total"] = float(mort_bridge_total)
+        self.state["mort_actual_payment_total"] = float(np.sum(np.maximum(0.0, actual_mort_payment_i)))
         self.state["mort_unpaid_cash_shortfall_total"] = float(np.sum(mort_unpaid_cash_shortfall_i))
 
         mort_int_paid_total = float(np.sum(np.maximum(0.0, actual_mort_interest_paid_i)))
@@ -3128,6 +3253,7 @@ class NewLoop:
         rL = float(self.state.get("policy_rate_q", self.params.get("loan_rate_per_quarter", 0.0)))
         rev_rollover_share = float(self.params.get("revolving_rollover_share", 0.0))
         mort_turnover_enabled = bool(self.params.get("mortgage_turnover_enabled", False))
+        mort_maturity_roll_enabled = bool(self.params.get("mortgage_maturity_roll_enabled", True))
         mort_turnover_active_min_remaining_q = float(self.params.get("mortgage_turnover_active_min_remaining_q", 3.0))
         mort_turnover_target_payment_floor_share = float(
             self.params.get("mortgage_turnover_target_payment_floor_share", 1.0)
@@ -3226,6 +3352,10 @@ class NewLoop:
             owner_mask_i = (~active_mort_i) & (housing_value_i > 1e-12)
             renter_mask_i = (~active_mort_i) & (housing_value_i <= 1e-12)
             mort_turnover_candidate_i = active_mort_i & (remaining_q_i > mort_turnover_active_min_remaining_q)
+            # Only refinance residual principal after the final scheduled payment
+            # has already been attempted. Loans with one regular payment left
+            # should not roll early.
+            mort_maturity_roll_candidate_i = active_mort_i & (remaining_q_i <= 1e-12)
             owner_turnover_candidate_i = owner_mask_i
             mort_turnover_event_i = mort_turnover_candidate_i & (self.rng.random(hh.n) < housing_turnover_rate_mortgagor_q)
             owner_turnover_event_i = owner_turnover_candidate_i & (self.rng.random(hh.n) < housing_turnover_rate_owner_q)
@@ -3260,6 +3390,8 @@ class NewLoop:
                 income_limit_principal_i,
                 desired_payment_i / max(1e-9, unit_payment_q),
             )
+            desired_principal_i = np.maximum(0.0, desired_principal_i)
+            maturity_roll_payment_i = new_schedule.payment_from_orig_principal(np.maximum(0.0, mort))
             min_desired_payment_i = (0.25 * underwriting_income_annual_i) * max(0.0, unit_payment_q)
 
             allocation = np.zeros_like(mort, dtype=float)
@@ -3270,6 +3402,10 @@ class NewLoop:
             self.state["mortgage_turnover_payment_gap_total"] = 0.0
             self.state["mortgage_turnover_payment_gap_remaining_total"] = 0.0
             self.state["mortgage_turnover_active_count"] = float(np.sum(mort_turnover_candidate_i) + np.sum(owner_turnover_candidate_i))
+            self.state["mortgage_maturity_roll_candidate_count"] = float(np.sum(mort_maturity_roll_candidate_i))
+            self.state["mortgage_maturity_roll_eligible_count"] = 0.0
+            self.state["mortgage_maturity_roll_count"] = 0.0
+            self.state["mortgage_maturity_roll_total"] = 0.0
             nonmort_mask = ~active_mort_i
             base_new_pool = turnover_buyer_i & (underwriting_income_q_i >= mort_turnover_min_wage_q)
             self.state["mortgage_turnover_nonmort_count"] = float(np.sum(nonmort_mask))
@@ -3306,6 +3442,19 @@ class NewLoop:
                     allocation[idx] = desired_principal
                     acquired_house_value[idx] = housing_value_i[idx]
 
+            maturity_roll_eligible_i = np.zeros(hh.n, dtype=bool)
+            if mort_maturity_roll_enabled:
+                maturity_roll_eligible_i = (
+                    mort_maturity_roll_candidate_i
+                    & (underwriting_income_q_i >= mort_turnover_min_wage_q)
+                    & (np.maximum(0.0, mort) <= (income_limit_principal_i + 1e-9))
+                    & (maturity_roll_payment_i <= (dti_room_nom + 1e-9))
+                )
+                if np.any(maturity_roll_eligible_i):
+                    allocation[maturity_roll_eligible_i] = np.maximum(0.0, mort[maturity_roll_eligible_i])
+                    acquired_house_value[maturity_roll_eligible_i] = housing_value_i[maturity_roll_eligible_i]
+                self.state["mortgage_maturity_roll_eligible_count"] = float(np.sum(maturity_roll_eligible_i))
+
             turnover_exit_mask = turnover_event_i & ~(allocation > 1e-9)
             supply_idx = np.where(turnover_exit_mask & (housing_value_i > 1e-9))[0]
             supply_values = housing_value_i[supply_idx].astype(float) if supply_idx.size else np.asarray([], dtype=float)
@@ -3338,7 +3487,7 @@ class NewLoop:
                             min_desired_payment = 0.25 * float(underwriting_income_annual_i[renter_idx]) * max(0.0, unit_payment_q)
                             if desired_payment <= 1e-9 or desired_payment < max(1e-9, min_desired_payment):
                                 continue
-                            principal = min(principal_cap, desired_payment / max(1e-9, unit_payment_q))
+                            principal = max(0.0, min(principal_cap, desired_payment / max(1e-9, unit_payment_q)))
                             downpayment = max(0.0, house_value - principal)
                             if float(deposits[renter_idx]) + 1e-9 < downpayment:
                                 continue
@@ -3376,7 +3525,9 @@ class NewLoop:
                     - downpayment_i
                 )
 
+            renewed_maturity_mask = maturity_roll_eligible_i & (allocation > 1e-9)
             closed_sale_mask = self_turnover_mask | matched_seller_mask
+            retired_old_mort_mask = closed_sale_mask | renewed_maturity_mask
 
             if np.any(matched_seller_mask):
                 exit_idx = np.where(matched_seller_mask)[0]
@@ -3385,17 +3536,17 @@ class NewLoop:
                 hh.housing_escrow[exit_idx] = 0.0
                 renter_rent_q[exit_idx] = np.maximum(0.0, sold_house_payments * rent_mult_median)
 
-            old_mort_turnover_total = float(np.sum(np.maximum(0.0, mort[closed_sale_mask])))
+            old_mort_turnover_total = float(np.sum(np.maximum(0.0, mort[retired_old_mort_mask])))
             if old_mort_turnover_total > 0.0:
                 self.nodes["BANK"].add("loan_assets", -old_mort_turnover_total)
-            if np.any(closed_sale_mask):
-                mort[closed_sale_mask] = 0.0
-                hh.mort_rate_q[closed_sale_mask] = 0.0
-                hh.mort_term_q[closed_sale_mask] = 0.0
-                hh.mort_age_q[closed_sale_mask] = 0.0
-                hh.mort_payment_sched_q[closed_sale_mask] = 0.0
-                hh.mort_orig_principal[closed_sale_mask] = 0.0
-                hh.mort_t0[closed_sale_mask] = -1
+            if np.any(retired_old_mort_mask):
+                mort[retired_old_mort_mask] = 0.0
+                hh.mort_rate_q[retired_old_mort_mask] = 0.0
+                hh.mort_term_q[retired_old_mort_mask] = 0.0
+                hh.mort_age_q[retired_old_mort_mask] = 0.0
+                hh.mort_payment_sched_q[retired_old_mort_mask] = 0.0
+                hh.mort_orig_principal[retired_old_mort_mask] = 0.0
+                hh.mort_t0[retired_old_mort_mask] = -1
 
             mort_turnover_total = float(np.sum(np.maximum(0.0, allocation)))
             if mort_turnover_total > 0.0:
@@ -3413,6 +3564,10 @@ class NewLoop:
                 self.nodes["BANK"].add("loan_assets", mort_turnover_total)
                 self.state["mort_turnover_total"] = float(mort_turnover_total)
                 self.state["mort_turnover_households"] = float(np.sum(allocation > 1e-9))
+                self.state["mortgage_maturity_roll_count"] = float(np.sum(renewed_maturity_mask))
+                self.state["mortgage_maturity_roll_total"] = float(
+                    np.sum(np.maximum(0.0, allocation[renewed_maturity_mask]))
+                )
             turnover_deposit_delta = float(deposits.sum()) - hh_deposits_before_turnover
             if abs(turnover_deposit_delta) > 1e-12:
                 # In the bookkeeping-only housing-finance build, turnover settlement closes
@@ -3464,7 +3619,17 @@ class NewLoop:
         self.nodes["HH"].set("loans", hh_total_loan)
 
         if y_vec.shape[0] == n:
-            hh.prev_income = (y_vec + mort_unpaid_cash_shortfall_i).astype(float, copy=True)
+            realized_disp_i = (y_vec + mort_unpaid_cash_shortfall_i).astype(float, copy=True)
+            hh.prev_income = realized_disp_i
+            prev_perm_income = (
+                np.asarray(hh.prev_perm_income, dtype=float)
+                if hh.prev_perm_income.shape[0] == n else np.maximum(0.0, realized_disp_i)
+            )
+            lambda_q = self._old_loop_perm_income_update_rate_q()
+            hh.prev_perm_income = (
+                ((1.0 - lambda_q) * np.maximum(0.0, prev_perm_income))
+                + (lambda_q * np.maximum(0.0, realized_disp_i))
+            ).astype(float, copy=True)
         hh.prev_uis = float(uis)
         hh.prev_wages_total = float(sol.get("w_total", 0.0))
 
@@ -3557,6 +3722,7 @@ class NewLoop:
     # ---------------------------------------------------------
 
     def step(self) -> None:
+        self.state["mort_actual_payment_total"] = 0.0
         # Set this quarter's policy rate from lagged inflation/DTI observables.
         self._update_policy_rate()
 
@@ -3969,6 +4135,53 @@ class NewLoop:
 
             wages_total = float(solp["w_total"])
             c_total = float(solp["c_total"])
+            hh_cash_income_total = float(
+                np.sum(np.maximum(0.0, _as_np(solp.get("wages_i", []), dtype=float)))
+                + np.sum(np.maximum(0.0, _as_np(solp.get("div_i", []), dtype=float)))
+                + np.sum(np.maximum(0.0, _as_np(solp.get("vat_credit_i", []), dtype=float)))
+                + (float(solp.get("uis", 0.0)) * float(self.hh.n))
+            )
+            hh_core_consumption_target_total = float(solp.get("c_hh_nom_income_total", 0.0))
+            hh_desired_consumption_total = float(solp.get("c_hh_nom_des_total", 0.0))
+            hh_realized_consumption_total = float(np.sum(np.maximum(0.0, _as_np(solp.get("c_hh_nom", []), dtype=float))))
+            hh_mortgage_req_total = float(np.sum(np.maximum(0.0, _as_np(solp.get("mort_pay_req_i", []), dtype=float))))
+            hh_rev_interest_total = float(np.sum(np.maximum(0.0, _as_np(solp.get("rev_interest_i", []), dtype=float))))
+            hh_rent_total = float(np.sum(np.maximum(0.0, _as_np(solp.get("renter_rent_q", []), dtype=float))))
+            hh_income_tax_cash_total = float(np.sum(np.maximum(0.0, _as_np(solp.get("income_tax_i", []), dtype=float))))
+            mort_req_i_row = np.maximum(0.0, _as_np(solp.get("mort_pay_req_i", []), dtype=float))
+            mort_interest_due_i_row = np.maximum(0.0, _as_np(solp.get("mort_interest_due_i", []), dtype=float))
+            mortgagor_active_mask = np.zeros(self.hh.n, dtype=bool)
+            if mort_req_i_row.shape[0] == self.hh.n:
+                mortgagor_active_mask = mort_req_i_row > 1e-12
+            if (not np.any(mortgagor_active_mask)) and (mort_interest_due_i_row.shape[0] == self.hh.n):
+                mortgagor_active_mask = mort_interest_due_i_row > 1e-12
+            mortgagor_active_count = float(np.sum(mortgagor_active_mask))
+            mortgagor_den = max(1.0, mortgagor_active_count)
+            gross_cash_i = (
+                np.maximum(0.0, _as_np(solp.get("wages_i", []), dtype=float))
+                + np.maximum(0.0, _as_np(solp.get("div_i", []), dtype=float))
+                + np.maximum(0.0, _as_np(solp.get("vat_credit_i", []), dtype=float))
+                + float(solp.get("uis", 0.0))
+            )
+            if gross_cash_i.shape[0] != self.hh.n:
+                gross_cash_i = np.zeros(self.hh.n, dtype=float)
+            income_tax_i_row = np.maximum(0.0, _as_np(solp.get("income_tax_i", []), dtype=float))
+            if income_tax_i_row.shape[0] != self.hh.n:
+                income_tax_i_row = np.zeros(self.hh.n, dtype=float)
+            rev_interest_i_row = np.maximum(0.0, _as_np(solp.get("rev_interest_i", []), dtype=float))
+            if rev_interest_i_row.shape[0] != self.hh.n:
+                rev_interest_i_row = np.zeros(self.hh.n, dtype=float)
+            disp_pre_debt_i = np.maximum(0.0, gross_cash_i - income_tax_i_row)
+            mortgagor_gross_cash_income_total = float(np.sum(gross_cash_i[mortgagor_active_mask]))
+            mortgagor_disp_pre_debt_total = float(np.sum(disp_pre_debt_i[mortgagor_active_mask]))
+            mortgagor_income_tax_total = float(np.sum(income_tax_i_row[mortgagor_active_mask]))
+            mortgagor_rev_interest_total = float(np.sum(rev_interest_i_row[mortgagor_active_mask]))
+            mortgagor_req_total = float(np.sum(mort_req_i_row[mortgagor_active_mask])) if mort_req_i_row.shape[0] == self.hh.n else 0.0
+            mortgagor_balance_total = float(np.sum(mort_i[mortgagor_active_mask])) if mort_i.shape[0] == self.hh.n else 0.0
+            mortgagor_revolving_balance_total = float(np.sum(rev_i[mortgagor_active_mask])) if rev_i.shape[0] == self.hh.n else 0.0
+            mort_actual_payment_total = float(self.state.get("mort_actual_payment_total", 0.0))
+            mort_unpaid_shortfall_total = float(self.state.get("mort_unpaid_cash_shortfall_total", 0.0))
+            mort_bridge_total = float(self.state.get("mort_revolving_bridge_total", 0.0))
 
             real_avg_income = float(np.mean(y_vec) / P_now) if y_vec.size else float(((wages_total / float(self.hh.n)) + float(uis)) / P_now)
 
@@ -4072,6 +4285,32 @@ class NewLoop:
                 trust_value_per_h=float(trust_value_total) / float(self.hh.n),
                 wages_total=wages_total,
                 total_consumption=c_total,
+                hh_cash_income_per_h=hh_cash_income_total / float(self.hh.n),
+                hh_core_consumption_target_per_h=hh_core_consumption_target_total / float(self.hh.n),
+                hh_desired_consumption_per_h=hh_desired_consumption_total / float(self.hh.n),
+                hh_realized_consumption_per_h=hh_realized_consumption_total / float(self.hh.n),
+                hh_mortgage_req_per_h=hh_mortgage_req_total / float(self.hh.n),
+                hh_actual_mortgage_payment_per_h=mort_actual_payment_total / float(self.hh.n),
+                hh_rev_interest_per_h=hh_rev_interest_total / float(self.hh.n),
+                hh_rent_per_h=hh_rent_total / float(self.hh.n),
+                hh_income_tax_cash_per_h=hh_income_tax_cash_total / float(self.hh.n),
+                hh_mortgage_bridge_to_revolving_per_h=float(self.state.get("mort_revolving_bridge_total", 0.0)) / float(self.hh.n),
+                hh_overdraft_to_revolving_per_h=float(self.state.get("hh_overdraft_total", 0.0)) / float(self.hh.n),
+                hh_mortgage_unpaid_shortfall_per_h=float(self.state.get("mort_unpaid_cash_shortfall_total", 0.0)) / float(self.hh.n),
+                mortgagor_active_count=mortgagor_active_count,
+                mortgagor_gross_cash_income_per_active=mortgagor_gross_cash_income_total / mortgagor_den,
+                mortgagor_disp_pre_debt_per_active=mortgagor_disp_pre_debt_total / mortgagor_den,
+                mortgagor_income_tax_per_active=mortgagor_income_tax_total / mortgagor_den,
+                mortgagor_rev_interest_per_active=mortgagor_rev_interest_total / mortgagor_den,
+                mortgagor_required_mortgage_per_active=mortgagor_req_total / mortgagor_den,
+                mortgagor_actual_mortgage_per_active=mort_actual_payment_total / mortgagor_den,
+                mortgagor_mortgage_shortfall_per_active=mort_unpaid_shortfall_total / mortgagor_den,
+                mortgagor_revolving_bridge_per_active=mort_bridge_total / mortgagor_den,
+                mortgagor_mortgage_balance_per_active=mortgagor_balance_total / mortgagor_den,
+                mortgagor_revolving_balance_per_active=mortgagor_revolving_balance_total / mortgagor_den,
+                mortgage_maturity_roll_candidate_count=float(self.state.get("mortgage_maturity_roll_candidate_count", 0.0)),
+                mortgage_maturity_roll_eligible_count=float(self.state.get("mortgage_maturity_roll_eligible_count", 0.0)),
+                mortgage_maturity_roll_count=float(self.state.get("mortgage_maturity_roll_count", 0.0)),
 
                 real_avg_income=real_avg_income,
                 real_consumption=float(c_total / P_now),

@@ -49,6 +49,7 @@ class HouseholdState:
     initial_tenure_code: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=int))
 
     prev_income: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=float))
+    prev_perm_income: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=float))
     prev_uis: float = 0.0
     prev_wages_total: float = 0.0
 
@@ -65,6 +66,8 @@ class HouseholdState:
             self.liquid_buffer_months_target = np.zeros(self.n, dtype=float)
         if (self.prev_income.size == 0) or (self.prev_income.shape[0] != self.n):
             self.prev_income = np.asarray(self.wages0_q, dtype=float).copy()
+        if (self.prev_perm_income.size == 0) or (self.prev_perm_income.shape[0] != self.n):
+            self.prev_perm_income = np.maximum(0.0, np.asarray(self.prev_income, dtype=float)).copy()
         if (self.housing_escrow.size == 0) or (self.housing_escrow.shape[0] != self.n):
             self.housing_escrow = np.zeros(self.n, dtype=float)
         if (self.renter_rent_q.size == 0) or (self.renter_rent_q.shape[0] != self.n):
@@ -184,6 +187,32 @@ class TickResult:
     trust_value_per_h: float
     wages_total: float
     total_consumption: float
+    hh_cash_income_per_h: float
+    hh_core_consumption_target_per_h: float
+    hh_desired_consumption_per_h: float
+    hh_realized_consumption_per_h: float
+    hh_mortgage_req_per_h: float
+    hh_actual_mortgage_payment_per_h: float
+    hh_rev_interest_per_h: float
+    hh_rent_per_h: float
+    hh_income_tax_cash_per_h: float
+    hh_mortgage_bridge_to_revolving_per_h: float
+    hh_overdraft_to_revolving_per_h: float
+    hh_mortgage_unpaid_shortfall_per_h: float
+    mortgagor_active_count: float
+    mortgagor_gross_cash_income_per_active: float
+    mortgagor_disp_pre_debt_per_active: float
+    mortgagor_income_tax_per_active: float
+    mortgagor_rev_interest_per_active: float
+    mortgagor_required_mortgage_per_active: float
+    mortgagor_actual_mortgage_per_active: float
+    mortgagor_mortgage_shortfall_per_active: float
+    mortgagor_revolving_bridge_per_active: float
+    mortgagor_mortgage_balance_per_active: float
+    mortgagor_revolving_balance_per_active: float
+    mortgage_maturity_roll_candidate_count: float
+    mortgage_maturity_roll_eligible_count: float
+    mortgage_maturity_roll_count: float
 
     real_avg_income: float
     real_consumption: float

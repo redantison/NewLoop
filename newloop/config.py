@@ -76,6 +76,15 @@ config = {
         # the target liquid buffer, and conserve when below target.
         "hh_buffer_spend_excess_rate_q": 0.10,
         "hh_buffer_shortfall_conserve_rate_q": 0.05,
+        "old_loop_perm_income_update_rate_q": 0.30,
+        "old_loop_transitory_mpc_scale": 1.0,
+        "old_loop_consumption_kappa_by_wage_pct": (
+            (20.0, 0.98),
+            (50.0, 0.93),
+            (80.0, 0.86),
+            (95.0, 0.78),
+            (100.0, 0.70),
+        ),
         # Capital -> productivity feedback (A_eff = clamp(A + kappa*(K_per_h/K_scale)))
         "capital_productivity_k": 0.25,
         "capital_productivity_scale": 5000.0,
@@ -133,6 +142,7 @@ config = {
         "mortgage_term_quarters": 60,           # 15-year fixed mortgage
         "mortgage_principal_pay_rate_q": 0.01,   # 1%/q max paydown if cash available
         "mortgage_turnover_enabled": True,      # turn over a share of housed households and issue fresh mortgages on those housing-finance events
+        "mortgage_maturity_roll_enabled": True, # refinance end-of-term mortgages into fresh contracts when they still qualify
         "mortgage_turnover_active_min_remaining_q": 3,  # only mortgagors with > this many payments remaining are eligible for turnover
         "mortgage_turnover_target_payment_floor_share": 1.0,  # legacy diagnostic knob; no longer the primary issuance target
         "mortgage_turnover_dti_cap": 0.40,

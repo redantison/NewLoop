@@ -75,6 +75,32 @@ METRIC_LABELS: Dict[str, str] = {
     "unmet_demand_physical_per_h": "Unmet HH Demand (Physical) / Household",
     "wages_total": "Total Wage Base",
     "trust_value_per_h": "Trust Value / Household",
+    "hh_cash_income_per_h": "Household Cash Inflow / Household",
+    "hh_core_consumption_target_per_h": "Core Consumption Target / Household",
+    "hh_desired_consumption_per_h": "Desired Consumption / Household",
+    "hh_realized_consumption_per_h": "Realized Consumption Spending / Household",
+    "hh_mortgage_req_per_h": "Required Mortgage Payment / Household",
+    "hh_actual_mortgage_payment_per_h": "Actual Mortgage Payment / Household",
+    "hh_rev_interest_per_h": "Revolving Interest / Household",
+    "hh_rent_per_h": "Rent / Household",
+    "hh_income_tax_cash_per_h": "Income Tax Cash / Household",
+    "hh_mortgage_bridge_to_revolving_per_h": "Mortgage Bridge To Revolving / Household",
+    "hh_overdraft_to_revolving_per_h": "Overdraft To Revolving / Household",
+    "hh_mortgage_unpaid_shortfall_per_h": "Unpaid Mortgage Shortfall / Household",
+    "mortgagor_active_count": "Mortgagors With Payment Due",
+    "mortgagor_gross_cash_income_per_active": "Mortgagor Gross Cash Inflow / Active Mortgagor",
+    "mortgagor_disp_pre_debt_per_active": "Mortgagor Disposable Income Before Debt Service / Active Mortgagor",
+    "mortgagor_income_tax_per_active": "Mortgagor Income Tax / Active Mortgagor",
+    "mortgagor_rev_interest_per_active": "Mortgagor Revolving Interest / Active Mortgagor",
+    "mortgagor_required_mortgage_per_active": "Mortgagor Required Mortgage Payment / Active Mortgagor",
+    "mortgagor_actual_mortgage_per_active": "Mortgagor Actual Mortgage Payment / Active Mortgagor",
+    "mortgagor_mortgage_shortfall_per_active": "Mortgagor Unpaid Mortgage Shortfall / Active Mortgagor",
+    "mortgagor_revolving_bridge_per_active": "Mortgagor Mortgage Bridge To Revolving / Active Mortgagor",
+    "mortgagor_mortgage_balance_per_active": "Mortgage Balance / Active Mortgagor",
+    "mortgagor_revolving_balance_per_active": "Revolving Balance / Active Mortgagor",
+    "mortgage_maturity_roll_candidate_count": "Maturity Roll Candidates",
+    "mortgage_maturity_roll_eligible_count": "Maturity Roll Eligible",
+    "mortgage_maturity_roll_count": "Maturity Rolls Completed",
 }
 
 DEFAULT_LINE_METRICS: List[str] = [
@@ -496,6 +522,137 @@ def plot_fund_inflows(
     _apply_compact_y_ticks(ax)
     ax.grid(alpha=0.25)
     ax.legend(loc="upper left")
+    return fig
+
+
+def plot_household_shortfall_sources(rows: Sequence[Mapping[str, Any]], axes: Sequence[Any] | None = None) -> Any:
+    """Plot household cash uses versus inflows and the financing response to shortfalls."""
+    import matplotlib.pyplot as plt
+
+    rows = _require_rows(rows)
+    t = [float(r.get("t", idx)) for idx, r in enumerate(rows)]
+
+    if axes is None:
+        fig, axs = plt.subplots(1, 2, figsize=(13, 4.5), constrained_layout=True)
+    else:
+        axs = list(axes)
+        if len(axs) != 2:
+            raise ValueError("plot_household_shortfall_sources requires exactly two axes.")
+        fig = axs[0].figure
+
+    ax_left, ax_right = axs
+
+    inflow = np.asarray([float(r.get("hh_cash_income_per_h", 0.0)) for r in rows], dtype=float)
+    realized_cons = np.asarray([float(r.get("hh_realized_consumption_per_h", 0.0)) for r in rows], dtype=float)
+    mort_req = np.asarray([float(r.get("hh_mortgage_req_per_h", 0.0)) for r in rows], dtype=float)
+    mort_actual = np.asarray([float(r.get("hh_actual_mortgage_payment_per_h", 0.0)) for r in rows], dtype=float)
+    rev_interest = np.asarray([float(r.get("hh_rev_interest_per_h", 0.0)) for r in rows], dtype=float)
+    rent = np.asarray([float(r.get("hh_rent_per_h", 0.0)) for r in rows], dtype=float)
+    tax = np.asarray([float(r.get("hh_income_tax_cash_per_h", 0.0)) for r in rows], dtype=float)
+
+    left_layers = [realized_cons, mort_actual, rev_interest, rent, tax]
+    left_labels = [
+        "Realized Consumption",
+        "Actual Mortgage Payment",
+        "Revolving Interest",
+        "Rent",
+        "Income Tax",
+    ]
+    left_colors = ["#4daf4a", "#377eb8", "#984ea3", "#ff7f00", "#e41a1c"]
+    ax_left.stackplot(t, *left_layers, labels=left_labels, colors=left_colors, alpha=0.72)
+    ax_left.plot(t, inflow, color="black", linewidth=2.2, label="Cash Inflow")
+    ax_left.plot(t, mort_req, color="#08519c", linewidth=1.8, linestyle="--", label="Required Mortgage Payment")
+    ax_left.set_title("Household Cash Uses (Actual)")
+    ax_left.set_xlabel("Quarter")
+    ax_left.set_ylabel("Nominal / Household")
+    ax_left.grid(True, alpha=0.25)
+    ax_left.legend(loc="upper left", fontsize=9)
+
+    mort_bridge = np.asarray([float(r.get("hh_mortgage_bridge_to_revolving_per_h", 0.0)) for r in rows], dtype=float)
+    overdraft = np.asarray([float(r.get("hh_overdraft_to_revolving_per_h", 0.0)) for r in rows], dtype=float)
+    unpaid_mort = np.asarray([float(r.get("hh_mortgage_unpaid_shortfall_per_h", 0.0)) for r in rows], dtype=float)
+    deposit_drawdown = np.maximum(0.0, (realized_cons + mort_actual + rev_interest + rent + tax) - inflow - mort_bridge - overdraft)
+
+    right_layers = [deposit_drawdown, mort_bridge, overdraft, unpaid_mort]
+    right_labels = [
+        "Deposit Drawdown",
+        "Mortgage Bridge To Revolving",
+        "Overdraft To Revolving",
+        "Unpaid Mortgage Shortfall",
+    ]
+    right_colors = ["#4daf4a", "#377eb8", "#a65628", "#e41a1c"]
+    ax_right.stackplot(t, *right_layers, labels=right_labels, colors=right_colors, alpha=0.80)
+    ax_right.set_title("Household Funding Gap Response")
+    ax_right.set_xlabel("Quarter")
+    ax_right.set_ylabel("Nominal / Household")
+    ax_right.grid(True, alpha=0.25)
+    ax_right.legend(loc="upper left", fontsize=9)
+
+    return fig
+
+
+def plot_mortgagor_distress(rows: Sequence[Mapping[str, Any]], axes: Sequence[Any] | None = None) -> Any:
+    """Plot mortgagor cash pressure and maturity-roll funnel diagnostics."""
+    import matplotlib.pyplot as plt
+
+    rows = _require_rows(rows)
+    t = [float(r.get("t", idx)) for idx, r in enumerate(rows)]
+
+    if axes is None:
+        fig, axs = plt.subplots(1, 2, figsize=(13, 4.5), constrained_layout=True)
+    else:
+        axs = list(axes)
+        if len(axs) != 2:
+            raise ValueError("plot_mortgagor_distress requires exactly two axes.")
+        fig = axs[0].figure
+
+    ax_left, ax_right = axs
+
+    disp_pre_debt = np.asarray([float(r.get("mortgagor_disp_pre_debt_per_active", 0.0)) for r in rows], dtype=float)
+    income_tax = np.asarray([float(r.get("mortgagor_income_tax_per_active", 0.0)) for r in rows], dtype=float)
+    rev_interest = np.asarray([float(r.get("mortgagor_rev_interest_per_active", 0.0)) for r in rows], dtype=float)
+    mort_req = np.asarray([float(r.get("mortgagor_required_mortgage_per_active", 0.0)) for r in rows], dtype=float)
+    mort_actual = np.asarray([float(r.get("mortgagor_actual_mortgage_per_active", 0.0)) for r in rows], dtype=float)
+    mort_shortfall = np.asarray([float(r.get("mortgagor_mortgage_shortfall_per_active", 0.0)) for r in rows], dtype=float)
+    mort_bridge = np.asarray([float(r.get("mortgagor_revolving_bridge_per_active", 0.0)) for r in rows], dtype=float)
+
+    left_layers = [income_tax, rev_interest, mort_req]
+    left_labels = ["Income Tax", "Revolving Interest", "Required Mortgage Payment"]
+    left_colors = ["#e41a1c", "#984ea3", "#377eb8"]
+    ax_left.stackplot(t, *left_layers, labels=left_labels, colors=left_colors, alpha=0.72)
+    ax_left.plot(t, disp_pre_debt, color="black", linewidth=2.2, label="Disposable Income Before Debt Service")
+    ax_left.plot(t, mort_actual, color="#1b9e77", linewidth=1.8, linestyle="--", label="Actual Mortgage Payment")
+    ax_left.plot(t, mort_shortfall, color="#d95f02", linewidth=1.8, linestyle=":", label="Unpaid Mortgage Shortfall")
+    ax_left.plot(t, mort_bridge, color="#7570b3", linewidth=1.6, linestyle="-.", label="Mortgage Bridge To Revolving")
+    ax_left.set_title("Mortgagor Cash Pressure")
+    ax_left.set_xlabel("Quarter")
+    ax_left.set_ylabel("Nominal / Active Mortgagor")
+    ax_left.grid(True, alpha=0.25)
+    ax_left.legend(loc="upper left", fontsize=9)
+
+    mort_balance = np.asarray([float(r.get("mortgagor_mortgage_balance_per_active", 0.0)) for r in rows], dtype=float)
+    rev_balance = np.asarray([float(r.get("mortgagor_revolving_balance_per_active", 0.0)) for r in rows], dtype=float)
+    candidate = np.asarray([float(r.get("mortgage_maturity_roll_candidate_count", 0.0)) for r in rows], dtype=float)
+    eligible = np.asarray([float(r.get("mortgage_maturity_roll_eligible_count", 0.0)) for r in rows], dtype=float)
+    rolled = np.asarray([float(r.get("mortgage_maturity_roll_count", 0.0)) for r in rows], dtype=float)
+
+    ax_right.plot(t, mort_balance, linewidth=2.2, color="#377eb8", label="Mortgage Balance / Active Mortgagor")
+    ax_right.plot(t, rev_balance, linewidth=2.0, color="#984ea3", label="Revolving Balance / Active Mortgagor")
+    ax_right.set_title("Mortgagor Balance And Rollover")
+    ax_right.set_xlabel("Quarter")
+    ax_right.set_ylabel("Balance / Active Mortgagor")
+    ax_right.grid(True, alpha=0.25)
+
+    ax_right_secondary = ax_right.twinx()
+    ax_right_secondary.plot(t, candidate, linewidth=1.8, color="#999999", linestyle="--", label="Maturity Roll Candidates")
+    ax_right_secondary.plot(t, eligible, linewidth=1.8, color="#4daf4a", linestyle="-", label="Maturity Roll Eligible")
+    ax_right_secondary.plot(t, rolled, linewidth=1.8, color="#e41a1c", linestyle=":", label="Maturity Rolls Completed")
+    ax_right_secondary.set_ylabel("Households")
+
+    handles_left, labels_left = ax_right.get_legend_handles_labels()
+    handles_right, labels_right = ax_right_secondary.get_legend_handles_labels()
+    ax_right.legend(handles_left + handles_right, labels_left + labels_right, loc="upper right", fontsize=9)
+
     return fig
 
 
