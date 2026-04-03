@@ -2526,10 +2526,10 @@ class NewLoop:
                     - div_cash_buffer_fh,
                 ),
             )
-            # Keep bank dividends constrained to current after-tax profit. Letting
-            # payouts draw down capital directly makes household direct equity drift
-            # downward even in otherwise stable OldLoop runs.
-            bank_dividend_capacity = max(0.0, after_tax_profit_bk)
+            bank_dividend_capacity = max(
+                0.0,
+                float(self.nodes["BANK"].get("equity", 0.0)) + after_tax_profit_bk,
+            )
             div_bk_total = min(div_commit_bk, bank_dividend_capacity)
 
             div_house_firms = (div_fa_total * (1.0 - f_fa)) + (div_fh_total * (1.0 - f_fh))

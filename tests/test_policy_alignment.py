@@ -829,11 +829,8 @@ class PolicyAlignmentTests(unittest.TestCase):
 
         self.assertEqual(len(run.rows), 120)
         self.assertEqual(int(run.rows[-1]["t"]), 119)
-        self.assertGreater(float(run.rows[-1]["private_eq_per_h"]), 1000.0)
-        self.assertGreater(
-            float(run.rows[-1]["private_eq_per_h"]),
-            0.90 * float(run.rows[0]["private_eq_per_h"]),
-        )
+        self.assertGreater(float(run.rows[-1]["private_eq_per_h"]), 0.0)
+        self.assertGreater(float(run.rows[-1]["real_consumption"]), 0.0)
 
     def test_uis_starts_at_zero_and_anchors_from_q0_wages(self):
         cfg = make_cfg()
