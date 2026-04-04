@@ -83,6 +83,8 @@ class NewLoop:
             "gov_sector_spend_prev_nom": 0.0,
             "gov_sector_spend_to_info_prev_nom": 0.0,
             "gov_sector_spend_to_phys_prev_nom": 0.0,
+            "money_supply_prev_total": 0.0,
+            "money_issued_prev_total": 0.0,
             # Lagged private equity stock used for private payout-yield proxy.
             "private_equity_prev_total": 0.0,
             "corporate_equity_prev_total": 0.0,
@@ -345,6 +347,8 @@ class NewLoop:
 
         # Set equity to exactly close at init
         bank.set("equity", bank.get("loan_assets", 0.0) + bank.get("reserves", 0.0) - bank.get("deposit_liab", 0.0))
+        self.state["money_supply_prev_total"] = float(bank.get("deposit_liab", 0.0))
+        self.state["money_issued_prev_total"] = float(self.nodes["GOV"].get("money_issued", 0.0))
 
         self.history: List[TickResult] = []
         self.bs_history: List[Dict[str, Any]] = []   # per-tick, per-node balance sheet snapshot
@@ -1989,6 +1993,8 @@ class NewLoop:
             "bank_deposit_liab": dep_liab,
             "sum_deposits": dep_sum,
             "deposit_gap": dep_liab - dep_sum,
+            "bank_reserves": bank.get("reserves", 0.0),
+            "money_issued_total": self.nodes["GOV"].get("money_issued", 0.0),
             "bank_loan_assets": loan_assets,
             "sum_loans": loan_sum,
             "loan_gap": loan_assets - loan_sum,
@@ -4391,6 +4397,17 @@ class NewLoop:
             mort_bridge_total = float(self.state.get("mort_revolving_bridge_total", 0.0))
 
             real_avg_income = float(np.mean(y_vec) / P_now) if y_vec.size else float(((wages_total / float(self.hh.n)) + float(uis)) / P_now)
+            bank_node = self.nodes["BANK"]
+            money_supply_total = float(bank_node.get("deposit_liab", 0.0))
+            money_supply_prev_total = float(self.state.get("money_supply_prev_total", money_supply_total))
+            money_supply_growth_q = (
+                ((money_supply_total - money_supply_prev_total) / money_supply_prev_total)
+                if money_supply_prev_total > 1e-9 else 0.0
+            )
+            bank_reserves_total = float(bank_node.get("reserves", 0.0))
+            money_issued_total = float(self.nodes["GOV"].get("money_issued", 0.0))
+            money_issued_prev_total = float(self.state.get("money_issued_prev_total", money_issued_total))
+            money_issued_flow_q = max(0.0, money_issued_total - money_issued_prev_total)
 
             self.history.append(TickResult(
                 t=self.state["t"],
@@ -4438,6 +4455,15 @@ class NewLoop:
                 vat_credit_per_h=float(self.state.get("vat_credit_total", 0.0)) / float(self.hh.n),
                 gov_dep_per_h=float(self.nodes["GOV"].get("deposits", 0.0)) / float(self.hh.n),
                 gov_spend_per_h=float(self.state.get("gov_sector_spend_total", 0.0)) / float(self.hh.n),
+                money_supply_total=money_supply_total,
+                money_supply_per_h=money_supply_total / float(self.hh.n),
+                money_supply_growth_q=float(money_supply_growth_q),
+                bank_deposit_liab_total=money_supply_total,
+                bank_reserves_total=bank_reserves_total,
+                money_issued_total=money_issued_total,
+                money_issued_per_h=money_issued_total / float(self.hh.n),
+                money_issued_flow_q=money_issued_flow_q,
+                money_issued_flow_per_h=money_issued_flow_q / float(self.hh.n),
                 fund_dep_per_h=float(self.nodes["FUND"].get("deposits", 0.0)) / float(self.hh.n),
                 fund_dividend_inflow_per_h=float(solp.get("div_fund", 0.0)) / float(self.hh.n),
                 ums_drain_to_fund_per_h=float(self.state.get("ums_drain_to_fund_total", 0.0)) / float(self.hh.n),
@@ -4533,6 +4559,8 @@ class NewLoop:
 
                 trust_active=bool(self.state["trust_active"]),
             ))
+            self.state["money_supply_prev_total"] = float(money_supply_total)
+            self.state["money_issued_prev_total"] = float(money_issued_total)
 
             self._record_balance_sheets(self.state["t"])
             # Advance simulation time (quarter counter)

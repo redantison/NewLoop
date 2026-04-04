@@ -166,6 +166,15 @@ class TickResult:
     vat_credit_per_h: float
     gov_dep_per_h: float
     gov_spend_per_h: float
+    money_supply_total: float
+    money_supply_per_h: float
+    money_supply_growth_q: float
+    bank_deposit_liab_total: float
+    bank_reserves_total: float
+    money_issued_total: float
+    money_issued_per_h: float
+    money_issued_flow_q: float
+    money_issued_flow_per_h: float
     fund_dep_per_h: float
     fund_dividend_inflow_per_h: float
     ums_drain_to_fund_per_h: float

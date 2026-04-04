@@ -893,6 +893,27 @@ class PolicyAlignmentTests(unittest.TestCase):
         self.assertGreater(float(run.rows[-1]["gov_dep_per_h"]), 0.0)
         self.assertTrue(any(float(row.get("gov_spend_per_h", 0.0)) > 0.0 for row in run.rows[1:]))
 
+    def test_money_supply_metrics_match_deposit_liability_identity(self):
+        cfg = make_cfg()
+        run = run_simulation(n_quarters=3, cfg=cfg)
+        n = float(run.sim.hh.n if run.sim.hh is not None else 1.0)
+
+        self.assertEqual(len(run.rows), 3)
+        for row in run.rows:
+            money_supply_total = float(row["money_supply_total"])
+            bank_deposit_liab_total = float(row["bank_deposit_liab_total"])
+            money_supply_per_h = float(row["money_supply_per_h"])
+            money_issued_total = float(row["money_issued_total"])
+            money_issued_per_h = float(row["money_issued_per_h"])
+            money_issued_flow_q = float(row["money_issued_flow_q"])
+            money_issued_flow_per_h = float(row["money_issued_flow_per_h"])
+            self.assertAlmostEqual(money_supply_total, bank_deposit_liab_total, places=6)
+            self.assertAlmostEqual(money_supply_per_h * n, money_supply_total, places=3)
+            self.assertGreaterEqual(money_issued_total, 0.0)
+            self.assertGreaterEqual(money_issued_per_h, 0.0)
+            self.assertGreaterEqual(money_issued_flow_q, 0.0)
+            self.assertGreaterEqual(money_issued_flow_per_h, 0.0)
+
     def test_uis_starts_at_zero_and_anchors_from_q0_wages(self):
         cfg = make_cfg()
         cfg["parameters"]["income_support_mode"] = "UIS"
