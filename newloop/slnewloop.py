@@ -805,7 +805,17 @@ def _cached_run_payload(
     progress_callback: Callable[[str, int, int], None] | None = None,
 ) -> Dict[str, Any]:
     cfg = json.loads(cfg_json)
-    run = run_simulation(n_quarters=int(n_quarters), cfg=cfg, progress_callback=progress_callback)
+    try:
+        run = run_simulation(n_quarters=int(n_quarters), cfg=cfg, progress_callback=progress_callback)
+    except Exception as exc:
+        return {
+            "rows": [],
+            "population_distributions": {},
+            "startup_diagnostics": {},
+            "baseline_calibration": {},
+            "support_debug": {},
+            "error": str(exc),
+        }
     support_debug = {
         "mode": str(run.sim.params.get("income_support_mode", "UBI")).strip().upper(),
         "disabled": bool(run.sim.params.get("disable_income_support", False)),
@@ -827,6 +837,7 @@ def _cached_run_payload(
         "startup_diagnostics": run.startup_diagnostics or {},
         "baseline_calibration": run.baseline_calibration or {},
         "support_debug": support_debug,
+        "error": "",
     }
 
 
@@ -863,6 +874,8 @@ def main() -> None:
         st.session_state["baseline_calibration"] = {}
     if "support_debug" not in st.session_state:
         st.session_state["support_debug"] = {}
+    if "last_run_error" not in st.session_state:
+        st.session_state["last_run_error"] = ""
     if "last_run_cfg_json" not in st.session_state:
         st.session_state["last_run_cfg_json"] = ""
     if "last_run_quarters" not in st.session_state:
@@ -870,8 +883,17 @@ def main() -> None:
 
     current_cfg = _build_cfg_from_state(st, base_cfg)
     current_cfg_json = _cfg_json(current_cfg)
+    current_params = current_cfg.get("parameters", {}) if isinstance(current_cfg.get("parameters", {}), dict) else {}
     selected_regime = str(st.session_state.get(LOOP_MODE_SELECT_KEY, "")).strip()
     has_selected_regime = selected_regime in {"NewLoop", "OldLoop"}
+    if selected_regime == "OldLoop":
+        wage_floor_share = float(current_params.get("old_loop_wage_floor_share", 0.0) or 0.0)
+        profit_markup_sens = float(current_params.get("old_loop_profit_markup_sensitivity", 0.0) or 0.0)
+        if wage_floor_share >= 0.05 or (wage_floor_share > 0.0 and profit_markup_sens > 0.0):
+            st.warning(
+                "These Old Loop wage-floor / price-defense settings can easily violate the model's "
+                "no-new-debt firm rule. Small wage floors like `0.02` to `0.03` are usually safer."
+            )
     should_run = run_clicked and has_selected_regime
     if should_run:
         def _update_run_progress(_stage: str, completed: int, total: int) -> None:
@@ -887,22 +909,32 @@ def main() -> None:
             current_cfg_json,
             progress_callback=_update_run_progress,
         )
+        run_error = str(payload.get("error", "")).strip()
         st.session_state["rows"] = list(payload.get("rows", []))
         st.session_state["population_distributions"] = dict(payload.get("population_distributions", {}))
         st.session_state["startup_diagnostics"] = dict(payload.get("startup_diagnostics", {}))
         st.session_state["baseline_calibration"] = dict(payload.get("baseline_calibration", {}))
         st.session_state["support_debug"] = dict(payload.get("support_debug", {}))
+        st.session_state["last_run_error"] = run_error
         st.session_state["last_run_cfg_json"] = current_cfg_json
         st.session_state["last_run_quarters"] = int(quarters)
         st.session_state["app__force_stale_after_reset"] = False
+        if run_error:
+            progress_bar.empty()
 
     rows_raw: List[Dict[str, Any]] = list(st.session_state["rows"])
+    run_error = str(st.session_state.get("last_run_error", "")).strip()
     config_stale = bool(st.session_state.get("app__force_stale_after_reset", False)) or (
         st.session_state.get("last_run_cfg_json", "") != current_cfg_json
         or int(st.session_state.get("last_run_quarters", 0)) != int(quarters)
     )
     if config_stale:
         progress_bar.empty()
+    if run_error and not config_stale:
+        st.error(
+            "This parameter combination is unstable under the model's current no-new-debt sector rules.\n\n"
+            f"`{run_error}`"
+        )
     if rows_raw and config_stale:
         st.warning("Parameters changed since last run. Click `Run Model` to generate new data.")
 

@@ -914,6 +914,57 @@ class PolicyAlignmentTests(unittest.TestCase):
             self.assertGreaterEqual(money_issued_flow_q, 0.0)
             self.assertGreaterEqual(money_issued_flow_per_h, 0.0)
 
+    def test_old_loop_household_money_issuance_records_positive_flow(self):
+        cfg = make_cfg()
+        cfg["parameters"]["economic_regime"] = "OldLoop"
+        cfg["parameters"]["automation_disabled"] = True
+        cfg["parameters"]["old_loop_household_money_issuance_rate_annual"] = 0.01
+
+        run = run_simulation(n_quarters=5, cfg=cfg)
+
+        self.assertEqual(len(run.rows), 5)
+        self.assertTrue(any(float(row.get("hh_money_issuance_per_h", 0.0)) > 0.0 for row in run.rows))
+        self.assertTrue(any(float(row.get("money_issued_flow_q", 0.0)) > 0.0 for row in run.rows))
+
+    def test_old_loop_wage_floor_raises_wages_when_enabled(self):
+        base_cfg = make_cfg()
+        base_cfg["parameters"]["economic_regime"] = "OldLoop"
+        base_cfg["parameters"]["automation_disabled"] = True
+
+        floored_cfg = make_cfg()
+        floored_cfg["parameters"]["economic_regime"] = "OldLoop"
+        floored_cfg["parameters"]["automation_disabled"] = True
+        floored_cfg["parameters"]["old_loop_wage_floor_share"] = 0.02
+
+        base_run = run_simulation(n_quarters=2, cfg=base_cfg)
+        floored_run = run_simulation(n_quarters=2, cfg=floored_cfg)
+
+        self.assertEqual(len(base_run.rows), 2)
+        self.assertEqual(len(floored_run.rows), 2)
+        self.assertGreater(float(floored_run.rows[0]["wages_total"]), float(base_run.rows[0]["wages_total"]))
+        self.assertGreater(float(floored_run.rows[1]["wages_total"]), float(base_run.rows[1]["wages_total"]))
+
+    def test_old_loop_profit_markup_can_raise_prices(self):
+        base_cfg = make_cfg()
+        base_cfg["parameters"]["economic_regime"] = "OldLoop"
+        base_cfg["parameters"]["automation_disabled"] = True
+
+        markup_cfg = make_cfg()
+        markup_cfg["parameters"]["economic_regime"] = "OldLoop"
+        markup_cfg["parameters"]["automation_disabled"] = True
+        markup_cfg["parameters"]["old_loop_profit_markup_sensitivity"] = 1.0
+        markup_cfg["parameters"]["old_loop_profit_markup_max"] = 0.20
+        markup_cfg["parameters"]["old_loop_margin_floor_info"] = 0.50
+        markup_cfg["parameters"]["old_loop_margin_floor_phys"] = 0.50
+
+        base_run = run_simulation(n_quarters=3, cfg=base_cfg)
+        markup_run = run_simulation(n_quarters=3, cfg=markup_cfg)
+
+        self.assertEqual(len(base_run.rows), 3)
+        self.assertEqual(len(markup_run.rows), 3)
+        self.assertGreater(float(markup_run.rows[-1]["price_level"]), float(base_run.rows[-1]["price_level"]))
+        self.assertGreater(float(markup_run.rows[-1]["old_loop_profit_markup"]), 0.0)
+
     def test_uis_starts_at_zero_and_anchors_from_q0_wages(self):
         cfg = make_cfg()
         cfg["parameters"]["income_support_mode"] = "UIS"

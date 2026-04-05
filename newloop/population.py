@@ -751,7 +751,6 @@ def generate_population(cfg: PopulationConfig) -> Population:
             existing_fixed_obligations_q=(revolving_loans * rev_rate_q),
         )
         base_real = np.maximum(0.0, np.asarray(affordability["core_nonhousing_q"], dtype=float))
-        deposits = np.maximum(0.0, np.asarray(affordability["headroom_q"], dtype=float))
 
     # Recompute MPC after the final affordability-aware deposit assignment.
     mpc_q = _assign_mpc_from_deposits(deposits.tolist(), cfg.mpc_by_wealth_pct)
@@ -848,6 +847,20 @@ def generate_population(cfg: PopulationConfig) -> Population:
         )
         raw_rent_q = np.maximum(0.0, renter_owner_equiv_payment_q * rent_mult)
         renter_rent_q[renter_mask] = np.minimum(raw_rent_q, housing_payment_target_q[renter_mask])
+
+    if deposit_mode != "legacy_mixture" and str(getattr(cfg, "economic_regime", "NewLoop")).strip() == "OldLoop":
+        rev_interest_q = np.maximum(0.0, revolving_loans * rev_rate_q)
+        debt_aware_buffer_q = np.maximum(
+            0.0,
+            (target_months / 3.0)
+            * (
+                np.maximum(0.0, base_real)
+                + np.maximum(0.0, mortgage_payment_sched_q)
+                + np.maximum(0.0, renter_rent_q)
+                + rev_interest_q
+            ),
+        )
+        deposits = debt_aware_buffer_q
 
     loans = mortgage_loans + revolving_loans
 

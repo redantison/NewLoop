@@ -78,6 +78,7 @@ config = {
         "hh_buffer_shortfall_conserve_rate_q": 0.05,
         "old_loop_perm_income_update_rate_q": 0.30,
         "old_loop_transitory_mpc_scale": 1.0,
+        "old_loop_wage_floor_share": 0.00,
         "old_loop_consumption_kappa_by_wage_pct": (
             (20.0, 0.98),
             (50.0, 0.93),
@@ -87,6 +88,10 @@ config = {
         ),
         "old_loop_gov_sector_spend_rate": 0.00,
         "old_loop_gov_sector_spend_info_share": 0.50,
+        "old_loop_profit_markup_sensitivity": 0.00,
+        "old_loop_profit_markup_max": 0.25,
+        "old_loop_margin_floor_info": 0.20,
+        "old_loop_margin_floor_phys": 0.12,
         # Capital -> productivity feedback (A_eff = clamp(A + kappa*(K_per_h/K_scale)))
         "capital_productivity_k": 0.25,
         "capital_productivity_scale": 5000.0,
@@ -180,6 +185,7 @@ config = {
         "old_loop_housing_headroom_share": 0.12,
         "old_loop_housing_headroom_floor_q": 25.0,
         "old_loop_core_nonhousing_floor_q": 150.0,
+        "old_loop_household_money_issuance_rate_annual": 0.0,
         "old_loop_core_nonhousing_kappa_by_income_pct": (
             (20.0, 0.72),
             (50.0, 0.64),

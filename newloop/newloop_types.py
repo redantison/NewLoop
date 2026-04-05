@@ -131,6 +131,8 @@ class TickResult:
 
     price_level: float
     inflation: float
+    automation_markup: float
+    old_loop_profit_markup: float
 
     gini: float
     gini_market: float
@@ -166,6 +168,7 @@ class TickResult:
     vat_credit_per_h: float
     gov_dep_per_h: float
     gov_spend_per_h: float
+    hh_money_issuance_per_h: float
     money_supply_total: float
     money_supply_per_h: float
     money_supply_growth_q: float

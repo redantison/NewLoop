@@ -73,6 +73,8 @@ class NewLoop:
             # Price level state
             "price_level": p0,
             "inflation": 0.0,
+            "sector_op_margin_info_prev": 0.0,
+            "sector_op_margin_phys_prev": 0.0,
 
             # Per-tick income-support funding diagnostics (set in post_tick)
             "uis_from_fund_dep_total": 0.0,
@@ -2430,6 +2432,21 @@ class NewLoop:
             w_fh = rev_fh * ws_fh
             w_total = float(w_fa + w_fh)
 
+            if regime_name == "OldLoop":
+                # OldLoop experiment: keep the aggregate private wage bill from
+                # falling below a chosen share of the startup wage base.
+                wage_floor_share = float(self.params.get("old_loop_wage_floor_share", 0.0) or 0.0)
+                wage_floor_total = max(0.0, wage_floor_share) * max(0.0, w0_sum)
+                if wage_floor_total > w_total + 1e-9:
+                    if w_total > 1e-12:
+                        wage_share_fa = float(np.clip(w_fa / w_total, 0.0, 1.0))
+                    else:
+                        wage_share_sum = max(1e-12, ws_fa_base + ws_fh_base)
+                        wage_share_fa = float(np.clip(ws_fa_base / wage_share_sum, 0.0, 1.0))
+                    w_total = wage_floor_total
+                    w_fa = w_total * wage_share_fa
+                    w_fh = w_total - w_fa
+
             # Overhead is a cash sink tied to lagged revenue. Under the no-new-debt
             # sector rules it cannot exceed the quarter's actually available cash
             # after production inputs, wages, and planned CAPEX are covered.
@@ -3363,6 +3380,23 @@ class NewLoop:
                     deposits[:] = deposits + (tax_rebate_total / float(n))
 
         self.state["tax_rebate_total"] = float(max(0.0, tax_rebate_total))
+        household_money_issuance_total = 0.0
+        if regime_name == "OldLoop":
+            issuance_rate_annual = max(
+                0.0,
+                float(self.params.get("old_loop_household_money_issuance_rate_annual", 0.0)),
+            )
+            if issuance_rate_annual > 0.0:
+                issuance_rate_q = (1.0 + issuance_rate_annual) ** 0.25 - 1.0
+                money_supply_base = max(0.0, float(self.state.get("money_supply_prev_total", 0.0)))
+                household_money_issuance_total = max(0.0, issuance_rate_q * money_supply_base)
+                if household_money_issuance_total > 0.0:
+                    per_household = household_money_issuance_total / float(n)
+                    deposits[:] = deposits + per_household
+                    self.nodes["BANK"].add("deposit_liab", +household_money_issuance_total)
+                    self.nodes["BANK"].add("reserves", +household_money_issuance_total)
+                    self.nodes["GOV"].add("money_issued", +household_money_issuance_total)
+        self.state["hh_money_issuance_total"] = float(max(0.0, household_money_issuance_total))
         gov_inflow_total = float(
             max(0.0, vat_total)
             + max(0.0, overhead_total)
@@ -4039,7 +4073,20 @@ class NewLoop:
         A_eff = float(self.state.get("automation_eff", A))
         P_comp = p0 / (1.0 + beta * (A_eff * prod_mult))
         mu = mu_max * (A_eff ** mu_pow)
-        P_target = P_comp * (1.0 + mu)
+        profit_markup = 0.0
+        if normalize_economic_regime_name(self.params.get("economic_regime", "NewLoop")) == "OldLoop":
+            markup_sens = max(0.0, float(self.params.get("old_loop_profit_markup_sensitivity", 0.0) or 0.0))
+            markup_cap = max(0.0, float(self.params.get("old_loop_profit_markup_max", 0.0) or 0.0))
+            if markup_sens > 0.0 and markup_cap > 0.0:
+                margin_floor_info = float(self.params.get("old_loop_margin_floor_info", 0.0) or 0.0)
+                margin_floor_phys = float(self.params.get("old_loop_margin_floor_phys", 0.0) or 0.0)
+                lagged_margin_info = float(self.state.get("sector_op_margin_info_prev", margin_floor_info))
+                lagged_margin_phys = float(self.state.get("sector_op_margin_phys_prev", margin_floor_phys))
+                info_gap = max(0.0, margin_floor_info - lagged_margin_info)
+                phys_gap = max(0.0, margin_floor_phys - lagged_margin_phys)
+                profit_markup_raw = (w_info * info_gap) + ((1.0 - w_info) * phys_gap)
+                profit_markup = min(markup_cap, markup_sens * profit_markup_raw)
+        P_target = P_comp * (1.0 + mu) * (1.0 + profit_markup)
 
         price_adjust_speed = float(self.params.get("price_adjust_speed", 1.0))
         price_adjust_speed = max(0.0, min(1.0, price_adjust_speed))
@@ -4050,6 +4097,7 @@ class NewLoop:
         self.state["price_level"] = float(P)
         self.state["inflation"] = float((P / P_prev - 1.0) if P_prev > 0 else 0.0)
         self.state["automation_markup"] = float(mu)
+        self.state["old_loop_profit_markup"] = float(profit_markup)
         self.state["price_target"] = float(P_target)
         self.state["capital_productivity_mult"] = float(self.state.get("capital_productivity_mult", 1.0))
 
@@ -4324,6 +4372,8 @@ class NewLoop:
                 ) / rev_phys
                 if rev_phys > 1e-9 else 0.0
             )
+            self.state["sector_op_margin_info_prev"] = float(sector_op_margin_info)
+            self.state["sector_op_margin_phys_prev"] = float(sector_op_margin_phys)
             corporate_info_broad_roe_q = (
                 (info_corporate_payout_total + info_corporate_retained_total) / prev_info_eq_total
                 if prev_info_eq_total > 1e-9 else 0.0
@@ -4421,6 +4471,8 @@ class NewLoop:
                 sector_tfp_mult_physical=float(self.state.get("sector_tfp_mult_phys", 1.0)),
                 price_level=float(self.state.get("price_level", 1.0)),
                 inflation=float(self.state.get("inflation", 0.0)),
+                automation_markup=float(self.state.get("automation_markup", 0.0)),
+                old_loop_profit_markup=float(self.state.get("old_loop_profit_markup", 0.0)),
                 gini=float(gini_disp),
                 gini_market=float(gini_market),
                 gini_disp=float(gini_disp),
@@ -4455,6 +4507,7 @@ class NewLoop:
                 vat_credit_per_h=float(self.state.get("vat_credit_total", 0.0)) / float(self.hh.n),
                 gov_dep_per_h=float(self.nodes["GOV"].get("deposits", 0.0)) / float(self.hh.n),
                 gov_spend_per_h=float(self.state.get("gov_sector_spend_total", 0.0)) / float(self.hh.n),
+                hh_money_issuance_per_h=float(self.state.get("hh_money_issuance_total", 0.0)) / float(self.hh.n),
                 money_supply_total=money_supply_total,
                 money_supply_per_h=money_supply_total / float(self.hh.n),
                 money_supply_growth_q=float(money_supply_growth_q),
