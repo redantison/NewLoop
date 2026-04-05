@@ -11,7 +11,10 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 
 from .config import apply_economic_regime_overrides, normalize_economic_regime_name
-from .housing_affordability import compute_affordable_housing_profile
+from .housing_affordability import (
+    compute_affordable_housing_profile,
+    compute_old_loop_mortgage_underwriting_profile,
+)
 from .mathutils import _as_np, _pct, _pct_np, automation_two_hump, calculate_gini_np
 from .mortgage import (
     FixedRateMortgageSchedule,
@@ -56,7 +59,7 @@ class NewLoop:
         base_rate_q = max(0.0, float(self.params.get("loan_rate_per_quarter", 0.0)))
         self._default_mortgage_schedule: FixedRateMortgageSchedule = get_fixed_rate_mortgage_schedule(
             max(0.0, float(self.params.get("mortgage_fixed_rate_q", base_rate_q))),
-            max(1, int(self.params.get("mortgage_term_quarters", 60))),
+            max(1, int(self.params.get("mortgage_term_quarters", 120))),
         )
         self._mortgage_contract_state_dirty = True
         self._mortgage_contract_cache: Dict[str, np.ndarray] | None = None
@@ -690,7 +693,7 @@ class NewLoop:
         return max(0.0, float(self.params.get("mortgage_fixed_rate_q", self.params.get("loan_rate_per_quarter", 0.0))))
 
     def _mortgage_term_quarters(self) -> int:
-        return max(1, int(self.params.get("mortgage_term_quarters", 60)))
+        return max(1, int(self.params.get("mortgage_term_quarters", 120)))
 
     def _invalidate_mortgage_contract_state(self) -> None:
         self._mortgage_contract_state_dirty = True
@@ -3577,6 +3580,17 @@ class NewLoop:
                 existing_fixed_obligations_q=current_rev_interest_i,
             )
             supportable_payment_i = np.maximum(0.0, _as_np(affordability["housing_payment_target_q"], dtype=float))
+            if regime == "OldLoop":
+                shared_underwriting = compute_old_loop_mortgage_underwriting_profile(
+                    underwriting_income_q_i,
+                    baseline_underwriting_income_q_i,
+                    self.params,
+                    existing_fixed_obligations_q=current_rev_interest_i,
+                )
+                supportable_payment_i = np.maximum(
+                    0.0,
+                    _as_np(shared_underwriting["mortgage_payment_cap_q"], dtype=float),
+                )
             housing_value_i = old_housing_value_i.copy()
             owner_mask_i = (~active_mort_i) & (housing_value_i > 1e-12)
             renter_mask_i = (~active_mort_i) & (housing_value_i <= 1e-12)
@@ -3614,7 +3628,10 @@ class NewLoop:
                 income_limit_payment_i,
                 income_limit_principal_i * max(0.0, unit_payment_q),
             )
-            desired_payment_i = np.minimum(np.minimum(supportable_payment_i, dti_room_nom), income_limit_payment_i)
+            if regime == "OldLoop":
+                desired_payment_i = np.minimum(supportable_payment_i, income_limit_payment_i)
+            else:
+                desired_payment_i = np.minimum(np.minimum(supportable_payment_i, dti_room_nom), income_limit_payment_i)
             desired_principal_i = np.minimum(
                 income_limit_principal_i,
                 desired_payment_i / max(1e-9, unit_payment_q),
@@ -3666,7 +3683,7 @@ class NewLoop:
                     desired_principal = float(desired_principal_i[idx])
                     if desired_payment <= 1e-9 or desired_principal <= 1e-9:
                         continue
-                    if desired_payment < max(1e-9, min_desired_payment):
+                    if regime != "OldLoop" and desired_payment < max(1e-9, min_desired_payment):
                         continue
                     allocation[idx] = desired_principal
                     acquired_house_value[idx] = housing_value_i[idx]

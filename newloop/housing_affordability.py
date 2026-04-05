@@ -129,3 +129,76 @@ def compute_affordable_housing_profile(
         "supportable_housing_q": supportable_housing_q.astype(float, copy=False),
         "housing_payment_target_q": housing_payment_target_q.astype(float, copy=False),
     }
+
+
+def compute_old_loop_mortgage_underwriting_profile(
+    permanent_income_q: np.ndarray,
+    baseline_income_q: np.ndarray,
+    params: Mapping[str, Any],
+    *,
+    existing_fixed_obligations_q: np.ndarray | None = None,
+) -> dict[str, Any]:
+    """Return the shared OldLoop mortgage underwriting profile.
+
+    This is the common affordability screen for both startup mortgage assignment
+    and live-turnover mortgage origination so they use the same payment-cap logic.
+    """
+    base = compute_affordable_housing_profile(
+        permanent_income_q,
+        baseline_income_q,
+        params,
+        existing_fixed_obligations_q=existing_fixed_obligations_q,
+    )
+    income_q = np.maximum(0.0, np.asarray(permanent_income_q, dtype=float))
+    baseline_q = np.maximum(0.0, np.asarray(baseline_income_q, dtype=float))
+    fixed_obligations_q = (
+        np.zeros_like(income_q)
+        if existing_fixed_obligations_q is None
+        else np.maximum(0.0, np.asarray(existing_fixed_obligations_q, dtype=float))
+    )
+    if fixed_obligations_q.shape != income_q.shape:
+        raise ValueError("existing_fixed_obligations_q must match permanent_income_q shape.")
+
+    underwrite_income_haircut = max(
+        0.0,
+        min(1.0, float(params.get("old_loop_mortgage_underwrite_income_haircut", 0.85))),
+    )
+    stress_income_haircut = max(
+        0.0,
+        min(1.0, float(params.get("old_loop_mortgage_stress_income_haircut", 0.75))),
+    )
+    coverage_min = max(1.0, float(params.get("old_loop_mortgage_payment_coverage_min", 1.25)))
+    buffer_quarters_min = max(0.0, float(params.get("old_loop_mortgage_buffer_quarters_min", 3.0)))
+
+    underwrite = compute_affordable_housing_profile(
+        income_q * underwrite_income_haircut,
+        baseline_q,
+        params,
+        existing_fixed_obligations_q=fixed_obligations_q,
+    )
+    stress = compute_affordable_housing_profile(
+        income_q * stress_income_haircut,
+        baseline_q,
+        params,
+        existing_fixed_obligations_q=fixed_obligations_q,
+    )
+    mortgage_payment_cap_q = np.minimum.reduce(
+        [
+            np.maximum(0.0, np.asarray(base["housing_payment_target_q"], dtype=float)),
+            np.maximum(0.0, np.asarray(base["supportable_housing_q"], dtype=float)),
+            np.maximum(0.0, np.asarray(underwrite["supportable_housing_q"], dtype=float)) / coverage_min,
+            np.maximum(0.0, np.asarray(stress["supportable_housing_q"], dtype=float)) / coverage_min,
+        ]
+    )
+
+    merged: dict[str, Any] = dict(base)
+    merged["mortgage_payment_cap_q"] = mortgage_payment_cap_q.astype(float, copy=False)
+    merged["underwrite_supportable_housing_q"] = np.asarray(
+        underwrite["supportable_housing_q"], dtype=float
+    ).astype(float, copy=False)
+    merged["stress_supportable_housing_q"] = np.asarray(
+        stress["supportable_housing_q"], dtype=float
+    ).astype(float, copy=False)
+    merged["mortgage_payment_coverage_min"] = coverage_min
+    merged["mortgage_buffer_quarters_min"] = buffer_quarters_min
+    return merged

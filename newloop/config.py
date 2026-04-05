@@ -86,8 +86,8 @@ config = {
             (95.0, 0.78),
             (100.0, 0.70),
         ),
-        "old_loop_gov_sector_spend_rate": 0.00,
-        "old_loop_gov_sector_spend_mode": "FixedSplit",
+        "old_loop_gov_sector_spend_rate": 1.00,
+        "old_loop_gov_sector_spend_mode": "RevenueShare",
         "old_loop_gov_sector_spend_info_share": 0.50,
         "old_loop_profit_markup_sensitivity": 0.00,
         "old_loop_profit_markup_max": 0.25,
@@ -147,7 +147,7 @@ config = {
         "revolving_principal_pay_rate_q": 0.0,   # revolving principal may persist unless a later rule retires it
         "revolving_rollover_share": 0.0,        # share of revolving principal repayment immediately re-lent to the same household
         "mortgage_fixed_rate_q": 0.01125,       # 4.5% annual fixed coupon for new mortgages
-        "mortgage_term_quarters": 60,           # 15-year fixed mortgage
+        "mortgage_term_quarters": 120,          # 30-year fixed mortgage
         "mortgage_principal_pay_rate_q": 0.01,   # 1%/q max paydown if cash available
         "mortgage_turnover_enabled": True,      # turn over a share of housed households and issue fresh mortgages on those housing-finance events
         "mortgage_maturity_roll_enabled": True, # refinance end-of-term mortgages into fresh contracts when they still qualify
@@ -408,6 +408,9 @@ def apply_economic_regime_overrides(cfg: Dict[str, Any]) -> Dict[str, Any]:
         params["policy_rate_rule_enabled"] = False
         params["corporate_tax_dynamic_with_wages"] = False
         params["gov_tax_rebate_rate"] = 0.0
+        params["dividend_payout_rate_bank"] = 1.0
+        params["old_loop_gov_sector_spend_rate"] = 1.0
+        params["old_loop_gov_sector_spend_mode"] = "RevenueShare"
 
     params["tax_policy_mode"] = resolve_tax_policy_mode(params)
     effective_cfg["parameters"] = params

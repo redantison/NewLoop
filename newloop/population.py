@@ -31,7 +31,10 @@ import math
 import random
 import statistics
 
-from .housing_affordability import compute_affordable_housing_profile
+from .housing_affordability import (
+    compute_affordable_housing_profile,
+    compute_old_loop_mortgage_underwriting_profile,
+)
 from .mortgage import annuity_factor, balance_from_orig_principal, payment_from_orig_principal, remaining_term
 
 # ----------------------------
@@ -791,36 +794,25 @@ def generate_population(cfg: PopulationConfig) -> Population:
             "old_loop_housing_headroom_floor_q": float(cfg.old_loop_housing_headroom_floor_q),
             "old_loop_core_nonhousing_floor_q": float(cfg.old_loop_core_nonhousing_floor_q),
             "old_loop_core_nonhousing_kappa_by_income_pct": tuple(cfg.old_loop_core_nonhousing_kappa_by_income_pct),
+            "old_loop_mortgage_underwrite_income_haircut": float(getattr(cfg, "old_loop_mortgage_underwrite_income_haircut", 0.85)),
+            "old_loop_mortgage_stress_income_haircut": float(getattr(cfg, "old_loop_mortgage_stress_income_haircut", 0.75)),
+            "old_loop_mortgage_payment_coverage_min": float(getattr(cfg, "old_loop_mortgage_payment_coverage_min", 1.25)),
+            "old_loop_mortgage_buffer_quarters_min": float(getattr(cfg, "old_loop_mortgage_buffer_quarters_min", 3.0)),
         }
-        underwrite_income_haircut = max(0.0, min(1.0, float(getattr(cfg, "old_loop_mortgage_underwrite_income_haircut", 0.85))))
-        stress_income_haircut = max(0.0, min(1.0, float(getattr(cfg, "old_loop_mortgage_stress_income_haircut", 0.75))))
-        coverage_min = max(1.0, float(getattr(cfg, "old_loop_mortgage_payment_coverage_min", 1.25)))
-        buffer_quarters_min = max(0.0, float(getattr(cfg, "old_loop_mortgage_buffer_quarters_min", 3.0)))
-
-        underwrite_affordability = compute_affordable_housing_profile(
-            np.asarray(wages, dtype=float) * underwrite_income_haircut,
+        mortgage_underwriting = compute_old_loop_mortgage_underwriting_profile(
+            np.asarray(wages, dtype=float),
             np.asarray(wage_potential, dtype=float),
             affordability_params,
             existing_fixed_obligations_q=(revolving_loans * rev_rate_q),
         )
-        stress_affordability = compute_affordable_housing_profile(
-            np.asarray(wages, dtype=float) * stress_income_haircut,
-            np.asarray(wage_potential, dtype=float),
-            affordability_params,
-            existing_fixed_obligations_q=(revolving_loans * rev_rate_q),
-        )
-        mortgage_underwrite_payment_cap_q = np.maximum(
+        buffer_quarters_min = float(mortgage_underwriting["mortgage_buffer_quarters_min"])
+        mortgage_payment_cap_q = np.maximum(
             0.0,
-            np.asarray(underwrite_affordability["supportable_housing_q"], dtype=float) / coverage_min,
-        )
-        mortgage_stress_payment_cap_q = np.maximum(
-            0.0,
-            np.asarray(stress_affordability["supportable_housing_q"], dtype=float) / coverage_min,
+            np.asarray(mortgage_underwriting["mortgage_payment_cap_q"], dtype=float),
         )
     else:
         buffer_quarters_min = 0.0
-        mortgage_underwrite_payment_cap_q = housing_payment_target_q.copy()
-        mortgage_stress_payment_cap_q = housing_payment_target_q.copy()
+        mortgage_payment_cap_q = housing_payment_target_q.copy()
 
     if mort_mask.any():
         mort_mult = rng.lognormal(
@@ -830,14 +822,7 @@ def generate_population(cfg: PopulationConfig) -> Population:
         )
         raw_principal = np.maximum(0.0, mort_mult * wages_annual[mort_mask])
         annual_disp = 4.0 * disp_perm_q[mort_mask]
-        target_payment_q = np.minimum.reduce(
-            [
-                housing_payment_target_q[mort_mask],
-                supportable_housing_q[mort_mask],
-                mortgage_underwrite_payment_cap_q[mort_mask],
-                mortgage_stress_payment_cap_q[mort_mask],
-            ]
-        )
+        target_payment_q = np.maximum(0.0, mortgage_payment_cap_q[mort_mask])
         target_principal = np.maximum(0.0, target_payment_q * payment_annuity_factor)
         principal_cap_income = mortgage_income_mult_cap * annual_disp
         ltv_draw = rng.normal(
