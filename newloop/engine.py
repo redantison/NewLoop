@@ -196,6 +196,10 @@ class NewLoop:
                 "old_loop_housing_headroom_floor_q",
                 "old_loop_core_nonhousing_floor_q",
                 "old_loop_core_nonhousing_kappa_by_income_pct",
+                "old_loop_mortgage_underwrite_income_haircut",
+                "old_loop_mortgage_payment_coverage_min",
+                "old_loop_mortgage_buffer_quarters_min",
+                "old_loop_mortgage_stress_income_haircut",
                 "old_loop_zero_startup_household_debt",
                 "old_loop_zero_startup_rent",
             ):

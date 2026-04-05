@@ -229,6 +229,10 @@ class PopulationConfig:
     old_loop_housing_headroom_share: float = 0.12
     old_loop_housing_headroom_floor_q: float = 25.0
     old_loop_core_nonhousing_floor_q: float = 150.0
+    old_loop_mortgage_underwrite_income_haircut: float = 0.85
+    old_loop_mortgage_payment_coverage_min: float = 1.25
+    old_loop_mortgage_buffer_quarters_min: float = 3.0
+    old_loop_mortgage_stress_income_haircut: float = 0.75
     old_loop_zero_startup_household_debt: bool = False
     old_loop_zero_startup_rent: bool = False
     disable_income_tax: bool = False
@@ -766,10 +770,57 @@ def generate_population(cfg: PopulationConfig) -> Population:
     mortgage_payment_sched_q = np.zeros(n, dtype=float)
     mortgage_orig_principal = np.zeros(n, dtype=float)
     disp_perm_q = np.maximum(0.0, np.asarray(affordability["disp_perm_q"], dtype=float))
+    supportable_housing_q = np.maximum(0.0, np.asarray(affordability["supportable_housing_q"], dtype=float))
     housing_payment_target_q = np.maximum(0.0, np.asarray(affordability["housing_payment_target_q"], dtype=float))
     housing_value_income_mult_cap = max(0.0, float(getattr(cfg, "housing_value_income_mult_cap", 6.0)))
     mortgage_income_mult_cap = max(0.0, float(getattr(cfg, "mortgage_income_mult_cap", 4.0)))
     payment_annuity_factor = annuity_factor(rate_q, term_q)
+    regime_name = str(getattr(cfg, "economic_regime", "NewLoop")).strip()
+    old_loop_mortgage_mode = regime_name == "OldLoop"
+
+    if old_loop_mortgage_mode:
+        affordability_params = {
+            "disable_income_tax": bool(cfg.disable_income_tax),
+            "old_loop_tax_rate_lower": float(cfg.old_loop_tax_rate_lower),
+            "old_loop_tax_rate_upper": float(cfg.old_loop_tax_rate_upper),
+            "old_loop_tax_threshold_lower_pct": float(cfg.old_loop_tax_threshold_lower_pct),
+            "old_loop_tax_threshold_upper_pct": float(cfg.old_loop_tax_threshold_upper_pct),
+            "old_loop_housing_share_target": float(cfg.old_loop_housing_share_target),
+            "old_loop_housing_share_cap": float(cfg.old_loop_housing_share_cap),
+            "old_loop_housing_headroom_share": float(cfg.old_loop_housing_headroom_share),
+            "old_loop_housing_headroom_floor_q": float(cfg.old_loop_housing_headroom_floor_q),
+            "old_loop_core_nonhousing_floor_q": float(cfg.old_loop_core_nonhousing_floor_q),
+            "old_loop_core_nonhousing_kappa_by_income_pct": tuple(cfg.old_loop_core_nonhousing_kappa_by_income_pct),
+        }
+        underwrite_income_haircut = max(0.0, min(1.0, float(getattr(cfg, "old_loop_mortgage_underwrite_income_haircut", 0.85))))
+        stress_income_haircut = max(0.0, min(1.0, float(getattr(cfg, "old_loop_mortgage_stress_income_haircut", 0.75))))
+        coverage_min = max(1.0, float(getattr(cfg, "old_loop_mortgage_payment_coverage_min", 1.25)))
+        buffer_quarters_min = max(0.0, float(getattr(cfg, "old_loop_mortgage_buffer_quarters_min", 3.0)))
+
+        underwrite_affordability = compute_affordable_housing_profile(
+            np.asarray(wages, dtype=float) * underwrite_income_haircut,
+            np.asarray(wage_potential, dtype=float),
+            affordability_params,
+            existing_fixed_obligations_q=(revolving_loans * rev_rate_q),
+        )
+        stress_affordability = compute_affordable_housing_profile(
+            np.asarray(wages, dtype=float) * stress_income_haircut,
+            np.asarray(wage_potential, dtype=float),
+            affordability_params,
+            existing_fixed_obligations_q=(revolving_loans * rev_rate_q),
+        )
+        mortgage_underwrite_payment_cap_q = np.maximum(
+            0.0,
+            np.asarray(underwrite_affordability["supportable_housing_q"], dtype=float) / coverage_min,
+        )
+        mortgage_stress_payment_cap_q = np.maximum(
+            0.0,
+            np.asarray(stress_affordability["supportable_housing_q"], dtype=float) / coverage_min,
+        )
+    else:
+        buffer_quarters_min = 0.0
+        mortgage_underwrite_payment_cap_q = housing_payment_target_q.copy()
+        mortgage_stress_payment_cap_q = housing_payment_target_q.copy()
 
     if mort_mask.any():
         mort_mult = rng.lognormal(
@@ -779,7 +830,14 @@ def generate_population(cfg: PopulationConfig) -> Population:
         )
         raw_principal = np.maximum(0.0, mort_mult * wages_annual[mort_mask])
         annual_disp = 4.0 * disp_perm_q[mort_mask]
-        target_payment_q = housing_payment_target_q[mort_mask]
+        target_payment_q = np.minimum.reduce(
+            [
+                housing_payment_target_q[mort_mask],
+                supportable_housing_q[mort_mask],
+                mortgage_underwrite_payment_cap_q[mort_mask],
+                mortgage_stress_payment_cap_q[mort_mask],
+            ]
+        )
         target_principal = np.maximum(0.0, target_payment_q * payment_annuity_factor)
         principal_cap_income = mortgage_income_mult_cap * annual_disp
         ltv_draw = rng.normal(
@@ -798,11 +856,14 @@ def generate_population(cfg: PopulationConfig) -> Population:
             0.0,
             np.minimum.reduce([raw_principal, target_principal, principal_cap_income, principal_cap_housing]),
         )
+        payment_q = payment_from_orig_principal(orig_principal, rate_q, term_q)
         supported_mask = orig_principal > 1e-9
+        if old_loop_mortgage_mode:
+            startup_buffer_required_q = buffer_quarters_min * payment_q
+            supported_mask = supported_mask & (deposits[mort_mask] + 1e-9 >= startup_buffer_required_q)
         supported_idx = np.where(mort_mask)[0][supported_mask]
         unsupported_idx = np.where(mort_mask)[0][~supported_mask]
         ages = rng.integers(0, int(term_q), size=int(mort_mask.sum()), endpoint=False).astype(float)
-        payment_q = payment_from_orig_principal(orig_principal, rate_q, term_q)
         current_balance = balance_from_orig_principal(orig_principal, rate_q, term_q, ages)
         mortgage_loans[supported_idx] = current_balance[supported_mask]
         mortgage_rate_q[supported_idx] = rate_q

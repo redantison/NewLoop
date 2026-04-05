@@ -30,6 +30,7 @@ class ParamControl:
 
 POLICY_SWITCHES_SECTION = "Policy Switches"
 STARTUP_SECTION = "Startup"
+EXPERIMENTS_SECTION = "Experiments"
 INCOME_SUPPORT_SECTION = "Income Support"
 MORTGAGES_SECTION = "Mortgages"
 GOVERNMENT_SECTION = "Government Sector"
@@ -40,6 +41,7 @@ INCOME_SUPPORT_MODE_WIDGET_KEY = "param__income_support_mode"
 SECTION_ORDER: tuple[str, ...] = (
     POLICY_SWITCHES_SECTION,
     STARTUP_SECTION,
+    EXPERIMENTS_SECTION,
     "Trust",
     "Taxes",
     GOVERNMENT_SECTION,
@@ -62,7 +64,7 @@ PARAMETER_CONTROLS: tuple[ParamControl, ...] = (
     ),
     ParamControl(("disable_trust",), "Disable Trust", POLICY_SWITCHES_SECTION, "bool", help_text="Prevent trust activation, launch, and dilution."),
     ParamControl(("disable_mortgage_relief",), "Disable Mortgage Relief", POLICY_SWITCHES_SECTION, "bool", help_text="Turn off the mortgage-relief regime so households follow the plain contractual mortgage path without indexed relief or bank neutralization support."),
-    ParamControl(("mortgage_turnover_enabled",), "Enable Mortgage Turnover", POLICY_SWITCHES_SECTION, "bool", help_text="Re-originate mortgage credit to plausible households so amortized mortgage stock can turn over instead of shrinking away."),
+    ParamControl(("mortgage_turnover_enabled",), "Enable Mortgage Turnover", EXPERIMENTS_SECTION, "bool", help_text="Re-originate mortgage credit to plausible households so amortized mortgage stock can turn over instead of shrinking away."),
     ParamControl(("disable_income_tax",), "Disable Income Tax", POLICY_SWITCHES_SECTION, "bool", help_text="Force household income taxes to zero while leaving other taxes and fiscal settings unchanged."),
     ParamControl(("disable_vat",), "Disable VAT", POLICY_SWITCHES_SECTION, "bool", help_text="Turn off VAT and VAT-credit effects while leaving other tax settings unchanged."),
     ParamControl(("disable_income_support",), "Disable Income Support", POLICY_SWITCHES_SECTION, "bool", help_text="Force income-support payments to zero in all quarters."),
@@ -126,16 +128,60 @@ PARAMETER_CONTROLS: tuple[ParamControl, ...] = (
     ParamControl(
         ("old_loop_zero_startup_household_debt",),
         "Old Loop Zero Startup HH Debt",
-        STARTUP_SECTION,
+        EXPERIMENTS_SECTION,
         "bool",
         help_text="Experimental Old Loop startup option: initialize households with no mortgage or revolving debt while leaving owned housing in place, to test pure circulation without household debt drag.",
     ),
     ParamControl(
         ("old_loop_zero_startup_rent",),
         "Old Loop Zero Startup Rent",
-        STARTUP_SECTION,
+        EXPERIMENTS_SECTION,
         "bool",
         help_text="Experimental Old Loop startup option: initialize renter households with zero rent, to isolate the loop without startup housing-payment drag.",
+    ),
+    ParamControl(
+        ("old_loop_mortgage_underwrite_income_haircut",),
+        "Old Loop Mortgage Underwrite Haircut",
+        STARTUP_SECTION,
+        "float",
+        0.10,
+        1.00,
+        0.01,
+        advanced=True,
+        help_text="Haircut applied to startup household income when sizing Old Loop mortgages. Lower values make startup mortgage underwriting more conservative.",
+    ),
+    ParamControl(
+        ("old_loop_mortgage_payment_coverage_min",),
+        "Old Loop Mortgage Coverage Min",
+        STARTUP_SECTION,
+        "float",
+        1.0,
+        3.0,
+        0.05,
+        advanced=True,
+        help_text="Minimum ratio of supportable housing cashflow to startup mortgage payment for Old Loop mortgagors.",
+    ),
+    ParamControl(
+        ("old_loop_mortgage_buffer_quarters_min",),
+        "Old Loop Mortgage Buffer Quarters",
+        STARTUP_SECTION,
+        "float",
+        0.0,
+        12.0,
+        0.25,
+        advanced=True,
+        help_text="Minimum startup liquid buffer, measured in quarters of mortgage payment, required for Old Loop mortgagors.",
+    ),
+    ParamControl(
+        ("old_loop_mortgage_stress_income_haircut",),
+        "Old Loop Mortgage Stress Haircut",
+        STARTUP_SECTION,
+        "float",
+        0.10,
+        1.00,
+        0.01,
+        advanced=True,
+        help_text="Additional stressed-income haircut used to reject fragile startup Old Loop mortgages.",
     ),
     ParamControl(
         ("startup_buffer_alignment_max_iters",),
@@ -223,7 +269,7 @@ PARAMETER_CONTROLS: tuple[ParamControl, ...] = (
     ParamControl(("corporate_tax_rate",), "Corporate Tax Rate", "Taxes", "float", 0.0, 1.0, 0.01),
     ParamControl(("corporate_tax_depr_rate_q",), "Corporate Tax Depreciation / Quarter", "Taxes", "float", 0.0, 0.10, 0.001),
     ParamControl(("dividend_payout_rate_firms",), "Firm Dividend Payout Rate", "Taxes", "float", 0.0, 1.0, 0.01),
-    ParamControl(("dividend_payout_rate_bank",), "Bank Dividend Payout Rate", "Taxes", "float", 0.0, 1.0, 0.01),
+    ParamControl(("dividend_payout_rate_bank",), "Bank Dividend Payout Rate", EXPERIMENTS_SECTION, "float", 0.0, 1.0, 0.01),
     ParamControl(("corporate_tax_dynamic_with_wages",), "Dynamic Corporate Tax With Wages", "Taxes", "bool"),
     ParamControl(("corporate_tax_rate_base",), "Corporate Tax Base Rate", "Taxes", "float", 0.0, 1.0, 0.01),
     ParamControl(("corporate_tax_wage_sensitivity",), "Corporate Tax Wage Sensitivity", "Taxes", "float", 0.0, 1.0, 0.01),
@@ -239,10 +285,10 @@ PARAMETER_CONTROLS: tuple[ParamControl, ...] = (
     ParamControl(("gov_rebate_buffer_quarters",), "Government Rebate Buffer (quarters)", GOVERNMENT_SECTION, "int", 0, 16, 1, help_text="Number of trailing quarters of GOV obligations held back before surplus rebates begin."),
     ParamControl(("gov_rebate_start_delay_quarters",), "Government Rebate Start Delay (quarters)", GOVERNMENT_SECTION, "int", 0, 40, 1, help_text="Delay before the GOV surplus rebate mechanism can begin paying out."),
     ParamControl(("gov_rebate_ramp_quarters",), "Government Rebate Ramp (quarters)", GOVERNMENT_SECTION, "int", 0, 80, 1, help_text="Linear ramp length for the GOV surplus rebate rate."),
-    ParamControl(("old_loop_gov_sector_spend_rate",), "Old Loop GOV Procurement Rate", GOVERNMENT_SECTION, "float", 0.0, 1.0, 0.01, help_text="Share of residual GOV deposits, after other GOV actions and any rebate buffer, recycled next quarter into lagged IS/PS procurement in Old Loop mode."),
-    ParamControl(("old_loop_gov_sector_spend_mode",), "Old Loop GOV Spend Mode", GOVERNMENT_SECTION, "select", options=("FixedSplit", "RevenueShare")),
-    ParamControl(("old_loop_gov_sector_spend_info_share",), "Old Loop GOV Spend Share: Info", GOVERNMENT_SECTION, "float", 0.0, 1.0, 0.01, help_text="Share of Old Loop GOV procurement routed to the Info sector; the remainder goes to the Physical sector."),
-    ParamControl(("old_loop_household_money_issuance_rate_annual",), "Old Loop HH Money Issuance / Year", GOVERNMENT_SECTION, "float", 0.0, 0.20, 0.001, help_text="Annual rate of broad-money issuance paid equally to households each quarter in Old Loop mode, using last quarter's money supply as the base."),
+    ParamControl(("old_loop_gov_sector_spend_rate",), "Old Loop GOV Procurement Rate", EXPERIMENTS_SECTION, "float", 0.0, 1.0, 0.01, help_text="Share of residual GOV deposits, after other GOV actions and any rebate buffer, recycled next quarter into lagged IS/PS procurement in Old Loop mode."),
+    ParamControl(("old_loop_gov_sector_spend_mode",), "Old Loop GOV Spend Mode", EXPERIMENTS_SECTION, "select", options=("FixedSplit", "RevenueShare")),
+    ParamControl(("old_loop_gov_sector_spend_info_share",), "Old Loop GOV Spend Share: Info", EXPERIMENTS_SECTION, "float", 0.0, 1.0, 0.01, help_text="Share of Old Loop GOV procurement routed to the Info sector; the remainder goes to the Physical sector."),
+    ParamControl(("old_loop_household_money_issuance_rate_annual",), "Old Loop HH Money Issuance / Year", EXPERIMENTS_SECTION, "float", 0.0, 0.20, 0.001, help_text="Annual rate of broad-money issuance paid equally to households each quarter in Old Loop mode, using last quarter's money supply as the base."),
     ParamControl(INCOME_SUPPORT_MODE_PATH, "Income Support Mode", INCOME_SUPPORT_SECTION, "select", options=("UIS", "UBI")),
     ParamControl(
         ("income_support_start_delay_quarters",),

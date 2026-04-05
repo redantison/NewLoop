@@ -156,6 +156,33 @@ class PopulationGenerationTests(unittest.TestCase):
 
         self.assertTrue(np.all(rent <= 1e-12))
 
+    def test_old_loop_strict_mortgage_underwriting_can_screen_out_startup_mortgages(self):
+        base_cfg = PopulationConfig(
+            n_families=3000,
+            seed=7919,
+            employment_rate=1.0,
+            economic_regime="OldLoop",
+            deposit_generation_mode="liquid_buffer_months",
+        )
+        strict_cfg = PopulationConfig(
+            n_families=3000,
+            seed=7919,
+            employment_rate=1.0,
+            economic_regime="OldLoop",
+            deposit_generation_mode="liquid_buffer_months",
+            old_loop_mortgage_underwrite_income_haircut=0.50,
+            old_loop_mortgage_payment_coverage_min=2.0,
+            old_loop_mortgage_buffer_quarters_min=8.0,
+            old_loop_mortgage_stress_income_haircut=0.40,
+        )
+        base_pop = generate_population(base_cfg)
+        pop = generate_population(strict_cfg)
+
+        base_mort = np.asarray(base_pop.mortgage_loans, dtype=float)
+        mort = np.asarray(pop.mortgage_loans, dtype=float)
+
+        self.assertLess(int(np.sum(mort > 1e-12)), int(np.sum(base_mort > 1e-12)))
+
 
 if __name__ == "__main__":
     unittest.main()
