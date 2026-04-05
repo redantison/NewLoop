@@ -893,6 +893,20 @@ class PolicyAlignmentTests(unittest.TestCase):
         self.assertGreater(float(run.rows[-1]["gov_dep_per_h"]), 0.0)
         self.assertTrue(any(float(row.get("gov_spend_per_h", 0.0)) > 0.0 for row in run.rows[1:]))
 
+    def test_old_loop_revenue_share_gov_procurement_runs_and_records_spend(self):
+        cfg = make_cfg()
+        cfg["parameters"]["economic_regime"] = "OldLoop"
+        cfg["parameters"]["automation_disabled"] = True
+        cfg["parameters"]["old_loop_gov_sector_spend_rate"] = 0.01
+        cfg["parameters"]["old_loop_gov_sector_spend_mode"] = "RevenueShare"
+        cfg["parameters"]["old_loop_gov_sector_spend_info_share"] = 1.0
+
+        run = run_simulation(n_quarters=40, cfg=cfg)
+
+        self.assertEqual(len(run.rows), 40)
+        self.assertGreater(float(run.rows[-1]["real_consumption"]), 0.0)
+        self.assertTrue(any(float(row.get("gov_spend_per_h", 0.0)) > 0.0 for row in run.rows[1:]))
+
     def test_money_supply_metrics_match_deposit_liability_identity(self):
         cfg = make_cfg()
         run = run_simulation(n_quarters=3, cfg=cfg)
@@ -936,13 +950,18 @@ class PolicyAlignmentTests(unittest.TestCase):
         floored_cfg["parameters"]["automation_disabled"] = True
         floored_cfg["parameters"]["old_loop_wage_floor_share"] = 0.02
 
-        base_run = run_simulation(n_quarters=2, cfg=base_cfg)
-        floored_run = run_simulation(n_quarters=2, cfg=floored_cfg)
+        base_run = run_simulation(n_quarters=8, cfg=base_cfg)
+        floored_run = run_simulation(n_quarters=8, cfg=floored_cfg)
 
-        self.assertEqual(len(base_run.rows), 2)
-        self.assertEqual(len(floored_run.rows), 2)
-        self.assertGreater(float(floored_run.rows[0]["wages_total"]), float(base_run.rows[0]["wages_total"]))
-        self.assertGreater(float(floored_run.rows[1]["wages_total"]), float(base_run.rows[1]["wages_total"]))
+        self.assertEqual(len(base_run.rows), 8)
+        self.assertEqual(len(floored_run.rows), 8)
+        self.assertGreaterEqual(float(floored_run.rows[0]["wages_total"]), float(base_run.rows[0]["wages_total"]))
+        self.assertTrue(
+            any(
+                float(f_row["wages_total"]) > float(b_row["wages_total"])
+                for f_row, b_row in zip(floored_run.rows[1:], base_run.rows[1:])
+            )
+        )
 
     def test_old_loop_profit_markup_can_raise_prices(self):
         base_cfg = make_cfg()

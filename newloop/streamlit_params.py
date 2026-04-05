@@ -124,6 +124,13 @@ PARAMETER_CONTROLS: tuple[ParamControl, ...] = (
         help_text="In Old Loop mode, floor the private wage bill at this share of the startup wage bill. `1.0` means wages are not allowed to fall below their startup total.",
     ),
     ParamControl(
+        ("old_loop_zero_startup_household_debt",),
+        "Old Loop Zero Startup HH Debt",
+        STARTUP_SECTION,
+        "bool",
+        help_text="Experimental Old Loop startup option: initialize households with no mortgage or revolving debt while leaving owned housing in place, to test pure circulation without household debt drag.",
+    ),
+    ParamControl(
         ("startup_buffer_alignment_max_iters",),
         "Buffer Alignment Iterations",
         STARTUP_SECTION,
@@ -225,7 +232,8 @@ PARAMETER_CONTROLS: tuple[ParamControl, ...] = (
     ParamControl(("gov_rebate_buffer_quarters",), "Government Rebate Buffer (quarters)", GOVERNMENT_SECTION, "int", 0, 16, 1, help_text="Number of trailing quarters of GOV obligations held back before surplus rebates begin."),
     ParamControl(("gov_rebate_start_delay_quarters",), "Government Rebate Start Delay (quarters)", GOVERNMENT_SECTION, "int", 0, 40, 1, help_text="Delay before the GOV surplus rebate mechanism can begin paying out."),
     ParamControl(("gov_rebate_ramp_quarters",), "Government Rebate Ramp (quarters)", GOVERNMENT_SECTION, "int", 0, 80, 1, help_text="Linear ramp length for the GOV surplus rebate rate."),
-    ParamControl(("old_loop_gov_sector_spend_rate",), "Old Loop GOV Procurement Rate", GOVERNMENT_SECTION, "float", 0.0, 1.0, 0.01, help_text="Share of current GOV inflow recycled next quarter into lagged IS/PS procurement in Old Loop mode."),
+    ParamControl(("old_loop_gov_sector_spend_rate",), "Old Loop GOV Procurement Rate", GOVERNMENT_SECTION, "float", 0.0, 1.0, 0.01, help_text="Share of residual GOV deposits, after other GOV actions and any rebate buffer, recycled next quarter into lagged IS/PS procurement in Old Loop mode."),
+    ParamControl(("old_loop_gov_sector_spend_mode",), "Old Loop GOV Spend Mode", GOVERNMENT_SECTION, "select", options=("FixedSplit", "RevenueShare")),
     ParamControl(("old_loop_gov_sector_spend_info_share",), "Old Loop GOV Spend Share: Info", GOVERNMENT_SECTION, "float", 0.0, 1.0, 0.01, help_text="Share of Old Loop GOV procurement routed to the Info sector; the remainder goes to the Physical sector."),
     ParamControl(("old_loop_household_money_issuance_rate_annual",), "Old Loop HH Money Issuance / Year", GOVERNMENT_SECTION, "float", 0.0, 0.20, 0.001, help_text="Annual rate of broad-money issuance paid equally to households each quarter in Old Loop mode, using last quarter's money supply as the base."),
     ParamControl(INCOME_SUPPORT_MODE_PATH, "Income Support Mode", INCOME_SUPPORT_SECTION, "select", options=("UIS", "UBI")),

@@ -120,6 +120,27 @@ class PopulationGenerationTests(unittest.TestCase):
         expected = (target_months / 3.0) * (np.maximum(0.0, base_real) + np.maximum(0.0, mort_sched) + np.maximum(0.0, rent) + np.maximum(0.0, revolving * rev_rate_q))
         self.assertTrue(np.allclose(deposits, expected, rtol=0.0, atol=1e-9))
 
+    def test_old_loop_zero_startup_household_debt_clears_household_loans(self):
+        cfg = PopulationConfig(
+            n_families=3000,
+            seed=7919,
+            employment_rate=1.0,
+            economic_regime="OldLoop",
+            deposit_generation_mode="liquid_buffer_months",
+            old_loop_zero_startup_household_debt=True,
+        )
+        pop = generate_population(cfg)
+
+        mort = np.asarray(pop.mortgage_loans, dtype=float)
+        rev = np.asarray(pop.revolving_loans, dtype=float)
+        pay = np.asarray(pop.mortgage_payment_sched_q, dtype=float)
+        housing = np.asarray(pop.housing_values, dtype=float)
+
+        self.assertTrue(np.all(mort <= 1e-12))
+        self.assertTrue(np.all(rev <= 1e-12))
+        self.assertTrue(np.all(pay <= 1e-12))
+        self.assertGreater(float(np.sum(housing)), 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

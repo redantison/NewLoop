@@ -196,6 +196,7 @@ class NewLoop:
                 "old_loop_housing_headroom_floor_q",
                 "old_loop_core_nonhousing_floor_q",
                 "old_loop_core_nonhousing_kappa_by_income_pct",
+                "old_loop_zero_startup_household_debt",
             ):
                 if key in self.params:
                     overrides[key] = self.params.get(key)
@@ -3397,18 +3398,22 @@ class NewLoop:
                     self.nodes["BANK"].add("reserves", +household_money_issuance_total)
                     self.nodes["GOV"].add("money_issued", +household_money_issuance_total)
         self.state["hh_money_issuance_total"] = float(max(0.0, household_money_issuance_total))
-        gov_inflow_total = float(
-            max(0.0, vat_total)
-            + max(0.0, overhead_total)
-            + max(0.0, corp_tax_total)
-            + max(0.0, income_tax_total)
-        )
         regime = str(self.params.get("economic_regime", "NewLoop")).strip()
+        buffer_target = self._gov_rebate_buffer_amount()
+        gov_buffer_keep = float(buffer_target) if buffer_target is not None else 0.0
         if regime == "OldLoop":
             gov_spend_rate = max(0.0, min(1.0, float(self.params.get("old_loop_gov_sector_spend_rate", 0.0))))
+            gov_spend_mode = str(self.params.get("old_loop_gov_sector_spend_mode", "FixedSplit")).strip()
             gov_spend_info_share = max(0.0, min(1.0, float(self.params.get("old_loop_gov_sector_spend_info_share", 0.5))))
+            if gov_spend_mode == "RevenueShare":
+                rev_prev_fa = max(0.0, float(self.nodes["FA"].memo.get("revenue_prev", 0.0)))
+                rev_prev_fh = max(0.0, float(self.nodes["FH"].memo.get("revenue_prev", 0.0)))
+                rev_prev_total = rev_prev_fa + rev_prev_fh
+                if rev_prev_total > 1e-12:
+                    gov_spend_info_share = rev_prev_fa / rev_prev_total
+            gov_residual_base = max(0.0, float(self.nodes["GOV"].get("deposits", 0.0)) - gov_buffer_keep)
             next_gov_spend_nom = min(
-                max(0.0, gov_inflow_total * gov_spend_rate),
+                max(0.0, gov_residual_base * gov_spend_rate),
                 max(0.0, float(self.nodes["GOV"].get("deposits", 0.0))),
             )
             self.state["gov_sector_spend_prev_nom"] = float(next_gov_spend_nom)
@@ -3420,7 +3425,6 @@ class NewLoop:
             self.state["gov_sector_spend_to_phys_prev_nom"] = 0.0
         self.state["gov_obligation_total"] = float(max(0.0, current_gov_obligation))
         self.state["gov_rebate_rate_eff"] = float(max(0.0, rebate_rate))
-        buffer_target = self._gov_rebate_buffer_amount()
         self.state["gov_rebate_buffer_target"] = float(buffer_target if buffer_target is not None else 0.0)
         self.gov_obligation_history.append(float(max(0.0, current_gov_obligation)))
         buffer_quarters = max(0, int(self.params.get("gov_rebate_buffer_quarters", 4)))
