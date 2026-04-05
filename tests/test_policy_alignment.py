@@ -145,9 +145,103 @@ class PolicyAlignmentTests(unittest.TestCase):
             places=9,
         )
 
+    def test_regime_ui_defaults_restore_old_to_new_defaults(self):
+        cfg = make_cfg()
+        session_state = {
+            "param__disable_trust": True,
+            "param__disable_income_support": True,
+            "param__disable_mortgage_relief": True,
+            "param__disable_vat": True,
+            "param__disable_income_tax": True,
+            "param__mortgage_turnover_enabled": False,
+            "param__automation_disabled": True,
+            "param__policy_rate_rule_enabled": True,
+            "param__corporate_tax_dynamic_with_wages": False,
+            "param__gov_tax_rebate_rate": 0.0,
+            "param__old_to_new_transition_quarters": 3,
+            "param__old_to_new_launch_newloop_policies": False,
+        }
+
+        changed = _apply_regime_ui_defaults(session_state, cfg, "OldToNew")
+
+        self.assertTrue(changed)
+        self.assertEqual(session_state["param__economic_regime"], "OldToNew")
+        self.assertFalse(bool(session_state["param__disable_trust"]))
+        self.assertFalse(bool(session_state["param__disable_income_support"]))
+        self.assertFalse(bool(session_state["param__disable_mortgage_relief"]))
+        self.assertFalse(bool(session_state["param__disable_vat"]))
+        self.assertFalse(bool(session_state["param__disable_income_tax"]))
+        self.assertTrue(bool(session_state["param__mortgage_turnover_enabled"]))
+        self.assertFalse(bool(session_state["param__automation_disabled"]))
+        self.assertFalse(bool(session_state["param__policy_rate_rule_enabled"]))
+        self.assertTrue(bool(session_state["param__corporate_tax_dynamic_with_wages"]))
+        self.assertAlmostEqual(
+            float(session_state["param__gov_tax_rebate_rate"]),
+            float(cfg["parameters"]["gov_tax_rebate_rate"]),
+            places=9,
+        )
+        self.assertEqual(
+            int(session_state["param__old_to_new_transition_quarters"]),
+            int(cfg["parameters"]["old_to_new_transition_quarters"]),
+        )
+        self.assertTrue(bool(session_state["param__old_to_new_launch_newloop_policies"]))
+
     def test_old_loop_plot_titles_use_ol_suffix(self):
         self.assertEqual(_title_with_mode("Household Wealth Reservoirs", "OL"), "Household Wealth Reservoirs (OL)")
         self.assertEqual(_title_with_mode("Household Wealth Reservoirs", "UBI"), "Household Wealth Reservoirs (UBI)")
+        self.assertEqual(_title_with_mode("Household Wealth Reservoirs", "OTN"), "Household Wealth Reservoirs (OTN)")
+
+    def test_old_to_new_transition_switches_visible_run_into_newloop(self):
+        cfg = make_cfg()
+        params = cfg["parameters"]
+        params["economic_regime"] = "OldToNew"
+        params["old_to_new_transition_quarters"] = 2
+        params["neutral_warmup_quarters"] = 4
+        params["automation_start_quarter"] = 0
+
+        run = run_simulation(n_quarters=4, cfg=cfg)
+
+        self.assertEqual(len(run.rows), 4)
+        self.assertEqual(int(run.startup_diagnostics.get("neutral_warmup_quarters", -1)), 0)
+        transition = dict(run.startup_diagnostics.get("old_to_new_transition", {}))
+        self.assertTrue(bool(transition.get("transition_applied", False)))
+        self.assertEqual(int(transition.get("visible_quarter", -1)), 2)
+        self.assertEqual(int(transition.get("internal_t", -1)), 2)
+        self.assertTrue(bool(transition.get("launch_newloop_policies", False)))
+        self.assertEqual(str(transition.get("post_transition_regime", "")), "NewLoop")
+        self.assertEqual(str(transition.get("post_transition_tax_policy_mode", "")), "current")
+        self.assertEqual(int(transition.get("post_transition_automation_start_quarter", -1)), 2)
+        self.assertAlmostEqual(float(run.rows[0]["automation"]), 0.0, places=12)
+        self.assertAlmostEqual(float(run.rows[1]["automation"]), 0.0, places=12)
+        self.assertGreater(float(run.rows[2]["automation"]), 0.0)
+        self.assertEqual(str(run.sim.params.get("economic_regime", "")), "NewLoop")
+
+    def test_old_to_new_can_run_automation_without_launching_newloop_policies(self):
+        cfg = make_cfg()
+        params = cfg["parameters"]
+        params["economic_regime"] = "OldToNew"
+        params["old_to_new_transition_quarters"] = 2
+        params["old_to_new_launch_newloop_policies"] = False
+        params["neutral_warmup_quarters"] = 4
+        params["automation_start_quarter"] = 0
+
+        run = run_simulation(n_quarters=4, cfg=cfg)
+
+        self.assertEqual(len(run.rows), 4)
+        transition = dict(run.startup_diagnostics.get("old_to_new_transition", {}))
+        self.assertTrue(bool(transition.get("transition_applied", False)))
+        self.assertFalse(bool(transition.get("launch_newloop_policies", True)))
+        self.assertEqual(str(transition.get("post_transition_regime", "")), "OldLoop")
+        self.assertEqual(str(transition.get("post_transition_tax_policy_mode", "")), "old_loop")
+        self.assertFalse(bool(transition.get("post_transition_automation_disabled", True)))
+        self.assertEqual(int(transition.get("post_transition_automation_start_quarter", -1)), 2)
+        self.assertAlmostEqual(float(run.rows[0]["automation"]), 0.0, places=12)
+        self.assertAlmostEqual(float(run.rows[1]["automation"]), 0.0, places=12)
+        self.assertGreater(float(run.rows[2]["automation"]), 0.0)
+        self.assertEqual(str(run.sim.params.get("economic_regime", "")), "OldLoop")
+        self.assertEqual(str(run.sim.params.get("tax_policy_mode", "")), "old_loop")
+        self.assertTrue(bool(run.sim.params.get("disable_trust", False)))
+        self.assertTrue(bool(run.sim.params.get("disable_income_support", False)))
 
     def test_old_loop_preserves_startup_deposits_by_default(self):
         cfg = make_cfg()

@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Sequence
 
 import numpy as np
 
-from .config import apply_economic_regime_overrides, get_default_config
+from .config import apply_economic_regime_overrides, get_default_config, normalize_economic_regime_name
 from .engine import NewLoop
 from .housing_affordability import compute_affordable_housing_profile
 from .income_support import make_income_support_policy
@@ -35,6 +35,60 @@ def _startup_deposit_blend(sim: NewLoop) -> float:
     if regime == "OldLoop" and bool(sim.params.get("old_loop_startup_preserve_deposits", True)):
         return 0.0
     return max(0.0, min(1.0, float(sim.params.get("startup_buffer_alignment_deposit_blend", 0.0))))
+
+
+def _old_to_new_transition_quarters(cfg: Dict[str, Any] | Dict[str, float] | None) -> int:
+    """Return the visible-quarter handoff point for OldToNew runs."""
+    if not isinstance(cfg, dict):
+        return 0
+    params = cfg.get("parameters", cfg)
+    if not isinstance(params, dict):
+        return 0
+    return max(0, int(params.get("old_to_new_transition_quarters", 0)))
+
+
+def _old_to_new_launch_newloop_policies(cfg: Dict[str, Any] | None) -> bool:
+    """Return whether OldToNew should switch into the NewLoop policy stack."""
+    if not isinstance(cfg, dict):
+        return True
+    params = cfg.get("parameters", cfg)
+    if not isinstance(params, dict):
+        return True
+    return bool(params.get("old_to_new_launch_newloop_policies", True))
+
+
+def _old_to_new_old_phase_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Build the OldLoop phase config used before the visible handoff."""
+    phase_cfg = copy.deepcopy(cfg)
+    params = phase_cfg.setdefault("parameters", {})
+    params["economic_regime"] = "OldLoop"
+    params["tax_policy_mode"] = "auto"
+    params["neutral_warmup_quarters"] = 0
+    return apply_economic_regime_overrides(phase_cfg)
+
+
+def _old_to_new_new_phase_cfg(cfg: Dict[str, Any], *, switch_t: int | None = None) -> Dict[str, Any]:
+    """Build the NewLoop phase config used after the visible handoff."""
+    phase_cfg = copy.deepcopy(cfg)
+    params = phase_cfg.setdefault("parameters", {})
+    base_automation_start = max(0, int(params.get("automation_start_quarter", 0)))
+    params["economic_regime"] = "NewLoop"
+    params["neutral_warmup_quarters"] = 0
+    if switch_t is not None:
+        params["automation_start_quarter"] = int(max(0, switch_t) + base_automation_start)
+    return apply_economic_regime_overrides(phase_cfg)
+
+
+def _old_to_new_oldloop_decay_phase_cfg(cfg: Dict[str, Any], *, switch_t: int | None = None) -> Dict[str, Any]:
+    """Build the OldLoop-with-automation phase config used for unmanaged OldLoop decay."""
+    phase_cfg = _old_to_new_old_phase_cfg(cfg)
+    params = phase_cfg.setdefault("parameters", {})
+    src_params = cfg.get("parameters", {}) if isinstance(cfg.get("parameters", {}), dict) else {}
+    base_automation_start = max(0, int(src_params.get("automation_start_quarter", 0)))
+    params["automation_disabled"] = bool(src_params.get("automation_disabled", False))
+    if switch_t is not None:
+        params["automation_start_quarter"] = int(max(0, switch_t) + base_automation_start)
+    return phase_cfg
 
 
 @dataclass
@@ -726,6 +780,9 @@ def _apply_startup_income_buffer_reset(
 def _baseline_calibration_regime_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
     regime_cfg = copy.deepcopy(cfg)
     params = regime_cfg.setdefault("parameters", {})
+    if normalize_economic_regime_name(params.get("economic_regime", "NewLoop")) == "OldToNew":
+        params["economic_regime"] = "OldLoop"
+        params["neutral_warmup_quarters"] = 0
     params["baseline_calibration_enabled"] = False
     params["automation_disabled"] = True
     params["disable_trust"] = True
@@ -1106,9 +1163,56 @@ def _reset_post_warmup_sector_planner_state(sim: NewLoop) -> None:
     sim.nodes["UMS"].set("deposits", 0.0)
 
 
+def _activate_old_to_new_transition(sim: NewLoop, cfg: Dict[str, Any], visible_quarter: int) -> Dict[str, Any]:
+    """Switch a live simulation from OldLoop mechanics into the configured NewLoop phase."""
+    current_t = int(sim.state.get("t", 0))
+    launch_newloop_policies = _old_to_new_launch_newloop_policies(cfg)
+    next_cfg = (
+        _old_to_new_new_phase_cfg(cfg, switch_t=current_t)
+        if launch_newloop_policies else
+        _old_to_new_oldloop_decay_phase_cfg(cfg, switch_t=current_t)
+    )
+    next_params = copy.deepcopy(next_cfg.get("parameters", {}))
+    sim.params = next_params
+    sim.income_support_policy = make_income_support_policy(sim.params)
+    sim.tax_policy = make_tax_policy(sim.params)
+    sim.state["old_to_new_transition_applied"] = True
+    sim.state["old_to_new_transition_visible_quarter"] = int(visible_quarter)
+    sim.state["old_to_new_transition_internal_t"] = int(current_t)
+    sim.state["old_to_new_configured_regime"] = "OldToNew"
+    return {
+        "transition_applied": True,
+        "visible_quarter": int(visible_quarter),
+        "internal_t": int(current_t),
+        "launch_newloop_policies": bool(launch_newloop_policies),
+        "post_transition_regime": str(sim.params.get("economic_regime", "NewLoop")),
+        "post_transition_tax_policy_mode": str(sim.params.get("tax_policy_mode", "")),
+        "post_transition_automation_disabled": bool(sim.params.get("automation_disabled", False)),
+        "post_transition_automation_start_quarter": int(sim.params.get("automation_start_quarter", 0)),
+    }
+
+
+def _build_old_to_new_startup_sim(cfg: Dict[str, Any]) -> tuple[NewLoop, int, Dict[str, Any]]:
+    """Create the visible-start sim for OldToNew without hidden NewLoop warm-start quarters."""
+    old_phase_cfg = _old_to_new_old_phase_cfg(cfg)
+    sim = NewLoop(old_phase_cfg)
+    _prepare_startup_sim(sim)
+    return sim, len(sim.history), {
+        "requested_quarters": 0,
+        "completed_quarters": 0,
+        "completed_fully": True,
+        "error": "",
+        "old_to_new_transition_quarters": _old_to_new_transition_quarters(cfg),
+        "old_to_new_launch_newloop_policies": _old_to_new_launch_newloop_policies(cfg),
+        "startup_mode": "old_to_new_visible_old_loop",
+    }
+
+
 def _build_startup_sim(cfg: Dict[str, Any]) -> tuple[NewLoop, int, Dict[str, Any]]:
     """Create a startup sim, optionally run hidden neutral warm-up quarters, and return the visible start index plus warm-up diagnostics."""
     effective_cfg = apply_economic_regime_overrides(cfg)
+    if normalize_economic_regime_name(effective_cfg.get("parameters", {}).get("economic_regime", "NewLoop")) == "OldToNew":
+        return _build_old_to_new_startup_sim(effective_cfg)
     warmup_quarters = max(0, int(effective_cfg.get("parameters", {}).get("neutral_warmup_quarters", 0)))
     startup_cfg = _neutral_warmup_regime_cfg(effective_cfg) if warmup_quarters > 0 else copy.deepcopy(effective_cfg)
     sim = NewLoop(startup_cfg)
@@ -1168,6 +1272,13 @@ def run_simulation(
 
     base_cfg = apply_economic_regime_overrides(copy.deepcopy(get_default_config() if cfg is None else cfg))
     effective_cfg, baseline_calibration = _run_baseline_calibration(base_cfg)
+    effective_regime = normalize_economic_regime_name(
+        effective_cfg.get("parameters", {}).get("economic_regime", "NewLoop")
+    )
+    old_to_new_transition_q = (
+        _old_to_new_transition_quarters(effective_cfg)
+        if effective_regime == "OldToNew" else None
+    )
 
     _notify_progress("Preparing startup...", 0)
     startup_diag_sim, _, warmup_report = _build_startup_sim(effective_cfg)
@@ -1179,8 +1290,11 @@ def run_simulation(
     before = _population_distribution_snapshot(sim, sol=before_sol) if before_sol is not None else None
     quarter_diag_q0: Dict[str, Any] | None = None
     quarter_diag_q10: Dict[str, Any] | None = None
+    old_to_new_transition_report: Dict[str, Any] | None = None
     _notify_progress("Running visible quarters...", 0)
     for step_idx in range(total_quarters):
+        if old_to_new_transition_q is not None and old_to_new_transition_report is None and step_idx == old_to_new_transition_q:
+            old_to_new_transition_report = _activate_old_to_new_transition(sim, effective_cfg, step_idx)
         sim.step()
         visible_t = len(sim.history) - visible_history_start - 1
         if visible_t == 0:
@@ -1204,6 +1318,15 @@ def run_simulation(
     startup_diag_out["neutral_warmup_quarters_completed"] = int(warmup_report.get("completed_quarters", 0))
     startup_diag_out["neutral_warmup_completed_fully"] = bool(warmup_report.get("completed_fully", True))
     startup_diag_out["neutral_warmup_error"] = str(warmup_report.get("error", ""))
+    if old_to_new_transition_q is not None:
+        startup_diag_out["old_to_new_transition"] = (
+            dict(old_to_new_transition_report)
+            if old_to_new_transition_report is not None else {
+                "transition_applied": False,
+                "visible_quarter": int(old_to_new_transition_q),
+                "launch_newloop_policies": bool(_old_to_new_launch_newloop_policies(effective_cfg)),
+            }
+        )
     quarter_compare = _quarter_comparison(quarter_diag_q0, quarter_diag_q10)
     if quarter_compare is not None:
         startup_diag_out["quarter_comparison"] = quarter_compare

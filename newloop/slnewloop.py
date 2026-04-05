@@ -116,7 +116,7 @@ DECIMAL_COLUMNS = {
 }
 
 DISPLAY_VALUE_MODES: tuple[str, str] = ("nominal", "real")
-CONTROL_DEFAULTS_VERSION = 16
+CONTROL_DEFAULTS_VERSION = 17
 LOOP_MODE_SELECT_KEY = "run__economic_regime_select"
 LOOP_MODE_PLACEHOLDER = "(Select loop mode)"
 UBI_PERCENTILE_PARAM_KEY = "param__ubi_target_percentile"
@@ -135,8 +135,10 @@ REGIME_UI_SYNC_PATHS: tuple[tuple[str, ...], ...] = (
     ("policy_rate_rule_enabled",),
     ("corporate_tax_dynamic_with_wages",),
     ("gov_tax_rebate_rate",),
+    ("old_to_new_transition_quarters",),
+    ("old_to_new_launch_newloop_policies",),
 )
-_TITLE_MODE_SUFFIX_RE = re.compile(r"\s+\((?:UIS|UBI|OL|Stale)\)\s*$", re.IGNORECASE)
+_TITLE_MODE_SUFFIX_RE = re.compile(r"\s+\((?:UIS|UBI|OL|OTN|Stale)\)\s*$", re.IGNORECASE)
 
 
 def _annualize_quarterly_rate(value: float) -> float:
@@ -452,7 +454,7 @@ def _build_cfg_from_state(st: Any, base_cfg: Dict[str, Any]) -> Dict[str, Any]:
     cfg = copy.deepcopy(base_cfg)
     params = cfg.get("parameters", {})
     selected_regime = str(st.session_state.get(LOOP_MODE_SELECT_KEY, "")).strip()
-    if selected_regime in {"NewLoop", "OldLoop"}:
+    if selected_regime in {"NewLoop", "OldLoop", "OldToNew"}:
         st.session_state["param__economic_regime"] = selected_regime
     for control in PARAMETER_CONTROLS:
         key = control_widget_key(control)
@@ -481,7 +483,7 @@ def _build_cfg_from_state(st: Any, base_cfg: Dict[str, Any]) -> Dict[str, Any]:
 
 def _apply_regime_ui_defaults(session_state: Dict[str, Any], base_cfg: Dict[str, Any], selected_regime: str) -> bool:
     regime = str(selected_regime).strip()
-    if regime not in {"NewLoop", "OldLoop"}:
+    if regime not in {"NewLoop", "OldLoop", "OldToNew"}:
         return False
 
     regime_cfg = copy.deepcopy(base_cfg)
@@ -694,11 +696,11 @@ def _render_parameter_controls(
         reset_clicked = col_reset.button("Reset", on_click=_request_reset_defaults)
         loop_mode = st.selectbox(
             "Loop Type",
-            options=(LOOP_MODE_PLACEHOLDER, "NewLoop", "OldLoop"),
+            options=(LOOP_MODE_PLACEHOLDER, "NewLoop", "OldLoop", "OldToNew"),
             key=LOOP_MODE_SELECT_KEY,
             help="Choose the loop mode before running the model.",
         )
-        if loop_mode in {"NewLoop", "OldLoop"}:
+        if loop_mode in {"NewLoop", "OldLoop", "OldToNew"}:
             last_regime = str(st.session_state.get("app__last_applied_regime_ui", "")).strip()
             if loop_mode != last_regime:
                 _apply_regime_ui_defaults(st.session_state, {"parameters": copy.deepcopy(base_params)}, loop_mode)
@@ -724,6 +726,12 @@ def _render_parameter_controls(
                 "Old Loop forces trust, income support, mortgage assistance, VAT/prebate, "
                 "and GOV surplus rebate off, keeps mortgage turnover on, disables automation entirely for now, "
                 "and uses the Old Loop tax regime."
+            )
+        elif str(st.session_state.get(LOOP_MODE_SELECT_KEY, "")).strip() == "OldToNew":
+            st.caption(
+                "OldToNew runs visible Old Loop quarters first, then hands off to the configured NewLoop "
+                "transition point without a hidden NewLoop warm-start. You can choose whether that handoff "
+                "launches the NewLoop policy stack or only turns on automation under OldLoop rules."
             )
 
         for section in SECTION_ORDER:
@@ -885,7 +893,7 @@ def main() -> None:
     current_cfg_json = _cfg_json(current_cfg)
     current_params = current_cfg.get("parameters", {}) if isinstance(current_cfg.get("parameters", {}), dict) else {}
     selected_regime = str(st.session_state.get(LOOP_MODE_SELECT_KEY, "")).strip()
-    has_selected_regime = selected_regime in {"NewLoop", "OldLoop"}
+    has_selected_regime = selected_regime in {"NewLoop", "OldLoop", "OldToNew"}
     if selected_regime == "OldLoop":
         wage_floor_share = float(current_params.get("old_loop_wage_floor_share", 0.0) or 0.0)
         profit_markup_sens = float(current_params.get("old_loop_profit_markup_sensitivity", 0.0) or 0.0)
@@ -954,7 +962,12 @@ def main() -> None:
     if support_mode not in {"UIS", "UBI"}:
         support_mode = support_mode_cfg
     economic_regime = str(current_cfg.get("parameters", {}).get("economic_regime", "NewLoop")).strip()
-    plot_mode = "OL" if economic_regime == "OldLoop" else support_mode
+    if economic_regime == "OldLoop":
+        plot_mode = "OL"
+    elif economic_regime == "OldToNew":
+        plot_mode = "OTN"
+    else:
+        plot_mode = support_mode
 
     _render_startup_diagnostics_panel(
         dict(st.session_state.get("startup_diagnostics", {})),

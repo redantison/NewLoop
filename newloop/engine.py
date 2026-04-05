@@ -4681,7 +4681,10 @@ class NewLoop:
             raise ValueError("This build requires parameters['population_dynamics']=True.")
         regime = normalize_economic_regime_name(params.get("economic_regime", "NewLoop"))
         if regime not in {"NewLoop", "OldLoop"}:
-            raise ValueError("parameters['economic_regime'] must be 'NewLoop' or 'OldLoop'.")
+            raise ValueError(
+                "parameters['economic_regime'] must be 'NewLoop' or 'OldLoop'; "
+                "use newloop.results.run_simulation() for 'OldToNew'."
+            )
         automation_path = params.get("automation_path", "two_hump")
         if not isinstance(automation_path, str):
             raise TypeError("parameters['automation_path'] must be a string.")

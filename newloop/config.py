@@ -8,7 +8,7 @@ from typing import Any, Dict
 
 config = {
     "parameters": {
-        "economic_regime": "NewLoop",    # "NewLoop" | "OldLoop"
+        "economic_regime": "NewLoop",    # "NewLoop" | "OldLoop" | "OldToNew"
         "tax_policy_mode": "auto",       # "auto" | "current" | "old_loop"
         # Policy
         "disable_trust": False,
@@ -218,6 +218,8 @@ config = {
         "old_loop_zero_startup_household_debt": False,
         "old_loop_zero_startup_rent": False,
         "neutral_warmup_quarters": 3,
+        "old_to_new_transition_quarters": 16,
+        "old_to_new_launch_newloop_policies": True,
         "startup_buffer_alignment_max_iters": 8,
         "startup_buffer_alignment_deposit_blend": 0.35,
         "population_config": {
@@ -376,6 +378,8 @@ def normalize_economic_regime_name(value: Any) -> str:
     raw = str(value or "NewLoop").strip().lower().replace("-", "").replace("_", "")
     if raw == "oldloop":
         return "OldLoop"
+    if raw in {"oldtonew", "old2new", "otn"}:
+        return "OldToNew"
     return "NewLoop"
 
 
@@ -411,7 +415,6 @@ def apply_economic_regime_overrides(cfg: Dict[str, Any]) -> Dict[str, Any]:
         params["dividend_payout_rate_bank"] = 1.0
         params["old_loop_gov_sector_spend_rate"] = 1.0
         params["old_loop_gov_sector_spend_mode"] = "RevenueShare"
-
     params["tax_policy_mode"] = resolve_tax_policy_mode(params)
     effective_cfg["parameters"] = params
     return effective_cfg
