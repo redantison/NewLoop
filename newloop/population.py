@@ -230,6 +230,7 @@ class PopulationConfig:
     old_loop_housing_headroom_floor_q: float = 25.0
     old_loop_core_nonhousing_floor_q: float = 150.0
     old_loop_zero_startup_household_debt: bool = False
+    old_loop_zero_startup_rent: bool = False
     disable_income_tax: bool = False
     old_loop_tax_rate_lower: float = 0.15
     old_loop_tax_rate_upper: float = 0.28
@@ -853,6 +854,10 @@ def generate_population(cfg: PopulationConfig) -> Population:
         str(getattr(cfg, "economic_regime", "NewLoop")).strip() == "OldLoop"
         and bool(getattr(cfg, "old_loop_zero_startup_household_debt", False))
     )
+    zero_startup_rent = (
+        str(getattr(cfg, "economic_regime", "NewLoop")).strip() == "OldLoop"
+        and bool(getattr(cfg, "old_loop_zero_startup_rent", False))
+    )
     if zero_startup_household_debt:
         mortgage_loans[:] = 0.0
         revolving_loans[:] = 0.0
@@ -861,6 +866,8 @@ def generate_population(cfg: PopulationConfig) -> Population:
         mortgage_term_q[:] = 0.0
         mortgage_payment_sched_q[:] = 0.0
         mortgage_orig_principal[:] = 0.0
+    if zero_startup_rent:
+        renter_rent_q[:] = 0.0
 
     if deposit_mode != "legacy_mixture" and str(getattr(cfg, "economic_regime", "NewLoop")).strip() == "OldLoop":
         rev_interest_q = np.maximum(0.0, revolving_loans * rev_rate_q)

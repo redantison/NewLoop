@@ -131,6 +131,13 @@ PARAMETER_CONTROLS: tuple[ParamControl, ...] = (
         help_text="Experimental Old Loop startup option: initialize households with no mortgage or revolving debt while leaving owned housing in place, to test pure circulation without household debt drag.",
     ),
     ParamControl(
+        ("old_loop_zero_startup_rent",),
+        "Old Loop Zero Startup Rent",
+        STARTUP_SECTION,
+        "bool",
+        help_text="Experimental Old Loop startup option: initialize renter households with zero rent, to isolate the loop without startup housing-payment drag.",
+    ),
+    ParamControl(
         ("startup_buffer_alignment_max_iters",),
         "Buffer Alignment Iterations",
         STARTUP_SECTION,

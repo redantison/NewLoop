@@ -197,6 +197,7 @@ class NewLoop:
                 "old_loop_core_nonhousing_floor_q",
                 "old_loop_core_nonhousing_kappa_by_income_pct",
                 "old_loop_zero_startup_household_debt",
+                "old_loop_zero_startup_rent",
             ):
                 if key in self.params:
                     overrides[key] = self.params.get(key)

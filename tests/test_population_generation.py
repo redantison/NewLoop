@@ -141,6 +141,21 @@ class PopulationGenerationTests(unittest.TestCase):
         self.assertTrue(np.all(pay <= 1e-12))
         self.assertGreater(float(np.sum(housing)), 0.0)
 
+    def test_old_loop_zero_startup_rent_clears_renter_rent(self):
+        cfg = PopulationConfig(
+            n_families=3000,
+            seed=7919,
+            employment_rate=1.0,
+            economic_regime="OldLoop",
+            deposit_generation_mode="liquid_buffer_months",
+            old_loop_zero_startup_rent=True,
+        )
+        pop = generate_population(cfg)
+
+        rent = np.asarray(pop.renter_rent_q, dtype=float)
+
+        self.assertTrue(np.all(rent <= 1e-12))
+
 
 if __name__ == "__main__":
     unittest.main()
