@@ -763,6 +763,38 @@ class PolicyAlignmentTests(unittest.TestCase):
         self.assertGreater(float(sim.nodes["FA"].get("K", 0.0)), 0.0)
         self.assertGreater(float(sim.nodes["FH"].get("K", 0.0)), 0.0)
 
+    def test_disable_capex_and_depreciation_freezes_capital_path(self):
+        cfg = make_cfg()
+        cfg["parameters"]["disable_capex_and_depreciation"] = True
+        cfg["parameters"]["automation_disabled"] = True
+        cfg["parameters"]["capital_depr_rate_per_quarter"] = 0.25
+        cfg["nodes"]["FA"]["stocks"]["K"] = 123.0
+        cfg["nodes"]["FH"]["stocks"]["K"] = 456.0
+
+        sim = NewLoop(cfg)
+        sim.state["sector_capacity_info_real_prev"] = 100.0
+        sim.state["sector_capacity_phys_real_prev"] = 100.0
+        sim.state["sector_unmet_info_real_prev"] = 50.0
+        sim.state["sector_unmet_phys_real_prev"] = 50.0
+        sim.state["sector_unmet_info_real_sm_prev"] = 50.0
+        sim.state["sector_unmet_phys_real_sm_prev"] = 50.0
+        sim.state["sector_free_cash_info_prev"] = 1000.0
+        sim.state["sector_free_cash_phys_prev"] = 1000.0
+        sim.state["sector_capex_queue_info_nom"] = 500.0
+        sim.state["sector_capex_queue_phys_nom"] = 500.0
+
+        self.assertAlmostEqual(sim._sector_maintenance_capex_nom("FA", 1.0), 0.0, places=9)
+        self.assertAlmostEqual(sim._sector_capex_plan_nom("FA", 1.0), 0.0, places=9)
+        self.assertAlmostEqual(sim._sector_installation_limit_nom("FA", 1.0, 100.0), 0.0, places=9)
+
+        sim.step()
+
+        self.assertAlmostEqual(float(sim.nodes["FA"].get("K", 0.0)), 123.0, places=9)
+        self.assertAlmostEqual(float(sim.nodes["FH"].get("K", 0.0)), 456.0, places=9)
+        self.assertAlmostEqual(float(sim.state.get("capex_total", -1.0)), 0.0, places=9)
+        self.assertAlmostEqual(float(sim.state.get("sector_capex_queue_info_nom", -1.0)), 0.0, places=9)
+        self.assertAlmostEqual(float(sim.state.get("sector_capex_queue_phys_nom", -1.0)), 0.0, places=9)
+
     def test_population_wealth_snapshot_includes_aggregate_trust_holdings_when_comprehensive(self):
         cfg = make_cfg()
         sim = NewLoop(cfg)

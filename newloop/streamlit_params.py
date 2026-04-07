@@ -157,6 +157,13 @@ PARAMETER_CONTROLS: tuple[ParamControl, ...] = (
         help_text="Experimental Old Loop startup option: initialize renter households with zero rent, to isolate the loop without startup housing-payment drag.",
     ),
     ParamControl(
+        ("disable_capex_and_depreciation",),
+        "Disable CAPEX & Depreciation",
+        EXPERIMENTS_SECTION,
+        "bool",
+        help_text="Experimental option: freeze firm capital by disabling sector CAPEX planning, installation, and capital depreciation. Useful for isolating oscillations driven by delayed capacity adjustment.",
+    ),
+    ParamControl(
         ("old_loop_mortgage_underwrite_income_haircut",),
         "Old Loop Mortgage Underwrite Haircut",
         STARTUP_SECTION,

@@ -211,6 +211,7 @@ config = {
         "baseline_calibration_tol_pct": 0.02,
         "baseline_calibration_reset_deposits_to_runtime_target": False,
         "old_loop_startup_preserve_deposits": True,
+        "disable_capex_and_depreciation": False,
         "old_loop_mortgage_underwrite_income_haircut": 0.85,
         "old_loop_mortgage_payment_coverage_min": 1.25,
         "old_loop_mortgage_buffer_quarters_min": 3.0,

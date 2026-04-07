@@ -1370,6 +1370,8 @@ class NewLoop:
         return payout_rate * retained_prev
 
     def _sector_maintenance_capex_nom(self, firm_id: str, price_level: float) -> float:
+        if self._capex_and_depreciation_disabled():
+            return 0.0
         p_now = max(1e-9, float(price_level))
         depr_q = max(0.0, min(1.0, float(self.params.get("capital_depr_rate_per_quarter", 0.0))))
         capacity_per_k = self._sector_capacity_per_k(firm_id)
@@ -1434,7 +1436,12 @@ class NewLoop:
         maintenance_nom = self._sector_maintenance_reserve_nom(firm_id, price_level)
         return float(max(0.0, float(after_tax_profit_nom) - maintenance_nom))
 
+    def _capex_and_depreciation_disabled(self) -> bool:
+        return bool(self.params.get("disable_capex_and_depreciation", False))
+
     def _sector_capex_plan_nom(self, firm_id: str, price_level: float) -> float:
+        if self._capex_and_depreciation_disabled():
+            return 0.0
         p_now = max(1e-9, float(price_level))
         half_sat = max(1e-9, float(self.params.get("sector_capex_gap_half_sat", 0.15)))
         share_min = max(0.0, min(1.0, float(self.params.get("sector_capex_share_min", 0.0))))
@@ -1488,6 +1495,8 @@ class NewLoop:
         return float(max(0.0, min(capex_budget_nom, capex_need_nom, growth_cap_nom)))
 
     def _sector_installation_limit_nom(self, firm_id: str, price_level: float, capacity_real: float) -> float:
+        if self._capex_and_depreciation_disabled():
+            return 0.0
         install_rate = max(0.0, float(self.params.get("sector_install_rate_q", 0.05)))
         capacity_per_k = self._sector_capacity_per_k(firm_id)
         if capacity_per_k <= 1e-12:
@@ -1520,8 +1529,9 @@ class NewLoop:
         ums_recycle_fa_real = ums_recycle_fa_nom / p_now
         ums_recycle_fh_real = ums_recycle_fh_nom / p_now
 
-        capex_fa_request_nom = self._sector_capex_plan_nom("FA", p_now)
-        capex_fh_request_nom = self._sector_capex_plan_nom("FH", p_now)
+        capex_disabled = self._capex_and_depreciation_disabled()
+        capex_fa_request_nom = 0.0 if capex_disabled else self._sector_capex_plan_nom("FA", p_now)
+        capex_fh_request_nom = 0.0 if capex_disabled else self._sector_capex_plan_nom("FH", p_now)
         supplier_share_info_for_info = self._sector_supplier_share_info("FA")
         supplier_share_info_for_phys = self._sector_supplier_share_info("FH")
         supplier_fa_seed_nom = (
@@ -1544,13 +1554,13 @@ class NewLoop:
         capacity_fa_real = self._sector_capacity_real("FA")
         capacity_fh_real = self._sector_capacity_real("FH")
 
-        capex_queue_info_prev = max(0.0, float(self.state.get("sector_capex_queue_info_nom", 0.0)))
-        capex_queue_phys_prev = max(0.0, float(self.state.get("sector_capex_queue_phys_nom", 0.0)))
+        capex_queue_info_prev = 0.0 if capex_disabled else max(0.0, float(self.state.get("sector_capex_queue_info_nom", 0.0)))
+        capex_queue_phys_prev = 0.0 if capex_disabled else max(0.0, float(self.state.get("sector_capex_queue_phys_nom", 0.0)))
 
         install_limit_fa_nom = self._sector_installation_limit_nom("FA", p_now, capacity_fa_real)
         install_limit_fh_nom = self._sector_installation_limit_nom("FH", p_now, capacity_fh_real)
-        capex_fa_nom = min(capex_queue_info_prev + capex_fa_request_nom, install_limit_fa_nom)
-        capex_fh_nom = min(capex_queue_phys_prev + capex_fh_request_nom, install_limit_fh_nom)
+        capex_fa_nom = 0.0 if capex_disabled else min(capex_queue_info_prev + capex_fa_request_nom, install_limit_fa_nom)
+        capex_fh_nom = 0.0 if capex_disabled else min(capex_queue_phys_prev + capex_fh_request_nom, install_limit_fh_nom)
 
         supplier_sales_fa_nom = (
             (supplier_share_info_for_info * capex_fa_nom)
@@ -1585,8 +1595,8 @@ class NewLoop:
             "capex_total_nom": float(capex_fa_nom + capex_fh_nom),
             "capex_fa_request_nom": float(capex_fa_request_nom),
             "capex_fh_request_nom": float(capex_fh_request_nom),
-            "capex_queue_info_next": float(max(0.0, (capex_queue_info_prev + capex_fa_request_nom) - capex_fa_nom)),
-            "capex_queue_phys_next": float(max(0.0, (capex_queue_phys_prev + capex_fh_request_nom) - capex_fh_nom)),
+            "capex_queue_info_next": float(0.0 if capex_disabled else max(0.0, (capex_queue_info_prev + capex_fa_request_nom) - capex_fa_nom)),
+            "capex_queue_phys_next": float(0.0 if capex_disabled else max(0.0, (capex_queue_phys_prev + capex_fh_request_nom) - capex_fh_nom)),
             "supplier_share_info_for_info_capex": float(supplier_share_info_for_info),
             "supplier_share_info_for_phys_capex": float(supplier_share_info_for_phys),
             "supplier_sales_fa_nom": float(supplier_sales_fa_nom),
@@ -2924,7 +2934,7 @@ class NewLoop:
         capex_total_nom = float(sol.get("capex_total_nom", capex_fa_nom + capex_fh_nom))
 
         # Depreciate existing capital (real units, non-cash)
-        depr_q = float(self.params.get("capital_depr_rate_per_quarter", 0.0))
+        depr_q = 0.0 if self._capex_and_depreciation_disabled() else float(self.params.get("capital_depr_rate_per_quarter", 0.0))
         depr_q = max(0.0, min(1.0, depr_q))
         for firm in ["FA", "FH"]:
             k0 = float(self.nodes[firm].get("K", 0.0))
