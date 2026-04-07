@@ -1265,6 +1265,35 @@ class NewLoop:
             "perm_income_nom": np.asarray(y_perm_nom, dtype=float),
         }
 
+    def _household_consumption_cash_limit(
+        self,
+        *,
+        y_guess: np.ndarray,
+        dep0: np.ndarray,
+        rev_interest_nom: np.ndarray,
+        mort_payment_nom: np.ndarray,
+        renter_rent_q: np.ndarray,
+    ) -> np.ndarray:
+        y_guess_arr = np.asarray(y_guess, dtype=float)
+        dep0_arr = np.asarray(dep0, dtype=float)
+        avail_nom = np.maximum(0.0, dep0_arr + y_guess_arr)
+
+        reserve_share = max(
+            0.0,
+            min(1.0, float(self.params.get("hh_consumption_fixed_obligation_reserve_share", 0.0))),
+        )
+        if reserve_share <= 0.0:
+            return avail_nom
+
+        # Experimental payment-priority control: keep a configurable share of
+        # same-quarter fixed obligations out of the consumption budget.
+        fixed_obligation_nom = (
+            np.maximum(0.0, np.asarray(rev_interest_nom, dtype=float))
+            + np.maximum(0.0, np.asarray(mort_payment_nom, dtype=float))
+            + np.maximum(0.0, np.asarray(renter_rent_q, dtype=float))
+        )
+        return np.maximum(0.0, avail_nom - (reserve_share * fixed_obligation_nom))
+
     def _sector_supplier_share_info(self, investor_id: str) -> float:
         if investor_id == "FA":
             key = "sector_supplier_share_info_for_info_capex"
@@ -2403,7 +2432,13 @@ class NewLoop:
             # Cash-in-advance constraint (no new borrowing for consumption inside the solver):
             # available = beginning deposits + current-quarter disposable income guess.
             # If disposable income is negative, available is floored at 0.
-            avail_nom = np.maximum(0.0, dep0 + y_guess)
+            avail_nom = self._household_consumption_cash_limit(
+                y_guess=y_guess,
+                dep0=dep0,
+                rev_interest_nom=rev_interest_pre,
+                mort_payment_nom=mort_payment_sched_q,
+                renter_rent_q=renter_rent_q,
+            )
             c_hh_nom_budgeted = np.minimum(c_hh_nom_des, avail_nom)
 
             # Split desired household demand by fixed sector shares, then ration it only by
@@ -3099,6 +3134,80 @@ class NewLoop:
             bank.add("deposit_liab", +div_bk_total)
 
         # -------------------------------------------------
+        # 3a) Current-quarter HH transfers before debt service
+        # -------------------------------------------------
+        income_tax_i = _as_np(sol.get("income_tax_i", []), dtype=float)
+        vat_credit_i = _as_np(sol.get("vat_credit_i", []), dtype=float)
+
+        # VAT credit is part of the solver's current-quarter cash inflow, so
+        # credit it before households attempt mortgage/rent/debt-service cashflows.
+        vat_credit_total = float(np.sum(np.maximum(0.0, vat_credit_i))) if (vat_credit_i.shape[0] == n) else 0.0
+        vat_credit_total_initial = float(vat_credit_total)
+        vat_credit_paid_from_gov = 0.0
+        vat_credit_issued = 0.0
+
+        if vat_credit_total > 0:
+            gov_dep = max(0.0, self.nodes["GOV"].get("deposits"))
+            pay_gov = min(vat_credit_total, gov_dep)
+            if pay_gov > 0:
+                self.nodes["GOV"].add("deposits", -pay_gov)
+                vat_credit_paid_from_gov += pay_gov
+                self._distribute_household_transfer_by_weights(deposits, vat_credit_i, pay_gov)
+                vat_credit_total -= pay_gov
+
+            if vat_credit_total > 0:
+                vat_credit_issued += vat_credit_total
+                self._distribute_household_transfer_by_weights(deposits, vat_credit_i, vat_credit_total)
+                self.nodes["BANK"].add("deposit_liab", vat_credit_total)
+                self.nodes["BANK"].add("reserves", vat_credit_total)
+                self.nodes["GOV"].add("money_issued", vat_credit_total)
+
+        self.state["vat_credit_paid_total"] = float(max(0.0, vat_credit_paid_from_gov))
+        self.state["vat_credit_issued_total"] = float(max(0.0, vat_credit_issued))
+        self.state["vat_credit_total"] = float(max(0.0, vat_credit_total_initial))
+
+        fund_loan = float(self.nodes["FUND"].get("loans", 0.0))
+        if fund_loan > 0:
+            fund_dep = float(self.nodes["FUND"].get("deposits", 0.0))
+            repay_amt = min(fund_dep, fund_loan)
+            if repay_amt > 0:
+                self._repay_loan("FUND", repay_amt)
+
+        fund_residual_share = self.params.get("fund_residual_to_gov_share", None)
+        if fund_residual_share is None:
+            fund_residual_share = 1.0 if self.params.get("send_fund_residual_to_gov", False) else 0.0
+        fund_residual_share = max(0.0, min(1.0, float(fund_residual_share)))
+        if fund_residual_share <= 0.0 and self.params.get("send_fund_residual_to_gov", False):
+            fund_residual_share = 1.0
+
+        if fund_residual_share > 0.0:
+            residual = max(0.0, self.nodes["FUND"].get("deposits"))
+            transfer = residual * fund_residual_share
+            if transfer > 0:
+                self._xfer_deposits("FUND", "GOV", transfer)
+
+        self.state["ums_drain_to_fund_total"] = 0.0
+        self.state["ums_drain_to_gov_total"] = 0.0
+
+        uis = float(sol.get("uis", 0.0))
+        funding = apply_income_support_payment(
+            support_per_household=float(uis),
+            n_households=int(n),
+            issue_share=float(
+                self.params.get(
+                    "income_support_issuance_share",
+                    self.params.get("uis_issuance_share", 0.0),
+                )
+            ),
+            deposits=deposits,
+            nodes=self.nodes,
+        )
+
+        self.state["uis_from_fund_dep_total"] = float(funding.from_fund_dep_total)
+        self.state["uis_from_gov_dep_total"] = float(funding.from_gov_dep_total)
+        self.state["uis_issued_total"] = float(funding.issued_total)
+
+        # -------------------------------------------------
         # 4) Interest: households and FUND -> BANK
         # -------------------------------------------------
         bank = self.nodes["BANK"]
@@ -3269,11 +3378,8 @@ class NewLoop:
         self.state["renter_rent_total"] = float(max(0.0, rent_total))
 
         # -------------------------------------------------
-        # 5) Taxes + VAT credit (before income support)
+        # 5) Income tax
         # -------------------------------------------------
-        income_tax_i = _as_np(sol.get("income_tax_i", []), dtype=float)
-        vat_credit_i = _as_np(sol.get("vat_credit_i", []), dtype=float)
-
         if income_tax_i.shape[0] == n:
             income_tax_total = float(np.sum(np.maximum(0.0, income_tax_i)))
             if income_tax_total > 0:
@@ -3283,82 +3389,6 @@ class NewLoop:
             income_tax_total = 0.0
         # Diagnostics: store per-tick income-tax receipts (nominal total)
         self.state["income_tax_total"] = float(max(0.0, income_tax_total))
-
-        # VAT credit is a transfer from GOV (or issuance if needed) to eligible households
-        vat_credit_total = float(np.sum(np.maximum(0.0, vat_credit_i))) if (vat_credit_i.shape[0] == n) else 0.0
-        vat_credit_total_initial = float(vat_credit_total)
-        vat_credit_paid_from_gov = 0.0
-        vat_credit_issued = 0.0
-
-        if vat_credit_total > 0:
-            gov_dep = max(0.0, self.nodes["GOV"].get("deposits"))
-            pay_gov = min(vat_credit_total, gov_dep)
-            if pay_gov > 0:
-                self.nodes["GOV"].add("deposits", -pay_gov)
-                vat_credit_paid_from_gov += pay_gov
-                self._distribute_household_transfer_by_weights(deposits, vat_credit_i, pay_gov)
-                vat_credit_total -= pay_gov
-
-            if vat_credit_total > 0:
-                # Issuance to complete the credit
-                vat_credit_issued += vat_credit_total
-                self._distribute_household_transfer_by_weights(deposits, vat_credit_i, vat_credit_total)
-                self.nodes["BANK"].add("deposit_liab", vat_credit_total)
-                self.nodes["BANK"].add("reserves", vat_credit_total)
-                self.nodes["GOV"].add("money_issued", vat_credit_total)
-
-        # Diagnostics: store per-tick VAT credit totals
-        self.state["vat_credit_paid_total"] = float(max(0.0, vat_credit_paid_from_gov))
-        self.state["vat_credit_issued_total"] = float(max(0.0, vat_credit_issued))
-        self.state["vat_credit_total"] = float(max(0.0, vat_credit_total_initial))
-
-        # -------------------------------------------------
-        # 5a) Trust amortization (before income support)
-        # -------------------------------------------------
-        fund_loan = float(self.nodes["FUND"].get("loans", 0.0))
-        if fund_loan > 0:
-            fund_dep = float(self.nodes["FUND"].get("deposits", 0.0))
-            repay_amt = min(fund_dep, fund_loan)
-            if repay_amt > 0:
-                self._repay_loan("FUND", repay_amt)
-
-        fund_residual_share = self.params.get("fund_residual_to_gov_share", None)
-        if fund_residual_share is None:
-            fund_residual_share = 1.0 if self.params.get("send_fund_residual_to_gov", False) else 0.0
-        fund_residual_share = max(0.0, min(1.0, float(fund_residual_share)))
-        if fund_residual_share <= 0.0 and self.params.get("send_fund_residual_to_gov", False):
-            fund_residual_share = 1.0
-
-        if fund_residual_share > 0.0:
-            residual = max(0.0, self.nodes["FUND"].get("deposits"))
-            transfer = residual * fund_residual_share
-            if transfer > 0:
-                self._xfer_deposits("FUND", "GOV", transfer)
-
-        self.state["ums_drain_to_fund_total"] = 0.0
-        self.state["ums_drain_to_gov_total"] = 0.0
-
-        # -------------------------------------------------
-        # 6) Income-support payments: issuance share -> FUND dep -> GOV dep -> extra issuance
-        # -------------------------------------------------
-        uis = float(sol.get("uis", 0.0))
-        funding = apply_income_support_payment(
-            support_per_household=float(uis),
-            n_households=int(n),
-            issue_share=float(
-                self.params.get(
-                    "income_support_issuance_share",
-                    self.params.get("uis_issuance_share", 0.0),
-                )
-            ),
-            deposits=deposits,
-            nodes=self.nodes,
-        )
-
-        # Store diagnostics for this tick (totals across all households)
-        self.state["uis_from_fund_dep_total"] = float(funding.from_fund_dep_total)
-        self.state["uis_from_gov_dep_total"] = float(funding.from_gov_dep_total)
-        self.state["uis_issued_total"] = float(funding.issued_total)
 
         # -------------------------------------------------
         # 6a) Optional tax refund: rebate a share of remaining GOV deposits

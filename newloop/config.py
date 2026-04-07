@@ -76,6 +76,7 @@ config = {
         # the target liquid buffer, and conserve when below target.
         "hh_buffer_spend_excess_rate_q": 0.10,
         "hh_buffer_shortfall_conserve_rate_q": 0.05,
+        "hh_consumption_fixed_obligation_reserve_share": 0.0,
         "old_loop_perm_income_update_rate_q": 0.30,
         "old_loop_transitory_mpc_scale": 1.0,
         "old_loop_wage_floor_share": 0.00,
@@ -316,7 +317,7 @@ config = {
         # Competitive pass-through deflates the tax base as automation rises. To model corporate
         # capture of a share of automation gains, we allow an automation-dependent markup that
         # partially offsets deflation.
-        "price_level_initial": 1.0,    # P0
+        "price_level_initial": 2.0,    # P0
         "price_beta": 1.0,             # 1.0 is default, strength of productivity->price decline vs automation
         "automation_markup_max": 0.25, # max markup factor at full automation (A=1); set 0.0 to disable
         "automation_markup_power": 1.0, # curvature: 1.0 linear in A; >1 back-loaded, <1 front-loaded

@@ -320,6 +320,22 @@ class PolicyAlignmentTests(unittest.TestCase):
         self.assertTrue(np.all(c_des >= 50.0))
         self.assertTrue(np.all(c_des <= 190.0 + 1e-9))
 
+    def test_household_consumption_fixed_obligation_reserve_lowers_cash_limit(self):
+        cfg = make_cfg()
+        params = cfg["parameters"]
+        params["hh_consumption_fixed_obligation_reserve_share"] = 0.5
+
+        sim = NewLoop(cfg)
+        limit = sim._household_consumption_cash_limit(
+            y_guess=np.asarray([100.0, 20.0], dtype=float),
+            dep0=np.asarray([50.0, 10.0], dtype=float),
+            rev_interest_nom=np.asarray([10.0, 5.0], dtype=float),
+            mort_payment_nom=np.asarray([30.0, 20.0], dtype=float),
+            renter_rent_q=np.asarray([10.0, 0.0], dtype=float),
+        )
+
+        self.assertTrue(np.allclose(limit, np.asarray([125.0, 17.5], dtype=float), atol=1e-9))
+
     def test_old_loop_step_updates_smoothed_permanent_income(self):
         cfg = make_cfg()
         params = cfg["parameters"]
