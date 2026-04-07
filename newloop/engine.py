@@ -76,6 +76,8 @@ class NewLoop:
             # Price level state
             "price_level": p0,
             "inflation": 0.0,
+            "housing_value_price_index_prev": 1.0,
+            "housing_value_price_deflator": 1.0,
             "sector_op_margin_info_prev": 0.0,
             "sector_op_margin_phys_prev": 0.0,
 
@@ -112,8 +114,15 @@ class NewLoop:
             "sector_load_gap_phys_real_sm_prev": 0.0,
             "sector_free_cash_info_prev": 0.0,
             "sector_free_cash_phys_prev": 0.0,
+            "sector_capex_reserve_info_prev": 0.0,
+            "sector_capex_reserve_phys_prev": 0.0,
             "sector_capex_queue_info_nom": 0.0,
             "sector_capex_queue_phys_nom": 0.0,
+            "hh_equity_issue_price_fa_prev": 0.0,
+            "hh_equity_issue_price_fh_prev": 0.0,
+            "hh_equity_investment_total": 0.0,
+            "hh_equity_investment_info_total": 0.0,
+            "hh_equity_investment_phys_total": 0.0,
             "sector_service_ratio_info_prev": 1.0,
             "sector_service_ratio_phys_prev": 1.0,
             "sector_payout_rate_info_prev": payout_firms_base,
@@ -1243,7 +1252,20 @@ class NewLoop:
             debt_priority_nom = np.zeros_like(c_hh_nom_income, dtype=float)
             target_buffer_nom = (target_months_arr / 3.0) * c_hh_nom_income
 
-        buffer_gap_nom = dep0_arr - target_buffer_nom
+        planned_equity_investment_nom = np.zeros_like(dep0_arr, dtype=float)
+        if (
+            bool(self.params.get("hh_equity_investment_enabled", False))
+            and bool(self.params.get("hh_equity_investment_pre_consumption", False))
+        ):
+            invest_rate = max(0.0, min(1.0, float(self.params.get("hh_equity_investment_excess_rate_q", 0.0))))
+            if invest_rate > 0.0:
+                planned_equity_investment_nom = np.minimum(
+                    np.maximum(0.0, dep0_arr),
+                    invest_rate * np.maximum(0.0, dep0_arr - target_buffer_nom),
+                )
+
+        consumption_deposits_nom = np.maximum(0.0, dep0_arr - planned_equity_investment_nom)
+        buffer_gap_nom = consumption_deposits_nom - target_buffer_nom
         c_hh_nom_des = (
             c_hh_nom_income
             + (spend_excess_rate * np.maximum(0.0, buffer_gap_nom))
@@ -1262,6 +1284,7 @@ class NewLoop:
             "target_buffer_nom": np.asarray(target_buffer_nom, dtype=float),
             "buffer_gap_nom": np.asarray(buffer_gap_nom, dtype=float),
             "c_hh_nom_des": np.asarray(c_hh_nom_des, dtype=float),
+            "planned_equity_investment_nom": np.asarray(planned_equity_investment_nom, dtype=float),
             "perm_income_nom": np.asarray(y_perm_nom, dtype=float),
         }
 
@@ -1273,10 +1296,16 @@ class NewLoop:
         rev_interest_nom: np.ndarray,
         mort_payment_nom: np.ndarray,
         renter_rent_q: np.ndarray,
+        planned_equity_investment_nom: Optional[np.ndarray] = None,
     ) -> np.ndarray:
         y_guess_arr = np.asarray(y_guess, dtype=float)
         dep0_arr = np.asarray(dep0, dtype=float)
-        avail_nom = np.maximum(0.0, dep0_arr + y_guess_arr)
+        investment_reserve = np.zeros_like(dep0_arr, dtype=float)
+        if planned_equity_investment_nom is not None:
+            investment_reserve_arr = np.asarray(planned_equity_investment_nom, dtype=float)
+            if investment_reserve_arr.shape[0] == dep0_arr.shape[0]:
+                investment_reserve = np.minimum(np.maximum(0.0, dep0_arr), np.maximum(0.0, investment_reserve_arr))
+        avail_nom = np.maximum(0.0, dep0_arr + y_guess_arr - investment_reserve)
 
         reserve_share = max(
             0.0,
@@ -1293,6 +1322,25 @@ class NewLoop:
             + np.maximum(0.0, np.asarray(renter_rent_q, dtype=float))
         )
         return np.maximum(0.0, avail_nom - (reserve_share * fixed_obligation_nom))
+
+    def _apply_housing_value_price_deflator(self) -> None:
+        if self.hh is None or self.hh.n <= 0:
+            return
+
+        p0 = max(1e-9, float(self.params.get("price_level_initial", 1.0)))
+        p_now = max(1e-9, float(self.state.get("price_level", p0)))
+        price_index = max(0.0, p_now / p0)
+        if not bool(self.params.get("housing_value_price_deflator_enabled", False)):
+            self.state["housing_value_price_index_prev"] = float(price_index)
+            self.state["housing_value_price_deflator"] = 1.0
+            return
+
+        prev_index = max(1e-9, float(self.state.get("housing_value_price_index_prev", 1.0)))
+        ratio = price_index / prev_index
+        if self.hh.housing_escrow.shape[0] == self.hh.n and abs(ratio - 1.0) > 1e-12:
+            self.hh.housing_escrow = np.maximum(0.0, np.asarray(self.hh.housing_escrow, dtype=float) * ratio)
+        self.state["housing_value_price_index_prev"] = float(price_index)
+        self.state["housing_value_price_deflator"] = float(price_index)
 
     def _sector_supplier_share_info(self, investor_id: str) -> float:
         if investor_id == "FA":
@@ -1452,9 +1500,10 @@ class NewLoop:
         revenue_buffer_share = max(0.0, float(self.params.get("sector_surplus_cash_buffer_revenue_share", 0.0)))
         maturity_signal = self._sector_maturity_signal(firm_id)
         deposits = max(0.0, float(self.nodes[firm_id].get("deposits", 0.0)))
+        capex_reserve = max(0.0, float(self.nodes[firm_id].get("capex_reserve", 0.0)))
         revenue_prev = max(0.0, float(self.nodes[firm_id].memo.get("revenue_prev", 0.0)))
         reserve_nom = self._sector_maintenance_capex_nom(firm_id, price_level) + (revenue_buffer_share * revenue_prev)
-        surplus_cash = max(0.0, deposits - reserve_nom)
+        surplus_cash = max(0.0, deposits - capex_reserve - reserve_nom)
         return float(sweep_share * maturity_signal * surplus_cash)
 
     def _sector_maintenance_reserve_nom(self, firm_id: str, price_level: float) -> float:
@@ -1467,6 +1516,88 @@ class NewLoop:
 
     def _capex_and_depreciation_disabled(self) -> bool:
         return bool(self.params.get("disable_capex_and_depreciation", False))
+
+    def _firm_discretionary_deposits_nom(self, firm_id: str) -> float:
+        deposits = max(0.0, float(self.nodes[firm_id].get("deposits", 0.0)))
+        capex_reserve = max(0.0, float(self.nodes[firm_id].get("capex_reserve", 0.0)))
+        return float(max(0.0, deposits - capex_reserve))
+
+    def _hh_equity_issue_price(self, firm_id: str, price_level: float) -> float:
+        shares_out = max(1e-9, float(self.nodes[firm_id].get("shares_outstanding", 0.0)))
+        raw_price = max(0.0, self._firm_broad_equity_proxy(firm_id, price_level)) / shares_out
+        if firm_id == "FA":
+            key = "hh_equity_issue_price_fa_prev"
+        else:
+            key = "hh_equity_issue_price_fh_prev"
+        prev_price = max(0.0, float(self.state.get(key, 0.0)))
+        alpha = max(0.0, min(1.0, float(self.params.get("hh_equity_issue_price_smoothing_q", 0.15))))
+        if prev_price <= 1e-12:
+            smoothed_price = raw_price
+        else:
+            smoothed_price = ((1.0 - alpha) * prev_price) + (alpha * raw_price)
+        floor = max(1e-9, float(self.params.get("hh_equity_issue_price_floor", 0.01)))
+        issue_price = max(floor, smoothed_price)
+        self.state[key] = float(issue_price)
+        return float(issue_price)
+
+    def _issue_hh_equity_for_capex_reserve(self, firm_id: str, amount_nom: float, price_level: float) -> float:
+        amount = max(0.0, float(amount_nom))
+        if amount <= 1e-12:
+            return 0.0
+        issue_price = self._hh_equity_issue_price(firm_id, price_level)
+        new_shares = amount / max(1e-9, issue_price)
+        share_key = "shares_FA" if firm_id == "FA" else "shares_FH"
+        self.nodes[firm_id].add("deposits", amount)
+        self.nodes[firm_id].add("capex_reserve", amount)
+        self.nodes[firm_id].add("shares_outstanding", new_shares)
+        self.nodes["HH"].add(share_key, new_shares)
+        return float(new_shares)
+
+    def _apply_household_equity_investment(
+        self,
+        *,
+        deposits: np.ndarray,
+        target_buffer_nom: np.ndarray,
+        price_level: float,
+        planned_investment_nom: Optional[np.ndarray] = None,
+    ) -> None:
+        self.state["hh_equity_investment_total"] = 0.0
+        self.state["hh_equity_investment_info_total"] = 0.0
+        self.state["hh_equity_investment_phys_total"] = 0.0
+        if not bool(self.params.get("hh_equity_investment_enabled", False)):
+            return
+        if deposits.size == 0 or target_buffer_nom.shape[0] != deposits.shape[0]:
+            return
+
+        invest_rate = max(0.0, min(1.0, float(self.params.get("hh_equity_investment_excess_rate_q", 0.0))))
+        if invest_rate <= 0.0:
+            return
+
+        if (
+            planned_investment_nom is not None
+            and bool(self.params.get("hh_equity_investment_pre_consumption", False))
+        ):
+            planned = np.asarray(planned_investment_nom, dtype=float)
+            if planned.shape[0] == deposits.shape[0]:
+                investment_i = np.minimum(np.maximum(0.0, deposits), np.maximum(0.0, planned))
+            else:
+                investment_i = np.zeros_like(deposits, dtype=float)
+        else:
+            excess_deposits = np.maximum(0.0, deposits - np.maximum(0.0, target_buffer_nom))
+            investment_i = np.minimum(np.maximum(0.0, deposits), invest_rate * excess_deposits)
+        total_investment = float(np.sum(np.maximum(0.0, investment_i)))
+        if total_investment <= 1e-12:
+            return
+
+        info_share = max(0.0, min(1.0, float(self.params.get("hh_equity_investment_info_share", self._sector_hh_demand_share_fa()))))
+        info_investment = total_investment * info_share
+        phys_investment = total_investment - info_investment
+        deposits[:] = deposits - investment_i
+        self._issue_hh_equity_for_capex_reserve("FA", info_investment, price_level)
+        self._issue_hh_equity_for_capex_reserve("FH", phys_investment, price_level)
+        self.state["hh_equity_investment_total"] = float(total_investment)
+        self.state["hh_equity_investment_info_total"] = float(info_investment)
+        self.state["hh_equity_investment_phys_total"] = float(phys_investment)
 
     def _sector_capex_plan_nom(self, firm_id: str, price_level: float) -> float:
         if self._capex_and_depreciation_disabled():
@@ -1491,6 +1622,7 @@ class NewLoop:
                 ),
             )
             prev_free_cash = max(0.0, float(self.state.get("sector_free_cash_info_prev", 0.0)))
+            prev_capex_reserve = max(0.0, float(self.state.get("sector_capex_reserve_info_prev", 0.0)))
         else:
             prev_capacity = max(0.0, float(self.state.get("sector_capacity_phys_real_prev", 0.0)))
             prev_unmet = max(
@@ -1503,6 +1635,7 @@ class NewLoop:
                 ),
             )
             prev_free_cash = max(0.0, float(self.state.get("sector_free_cash_phys_prev", 0.0)))
+            prev_capex_reserve = max(0.0, float(self.state.get("sector_capex_reserve_phys_prev", 0.0)))
 
         maintenance_nom = self._sector_maintenance_capex_nom(firm_id, p_now)
         maintenance_reserve_nom = self._sector_maintenance_reserve_nom(firm_id, p_now)
@@ -1512,6 +1645,8 @@ class NewLoop:
         maintenance_budget_nom = min(prev_free_cash, maintenance_reserve_nom)
         expansion_cash_nom = max(0.0, prev_free_cash - maintenance_budget_nom)
         capex_budget_nom = maintenance_budget_nom + (expansion_cash_nom * capex_share)
+        reserve_spend_rate = max(0.0, min(1.0, float(self.params.get("hh_capex_reserve_spend_rate_q", 0.25))))
+        capex_reserve_budget_nom = reserve_spend_rate * prev_capex_reserve
 
         if capacity_per_k <= 1e-12:
             expand_need_nom = 0.0
@@ -1521,7 +1656,7 @@ class NewLoop:
             growth_cap_nom = maintenance_nom + (growth_cap_rate * max(0.0, prev_capacity) * (p_now / capacity_per_k))
 
         capex_need_nom = maintenance_nom + expand_need_nom
-        return float(max(0.0, min(capex_budget_nom, capex_need_nom, growth_cap_nom)))
+        return float(max(0.0, min(capex_budget_nom + capex_reserve_budget_nom, capex_need_nom, growth_cap_nom)))
 
     def _sector_installation_limit_nom(self, firm_id: str, price_level: float, capacity_real: float) -> float:
         if self._capex_and_depreciation_disabled():
@@ -2427,6 +2562,7 @@ class NewLoop:
             target_buffer_nom = _as_np(consumption_targets["target_buffer_nom"], dtype=float)
             buffer_gap_nom = _as_np(consumption_targets["buffer_gap_nom"], dtype=float)
             c_hh_nom_des = _as_np(consumption_targets["c_hh_nom_des"], dtype=float)
+            planned_equity_investment_nom = _as_np(consumption_targets.get("planned_equity_investment_nom", []), dtype=float)
             perm_income_nom = _as_np(consumption_targets["perm_income_nom"], dtype=float)
 
             # Cash-in-advance constraint (no new borrowing for consumption inside the solver):
@@ -2438,6 +2574,7 @@ class NewLoop:
                 rev_interest_nom=rev_interest_pre,
                 mort_payment_nom=mort_payment_sched_q,
                 renter_rent_q=renter_rent_q,
+                planned_equity_investment_nom=planned_equity_investment_nom,
             )
             c_hh_nom_budgeted = np.minimum(c_hh_nom_des, avail_nom)
 
@@ -2506,7 +2643,7 @@ class NewLoop:
             # after production inputs, wages, and planned CAPEX are covered.
             overhead_cash_room_fa = max(
                 0.0,
-                float(self.nodes["FA"].get("deposits", 0.0))
+                self._firm_discretionary_deposits_nom("FA")
                 + rev_fa
                 - capex_fa_nom
                 - w_fa
@@ -2515,7 +2652,7 @@ class NewLoop:
             )
             overhead_cash_room_fh = max(
                 0.0,
-                float(self.nodes["FH"].get("deposits", 0.0))
+                self._firm_discretionary_deposits_nom("FH")
                 + rev_fh
                 - capex_fh_nom
                 - w_fh
@@ -2609,7 +2746,7 @@ class NewLoop:
                 div_commit_fa,
                 max(
                     0.0,
-                    float(self.nodes["FA"].get("deposits", 0.0))
+                    self._firm_discretionary_deposits_nom("FA")
                     + rev_fa
                     - capex_fa_nom
                     - w_fa
@@ -2624,7 +2761,7 @@ class NewLoop:
                 div_commit_fh,
                 max(
                     0.0,
-                    float(self.nodes["FH"].get("deposits", 0.0))
+                    self._firm_discretionary_deposits_nom("FH")
                     + rev_fh
                     - capex_fh_nom
                     - w_fh
@@ -2778,6 +2915,8 @@ class NewLoop:
                     "c_hh_nom_income_total": float(np.sum(np.maximum(0.0, c_hh_nom_core))),
                     "c_hh_nom_des_total": float(np.sum(np.maximum(0.0, c_hh_nom_des))),
                     "c_hh_nom_budgeted_total": float(np.sum(np.maximum(0.0, c_hh_nom_budgeted))),
+                    "target_buffer_nom_i": target_buffer_nom,
+                    "planned_equity_investment_nom_i": planned_equity_investment_nom,
                     "buffer_target_total": float(target_buffer_nom.sum()),
                     "buffer_gap_total": float(buffer_gap_nom.sum()),
                     "buffer_gap_positive_total": float(np.maximum(0.0, buffer_gap_nom).sum()),
@@ -2843,6 +2982,7 @@ class NewLoop:
         rev = hh.revolving_loans
         mort_interest_arrears = np.maximum(0.0, np.asarray(hh.mort_interest_arrears_q, dtype=float))
         mort_principal_arrears = np.maximum(0.0, np.asarray(hh.mort_principal_arrears_q, dtype=float))
+        self._apply_housing_value_price_deflator()
 
         # Solver vectors (accept list or ndarray)
         c_firm_nom = _as_np(sol.get("c_firm_nom", []), dtype=float)
@@ -2865,6 +3005,8 @@ class NewLoop:
         mort_dln_sm_i = _as_np(sol.get("mort_dln_sm_i", []), dtype=float)
         mort_index_enable = bool(sol.get("mort_index_enable", False))
         y_vec = _as_np(sol.get("y", []), dtype=float)
+        target_buffer_nom_i = _as_np(sol.get("target_buffer_nom_i", []), dtype=float)
+        planned_equity_investment_nom_i = _as_np(sol.get("planned_equity_investment_nom_i", []), dtype=float)
         self.state["hh_buffer_target_total"] = float(sol.get("buffer_target_total", 0.0))
         self.state["hh_buffer_gap_total"] = float(sol.get("buffer_gap_total", 0.0))
         self.state["hh_buffer_gap_positive_total"] = float(sol.get("buffer_gap_positive_total", 0.0))
@@ -2992,6 +3134,12 @@ class NewLoop:
             # Pay from investors (cash outflow)
             self.nodes["FA"].add("deposits", -capex_fa_nom)
             self.nodes["FH"].add("deposits", -capex_fh_nom)
+            capex_reserve_used_fa = min(max(0.0, self.nodes["FA"].get("capex_reserve", 0.0)), max(0.0, capex_fa_nom))
+            capex_reserve_used_fh = min(max(0.0, self.nodes["FH"].get("capex_reserve", 0.0)), max(0.0, capex_fh_nom))
+            if capex_reserve_used_fa > 0.0:
+                self.nodes["FA"].add("capex_reserve", -capex_reserve_used_fa)
+            if capex_reserve_used_fh > 0.0:
+                self.nodes["FH"].add("capex_reserve", -capex_reserve_used_fh)
 
             # Receive by suppliers (cash inflow; net across firms = 0)
             self.nodes["FA"].add("deposits", +capex_to_fa)
@@ -3548,6 +3696,11 @@ class NewLoop:
         self.state["mort_turnover_total"] = 0.0
         self.state["mort_turnover_households"] = 0.0
         self.state["mortgage_turnover_active_count"] = 0.0
+        self.state["mortgage_turnover_event_count"] = 0.0
+        self.state["mortgage_turnover_buyer_count"] = 0.0
+        self.state["mortgage_turnover_base_new_pool_count"] = 0.0
+        self.state["mortgage_paid_off_reissue_count"] = 0.0
+        self.state["mortgage_paid_off_reissue_total"] = 0.0
         self.state["mortgage_turnover_payment_gap_total"] = 0.0
         self.state["mortgage_turnover_payment_gap_remaining_total"] = 0.0
         self.state["mortgage_turnover_payment_capacity_total"] = 0.0
@@ -3645,6 +3798,8 @@ class NewLoop:
             owner_finance_event_i = owner_turnover_event_i & (self.rng.random(hh.n) < housing_turnover_owner_mortgage_share)
             turnover_event_i = mort_turnover_event_i | owner_turnover_event_i
             turnover_buyer_i = mort_turnover_event_i | owner_finance_event_i
+            self.state["mortgage_turnover_event_count"] = float(np.sum(turnover_event_i))
+            self.state["mortgage_turnover_buyer_count"] = float(np.sum(turnover_buyer_i))
 
             dti_room_nom = np.maximum(
                 0.0,
@@ -3683,6 +3838,7 @@ class NewLoop:
             allocation = np.zeros_like(mort, dtype=float)
             acquired_house_value = np.zeros_like(mort, dtype=float)
             matched_seller_mask = np.zeros(hh.n, dtype=bool)
+            paid_off_reissue_mask = np.zeros(hh.n, dtype=bool)
             matched_renter_downpayment_total = 0.0
             matched_seller_net_total = 0.0
             self.state["mortgage_turnover_payment_gap_total"] = 0.0
@@ -3694,6 +3850,7 @@ class NewLoop:
             self.state["mortgage_maturity_roll_total"] = 0.0
             nonmort_mask = ~active_mort_i
             base_new_pool = turnover_buyer_i & (underwriting_income_q_i >= mort_turnover_min_wage_q)
+            self.state["mortgage_turnover_base_new_pool_count"] = float(np.sum(base_new_pool))
             self.state["mortgage_turnover_nonmort_count"] = float(np.sum(nonmort_mask))
             self.state["mortgage_turnover_outright_owner_excluded_count"] = 0.0
             self.state["mortgage_turnover_zero_dti_room_count"] = float(np.sum(base_new_pool & (dti_room_nom <= 1e-9)))
@@ -3747,7 +3904,28 @@ class NewLoop:
                     acquired_house_value[maturity_roll_eligible_i] = housing_value_i[maturity_roll_eligible_i]
                 self.state["mortgage_maturity_roll_eligible_count"] = float(np.sum(maturity_roll_eligible_i))
 
-            if regime == "OldLoop":
+            if bool(self.params.get("old_loop_auto_reissue_paid_off_mortgages", True)):
+                paid_off_reissue_ltv = max(0.0, float(self.params.get("old_loop_paid_off_reissue_ltv", 0.90)))
+                paid_off_reissue_principal_i = np.maximum(0.0, housing_value_i * paid_off_reissue_ltv)
+                paid_off_candidate_i = (
+                    active_mort_start
+                    & (np.maximum(0.0, mort) <= 1e-9)
+                    & (housing_value_i > 1e-9)
+                    & (~turnover_event_i)
+                    & (underwriting_income_q_i >= mort_turnover_min_wage_q)
+                    & (paid_off_reissue_principal_i > 1e-9)
+                )
+                if np.any(paid_off_candidate_i):
+                    allocation[paid_off_candidate_i] = np.maximum(
+                        0.0,
+                        paid_off_reissue_principal_i[paid_off_candidate_i],
+                    )
+                    acquired_house_value[paid_off_candidate_i] = housing_value_i[paid_off_candidate_i]
+                    paid_off_reissue_mask = paid_off_candidate_i & (allocation > 1e-9)
+                self.state["mortgage_paid_off_reissue_count"] = float(np.sum(paid_off_reissue_mask))
+                self.state["mortgage_paid_off_reissue_total"] = float(np.sum(np.maximum(0.0, allocation[paid_off_reissue_mask])))
+
+            if regime == "OldLoop" and bool(self.params.get("old_loop_reissue_existing_mortgage_balance_on_turnover", False)):
                 existing_owner_reissue_i = mort_turnover_event_i & (np.maximum(0.0, mort) > 1e-9)
                 if np.any(existing_owner_reissue_i):
                     allocation[existing_owner_reissue_i] = np.maximum(
@@ -3827,9 +4005,17 @@ class NewLoop:
                     - downpayment_i
                 )
 
+            if np.any(paid_off_reissue_mask):
+                # Cash-out remortgage against the already-owned, current-valued home:
+                # the bank creates a new mortgage asset and matching household deposit.
+                deposits[paid_off_reissue_mask] = (
+                    deposits[paid_off_reissue_mask]
+                    + np.maximum(0.0, allocation[paid_off_reissue_mask])
+                )
+
             renewed_maturity_mask = maturity_roll_eligible_i & (allocation > 1e-9)
             closed_sale_mask = self_turnover_mask | matched_seller_mask
-            retired_old_mort_mask = closed_sale_mask | renewed_maturity_mask
+            retired_old_mort_mask = closed_sale_mask | renewed_maturity_mask | paid_off_reissue_mask
 
             if np.any(matched_seller_mask):
                 exit_idx = np.where(matched_seller_mask)[0]
@@ -3910,6 +4096,15 @@ class NewLoop:
         fund_dep = float(self.nodes["FUND"].get("deposits", 0.0))
         if fund_dep < 0:
             self._create_loan("FUND", -fund_dep, memo_tag="fund_overdraft_credit")
+
+        if target_buffer_nom_i.shape[0] != n:
+            target_buffer_nom_i = np.zeros(n, dtype=float)
+        self._apply_household_equity_investment(
+            deposits=deposits,
+            target_buffer_nom=target_buffer_nom_i,
+            price_level=float(self.state.get("price_level", 1.0)),
+            planned_investment_nom=planned_equity_investment_nom_i,
+        )
 
         # -------------------------------------------------
         # 8) Sync aggregate HH node + store memos
@@ -4017,16 +4212,23 @@ class NewLoop:
         self.state["sector_load_gap_phys_real_sm_prev"] = float(max(0.0, next_load_gap_phys_sm))
         self.state["sector_service_ratio_info_prev"] = float(service_ratio_info)
         self.state["sector_service_ratio_phys_prev"] = float(service_ratio_phys)
-        self.state["sector_free_cash_info_prev"] = float(max(0.0, self.nodes["FA"].get("deposits", 0.0)))
-        self.state["sector_free_cash_phys_prev"] = float(max(0.0, self.nodes["FH"].get("deposits", 0.0)))
+        self.state["sector_free_cash_info_prev"] = self._firm_discretionary_deposits_nom("FA")
+        self.state["sector_free_cash_phys_prev"] = self._firm_discretionary_deposits_nom("FH")
+        self.state["sector_capex_reserve_info_prev"] = float(max(0.0, self.nodes["FA"].get("capex_reserve", 0.0)))
+        self.state["sector_capex_reserve_phys_prev"] = float(max(0.0, self.nodes["FH"].get("capex_reserve", 0.0)))
 
         deposit_tol = 1e-6
         for firm_id in ("FA", "FH"):
             dep = float(self.nodes[firm_id].get("deposits", 0.0))
+            capex_reserve = float(self.nodes[firm_id].get("capex_reserve", 0.0))
             if abs(dep) < deposit_tol:
                 self.nodes[firm_id].set("deposits", 0.0)
             elif dep < 0.0:
                 raise ValueError(f"{firm_id} ended tick with negative deposits under no-new-debt sector rules: {dep:.6f}")
+            if abs(capex_reserve) < deposit_tol:
+                self.nodes[firm_id].set("capex_reserve", 0.0)
+            elif capex_reserve < 0.0:
+                raise ValueError(f"{firm_id} ended tick with negative CAPEX reserve: {capex_reserve:.6f}")
 
         self._assert_sfc_ok(context=f"post_tick_population_t{self.state['t']}")
 
@@ -4593,6 +4795,9 @@ class NewLoop:
                 ums_recycle_to_phys_per_h=float(self.state.get("ums_recycle_to_phys_total", 0.0)) / float(self.hh.n),
                 ums_recycle_total_per_h=float(self.state.get("ums_recycle_total", 0.0)) / float(self.hh.n),
                 capex_per_h=float(self.state.get("capex_total", 0.0)) / float(self.hh.n),
+                hh_equity_investment_per_h=float(self.state.get("hh_equity_investment_total", 0.0)) / float(self.hh.n),
+                sector_capex_reserve_info_per_h=float(self.nodes["FA"].get("capex_reserve", 0.0)) / float(self.hh.n),
+                sector_capex_reserve_physical_per_h=float(self.nodes["FH"].get("capex_reserve", 0.0)) / float(self.hh.n),
                 sector_capacity_info_per_h=float(solp.get("capacity_fa_real", 0.0)) / float(self.hh.n),
                 sector_capacity_physical_per_h=float(solp.get("capacity_fh_real", 0.0)) / float(self.hh.n),
                 sector_hh_util_info=(
@@ -4664,6 +4869,20 @@ class NewLoop:
                 mortgage_maturity_roll_candidate_count=float(self.state.get("mortgage_maturity_roll_candidate_count", 0.0)),
                 mortgage_maturity_roll_eligible_count=float(self.state.get("mortgage_maturity_roll_eligible_count", 0.0)),
                 mortgage_maturity_roll_count=float(self.state.get("mortgage_maturity_roll_count", 0.0)),
+                mortgage_turnover_active_count=float(self.state.get("mortgage_turnover_active_count", 0.0)),
+                mortgage_turnover_event_count=float(self.state.get("mortgage_turnover_event_count", 0.0)),
+                mortgage_turnover_buyer_count=float(self.state.get("mortgage_turnover_buyer_count", 0.0)),
+                mortgage_turnover_base_new_pool_count=float(self.state.get("mortgage_turnover_base_new_pool_count", 0.0)),
+                mortgage_turnover_new_eligible_count=float(self.state.get("mortgage_turnover_new_eligible_count", 0.0)),
+                mortgage_turnover_households=float(self.state.get("mort_turnover_households", 0.0)),
+                mortgage_turnover_renter_entry_count=float(self.state.get("mortgage_turnover_renter_entry_count", 0.0)),
+                mortgage_turnover_supply_released_count=float(self.state.get("mortgage_turnover_supply_released_count", 0.0)),
+                mortgage_turnover_zero_dti_room_count=float(self.state.get("mortgage_turnover_zero_dti_room_count", 0.0)),
+                mortgage_turnover_zero_income_room_count=float(self.state.get("mortgage_turnover_zero_income_room_count", 0.0)),
+                mortgage_turnover_dti_binding_count=float(self.state.get("mortgage_turnover_dti_binding_count", 0.0)),
+                mortgage_turnover_income_binding_count=float(self.state.get("mortgage_turnover_income_binding_count", 0.0)),
+                mortgage_paid_off_reissue_count=float(self.state.get("mortgage_paid_off_reissue_count", 0.0)),
+                mortgage_paid_off_reissue_total=float(self.state.get("mortgage_paid_off_reissue_total", 0.0)),
 
                 real_avg_income=real_avg_income,
                 real_consumption=float(c_total / P_now),

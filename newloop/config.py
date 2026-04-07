@@ -74,9 +74,16 @@ config = {
         "firm_overhead_rate_phys": 0.25,
         # Household consumption buffer behavior: spend only a fraction of deposits above
         # the target liquid buffer, and conserve when below target.
-        "hh_buffer_spend_excess_rate_q": 0.10,
-        "hh_buffer_shortfall_conserve_rate_q": 0.05,
+        "hh_buffer_spend_excess_rate_q": 0.09,
+        "hh_buffer_shortfall_conserve_rate_q": 0.06,
         "hh_consumption_fixed_obligation_reserve_share": 0.0,
+        "hh_equity_investment_enabled": True,
+        "hh_equity_investment_pre_consumption": True,
+        "hh_equity_investment_excess_rate_q": 0.05,
+        "hh_equity_investment_info_share": 0.30,
+        "hh_equity_issue_price_smoothing_q": 0.15,
+        "hh_equity_issue_price_floor": 0.01,
+        "hh_capex_reserve_spend_rate_q": 0.25,
         "old_loop_perm_income_update_rate_q": 0.30,
         "old_loop_transitory_mpc_scale": 1.0,
         "old_loop_wage_floor_share": 0.00,
@@ -158,9 +165,13 @@ config = {
         "mortgage_turnover_income_mult_cap": 4.0,
         "mortgage_turnover_support_income_weight": 0.25,
         "mortgage_turnover_min_wage_q": 1.0,
+        "housing_value_price_deflator_enabled": True,
         "housing_turnover_rate_mortgagor_q": 0.015,
         "housing_turnover_rate_owner_q": 0.005,
         "housing_turnover_owner_mortgage_share": 0.25,
+        "old_loop_reissue_existing_mortgage_balance_on_turnover": False,
+        "old_loop_auto_reissue_paid_off_mortgages": True,
+        "old_loop_paid_off_reissue_ltv": 0.90,
         "send_fund_residual_to_gov": False, # legacy compatibility toggle for a full FUND residual sweep
         "fund_residual_to_gov_share": 0.0,  # optional share of residual FUND deposits sent to GOV after debt-first treatment
         "disable_income_support": False,
@@ -348,8 +359,8 @@ config = {
     },
     "nodes": {
         # Firms: deposit accounts used as transactional hubs
-        "FA":   {"stocks": {"shares_outstanding": 10000.0, "deposits": 0.0, "K": 0.0}},
-        "FH":   {"stocks": {"shares_outstanding": 10000.0, "deposits": 0.0, "K": 0.0}},
+        "FA":   {"stocks": {"shares_outstanding": 10000.0, "deposits": 0.0, "K": 0.0, "capex_reserve": 0.0}},
+        "FH":   {"stocks": {"shares_outstanding": 10000.0, "deposits": 0.0, "K": 0.0, "capex_reserve": 0.0}},
 
         # Bank: deposit issuer + equity issuer
         "BANK": {"stocks": {"shares_outstanding": 10000.0, "deposits": 0.0, "deposit_liab": 0.0, "loan_assets": 0.0, "reserves": 0.0, "equity": 0.0}},

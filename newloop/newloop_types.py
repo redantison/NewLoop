@@ -186,6 +186,9 @@ class TickResult:
     ums_recycle_to_phys_per_h: float
     ums_recycle_total_per_h: float
     capex_per_h: float
+    hh_equity_investment_per_h: float
+    sector_capex_reserve_info_per_h: float
+    sector_capex_reserve_physical_per_h: float
     sector_capacity_info_per_h: float
     sector_capacity_physical_per_h: float
     sector_hh_util_info: float
@@ -232,6 +235,20 @@ class TickResult:
     mortgage_maturity_roll_candidate_count: float
     mortgage_maturity_roll_eligible_count: float
     mortgage_maturity_roll_count: float
+    mortgage_turnover_active_count: float
+    mortgage_turnover_event_count: float
+    mortgage_turnover_buyer_count: float
+    mortgage_turnover_base_new_pool_count: float
+    mortgage_turnover_new_eligible_count: float
+    mortgage_turnover_households: float
+    mortgage_turnover_renter_entry_count: float
+    mortgage_turnover_supply_released_count: float
+    mortgage_turnover_zero_dti_room_count: float
+    mortgage_turnover_zero_income_room_count: float
+    mortgage_turnover_dti_binding_count: float
+    mortgage_turnover_income_binding_count: float
+    mortgage_paid_off_reissue_count: float
+    mortgage_paid_off_reissue_total: float
 
     real_avg_income: float
     real_consumption: float

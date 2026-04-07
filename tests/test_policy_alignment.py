@@ -336,6 +336,47 @@ class PolicyAlignmentTests(unittest.TestCase):
 
         self.assertTrue(np.allclose(limit, np.asarray([125.0, 17.5], dtype=float), atol=1e-9))
 
+    def test_household_equity_investment_reserve_lowers_cash_limit(self):
+        cfg = make_cfg()
+        sim = NewLoop(cfg)
+
+        limit = sim._household_consumption_cash_limit(
+            y_guess=np.asarray([100.0, 20.0], dtype=float),
+            dep0=np.asarray([50.0, 10.0], dtype=float),
+            rev_interest_nom=np.zeros(2, dtype=float),
+            mort_payment_nom=np.zeros(2, dtype=float),
+            renter_rent_q=np.zeros(2, dtype=float),
+            planned_equity_investment_nom=np.asarray([15.0, 5.0], dtype=float),
+        )
+
+        self.assertTrue(np.allclose(limit, np.asarray([135.0, 25.0], dtype=float), atol=1e-9))
+
+    def test_household_equity_investment_routes_excess_deposits_to_capex_reserve(self):
+        cfg = make_cfg()
+        params = cfg["parameters"]
+        params["hh_equity_investment_enabled"] = True
+        params["hh_equity_investment_excess_rate_q"] = 0.10
+        params["hh_equity_investment_info_share"] = 0.25
+
+        sim = NewLoop(cfg)
+        assert sim.hh is not None
+        n = sim.hh.n
+        deposits = np.full(n, 150.0, dtype=float)
+        target_buffer = np.full(n, 50.0, dtype=float)
+        expected_total = float(n) * 10.0
+
+        sim._apply_household_equity_investment(
+            deposits=deposits,
+            target_buffer_nom=target_buffer,
+            price_level=float(sim.state.get("price_level", 1.0)),
+        )
+
+        self.assertAlmostEqual(float(np.sum(deposits)), float(n) * 150.0 - expected_total, places=6)
+        self.assertAlmostEqual(float(sim.nodes["FA"].get("capex_reserve", 0.0)), expected_total * 0.25, places=6)
+        self.assertAlmostEqual(float(sim.nodes["FH"].get("capex_reserve", 0.0)), expected_total * 0.75, places=6)
+        self.assertGreater(float(sim.nodes["HH"].get("shares_FA", 0.0)), 10000.0)
+        self.assertGreater(float(sim.nodes["HH"].get("shares_FH", 0.0)), 10000.0)
+
     def test_old_loop_step_updates_smoothed_permanent_income(self):
         cfg = make_cfg()
         params = cfg["parameters"]
@@ -983,6 +1024,9 @@ class PolicyAlignmentTests(unittest.TestCase):
             "hh_mortgage_bridge_to_revolving_per_h",
             "hh_overdraft_to_revolving_per_h",
             "hh_mortgage_unpaid_shortfall_per_h",
+            "hh_equity_investment_per_h",
+            "sector_capex_reserve_info_per_h",
+            "sector_capex_reserve_physical_per_h",
             "mortgagor_active_count",
             "mortgagor_gross_cash_income_per_active",
             "mortgagor_disp_pre_debt_per_active",
@@ -997,6 +1041,20 @@ class PolicyAlignmentTests(unittest.TestCase):
             "mortgage_maturity_roll_candidate_count",
             "mortgage_maturity_roll_eligible_count",
             "mortgage_maturity_roll_count",
+            "mortgage_turnover_active_count",
+            "mortgage_turnover_event_count",
+            "mortgage_turnover_buyer_count",
+            "mortgage_turnover_base_new_pool_count",
+            "mortgage_turnover_new_eligible_count",
+            "mortgage_turnover_households",
+            "mortgage_turnover_renter_entry_count",
+            "mortgage_turnover_supply_released_count",
+            "mortgage_turnover_zero_dti_room_count",
+            "mortgage_turnover_zero_income_room_count",
+            "mortgage_turnover_dti_binding_count",
+            "mortgage_turnover_income_binding_count",
+            "mortgage_paid_off_reissue_count",
+            "mortgage_paid_off_reissue_total",
         ):
             self.assertIn(key, row)
 
