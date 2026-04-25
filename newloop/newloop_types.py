@@ -158,6 +158,7 @@ class TickResult:
     sector_op_margin_info: float
     sector_op_margin_phys: float
     corporate_nonbank_broad_roe_q: float
+    corporate_nonbank_deployed_roe_q: float
     corporate_broad_roe_q: float
     private_inv_cov: float
 
@@ -186,6 +187,8 @@ class TickResult:
     ums_recycle_to_phys_per_h: float
     ums_recycle_total_per_h: float
     capex_per_h: float
+    capex_maintenance_need_per_h: float
+    capex_maintenance_gap_per_h: float
     hh_equity_investment_per_h: float
     sector_capex_reserve_info_per_h: float
     sector_capex_reserve_physical_per_h: float
@@ -221,6 +224,9 @@ class TickResult:
     hh_mortgage_bridge_to_revolving_per_h: float
     hh_overdraft_to_revolving_per_h: float
     hh_mortgage_unpaid_shortfall_per_h: float
+    household_credit_created_per_h: float
+    household_credit_retired_per_h: float
+    household_net_credit_flow_per_h: float
     mortgagor_active_count: float
     mortgagor_gross_cash_income_per_active: float
     mortgagor_disp_pre_debt_per_active: float

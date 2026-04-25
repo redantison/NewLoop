@@ -1507,6 +1507,9 @@ class NewLoop:
         return float(sweep_share * maturity_signal * surplus_cash)
 
     def _sector_maintenance_reserve_nom(self, firm_id: str, price_level: float) -> float:
+        regime = normalize_economic_regime_name(self.params.get("economic_regime", "NewLoop"))
+        if regime == "OldLoop" and bool(self.params.get("old_loop_self_fund_maintenance_capex", True)):
+            return float(self._sector_maintenance_capex_nom(firm_id, price_level))
         reserve_share = max(0.0, min(1.0, float(self.params.get("sector_maintenance_reserve_share", 1.0))))
         return float(reserve_share * self._sector_maintenance_capex_nom(firm_id, price_level))
 
@@ -1642,11 +1645,19 @@ class NewLoop:
         gap_ratio = prev_unmet / max(prev_capacity, 1e-9) if prev_capacity > 1e-12 else 0.0
         gap_signal = gap_ratio / (gap_ratio + half_sat) if gap_ratio > 0.0 else 0.0
         capex_share = share_min + ((share_max - share_min) * gap_signal)
-        maintenance_budget_nom = min(prev_free_cash, maintenance_reserve_nom)
-        expansion_cash_nom = max(0.0, prev_free_cash - maintenance_budget_nom)
-        capex_budget_nom = maintenance_budget_nom + (expansion_cash_nom * capex_share)
         reserve_spend_rate = max(0.0, min(1.0, float(self.params.get("hh_capex_reserve_spend_rate_q", 0.25))))
         capex_reserve_budget_nom = reserve_spend_rate * prev_capex_reserve
+        regime = normalize_economic_regime_name(self.params.get("economic_regime", "NewLoop"))
+
+        if regime == "OldLoop" and bool(self.params.get("old_loop_self_fund_maintenance_capex", True)):
+            available_capex_cash_nom = prev_free_cash + capex_reserve_budget_nom
+            maintenance_budget_nom = min(available_capex_cash_nom, maintenance_nom)
+            expansion_cash_nom = max(0.0, available_capex_cash_nom - maintenance_budget_nom)
+            capex_budget_nom = maintenance_budget_nom + (expansion_cash_nom * capex_share)
+        else:
+            maintenance_budget_nom = min(prev_free_cash, maintenance_reserve_nom)
+            expansion_cash_nom = max(0.0, prev_free_cash - maintenance_budget_nom)
+            capex_budget_nom = maintenance_budget_nom + (expansion_cash_nom * capex_share) + capex_reserve_budget_nom
 
         if capacity_per_k <= 1e-12:
             expand_need_nom = 0.0
@@ -1656,7 +1667,7 @@ class NewLoop:
             growth_cap_nom = maintenance_nom + (growth_cap_rate * max(0.0, prev_capacity) * (p_now / capacity_per_k))
 
         capex_need_nom = maintenance_nom + expand_need_nom
-        return float(max(0.0, min(capex_budget_nom + capex_reserve_budget_nom, capex_need_nom, growth_cap_nom)))
+        return float(max(0.0, min(capex_budget_nom, capex_need_nom, growth_cap_nom)))
 
     def _sector_installation_limit_nom(self, firm_id: str, price_level: float, capacity_real: float) -> float:
         if self._capex_and_depreciation_disabled():
@@ -3109,6 +3120,16 @@ class NewLoop:
         capex_fa_nom = float(sol.get("capex_fa_nom", 0.0))
         capex_fh_nom = float(sol.get("capex_fh_nom", 0.0))
         capex_total_nom = float(sol.get("capex_total_nom", capex_fa_nom + capex_fh_nom))
+        p_capex_diag = max(1e-9, float(self.state.get("price_level", 1.0)))
+        capex_maintenance_need_fa = self._sector_maintenance_capex_nom("FA", p_capex_diag)
+        capex_maintenance_need_fh = self._sector_maintenance_capex_nom("FH", p_capex_diag)
+        capex_maintenance_need_total = capex_maintenance_need_fa + capex_maintenance_need_fh
+        capex_maintenance_gap_total = (
+            max(0.0, capex_maintenance_need_fa - capex_fa_nom)
+            + max(0.0, capex_maintenance_need_fh - capex_fh_nom)
+        )
+        self.state["capex_maintenance_need_total"] = float(capex_maintenance_need_total)
+        self.state["capex_maintenance_gap_total"] = float(capex_maintenance_gap_total)
 
         # Depreciate existing capital (real units, non-cash)
         depr_q = 0.0 if self._capex_and_depreciation_disabled() else float(self.params.get("capital_depr_rate_per_quarter", 0.0))
@@ -3691,9 +3712,13 @@ class NewLoop:
         rev_rollover_total = 0.0
         mort_principal_paid_total = float(self.state.get("mort_principal_paid_total", 0.0))
         mort_turnover_total = 0.0
+        old_mort_turnover_total = 0.0
+        turnover_deposit_delta = 0.0
         self.state["rev_principal_paid_total"] = 0.0
         self.state["rev_rollover_total"] = 0.0
         self.state["mort_turnover_total"] = 0.0
+        self.state["mort_turnover_old_payoff_total"] = 0.0
+        self.state["mort_turnover_deposit_delta_total"] = 0.0
         self.state["mort_turnover_households"] = 0.0
         self.state["mortgage_turnover_active_count"] = 0.0
         self.state["mortgage_turnover_event_count"] = 0.0
@@ -4092,6 +4117,23 @@ class NewLoop:
             self.nodes["BANK"].add("loan_assets", overdraft_total)
             self.nodes["BANK"].add("deposit_liab", overdraft_total)
 
+        household_credit_created_total = (
+            max(0.0, float(self.state.get("mort_revolving_bridge_total", 0.0)))
+            + max(0.0, float(self.state.get("rev_rollover_total", 0.0)))
+            + max(0.0, float(self.state.get("mort_turnover_total", 0.0)))
+            + max(0.0, float(self.state.get("hh_overdraft_total", 0.0)))
+        )
+        household_credit_retired_total = (
+            max(0.0, float(self.state.get("mort_principal_paid_total", 0.0)))
+            + max(0.0, float(self.state.get("rev_principal_paid_total", 0.0)))
+            + max(0.0, float(old_mort_turnover_total))
+        )
+        self.state["household_credit_created_total"] = float(household_credit_created_total)
+        self.state["household_credit_retired_total"] = float(household_credit_retired_total)
+        self.state["household_net_credit_flow_total"] = float(
+            household_credit_created_total - household_credit_retired_total
+        )
+
         # FUND overdraft (rare)
         fund_dep = float(self.nodes["FUND"].get("deposits", 0.0))
         if fund_dep < 0:
@@ -4260,12 +4302,21 @@ class NewLoop:
             horizon_q = float(self.params.get("automation_horizon_quarters", 60.0))
             a = min(1.0, effective_t / horizon_q) if horizon_q > 0 else 1.0
             a_prev = min(1.0, (effective_t - 1) / horizon_q) if (horizon_q > 0 and effective_t > 0) else 0.0
-            self.state["automation"] = float(a)
-            self.state["automation_flow"] = float(a - a_prev)
-            self.state["automation_info"] = 0.0
-            self.state["automation_info_flow"] = 0.0
-            self.state["automation_phys"] = 0.0
-            self.state["automation_phys_flow"] = 0.0
+            w_info = max(0.0, min(1.0, float(self.params.get("automation_w_info", 0.65))))
+            info_cap = max(0.0, min(1.0, float(self.params.get("automation_info_cap", 1.0))))
+            phys_cap = max(0.0, min(1.0, float(self.params.get("automation_phys_cap", 1.0))))
+            a_info = info_cap * a
+            a_phys = phys_cap * a
+            a_info_prev = info_cap * a_prev
+            a_phys_prev = phys_cap * a_prev
+            a_weighted = (w_info * a_info) + ((1.0 - w_info) * a_phys)
+            a_weighted_prev = (w_info * a_info_prev) + ((1.0 - w_info) * a_phys_prev)
+            self.state["automation"] = float(a_weighted)
+            self.state["automation_flow"] = float(a_weighted - a_weighted_prev)
+            self.state["automation_info"] = float(a_info)
+            self.state["automation_info_flow"] = float(a_info - a_info_prev)
+            self.state["automation_phys"] = float(a_phys)
+            self.state["automation_phys_flow"] = float(a_phys - a_phys_prev)
         else:
             # Two-hump defaults tuned for a ~15-year (60-quarter) horizon.
             w_info = float(self.params.get("automation_w_info", 0.65))
@@ -4585,6 +4636,14 @@ class NewLoop:
             bank_equity_proxy_hist = self._firm_balance_sheet_equity_proxy("BANK", P_now)
             fa_broad_equity_proxy_hist = self._firm_broad_equity_proxy("FA", P_now)
             fh_broad_equity_proxy_hist = self._firm_broad_equity_proxy("FH", P_now)
+            nonbank_capex_reserve_total = (
+                max(0.0, float(self.nodes["FA"].get("capex_reserve", 0.0)))
+                + max(0.0, float(self.nodes["FH"].get("capex_reserve", 0.0)))
+            )
+            nonbank_deployed_equity_total = max(
+                0.0,
+                fa_broad_equity_proxy_hist + fh_broad_equity_proxy_hist - nonbank_capex_reserve_total,
+            )
             trust_equity_value_total = (
                 frac("FA", "shares_FA") * fa_equity_proxy_hist
                 + frac("FH", "shares_FH") * fh_equity_proxy_hist
@@ -4602,6 +4661,7 @@ class NewLoop:
             prev_info_eq_total = float(self.state.get("corporate_info_equity_prev_total", 0.0))
             prev_physical_eq_total = float(self.state.get("corporate_physical_equity_prev_total", 0.0))
             prev_nonbank_eq_total = float(self.state.get("corporate_nonbank_equity_prev_total", 0.0))
+            prev_nonbank_deployed_eq_total = float(self.state.get("corporate_nonbank_deployed_equity_prev_total", 0.0))
             total_corporate_payout_total = (
                 float(solp.get("div_fa_total", 0.0))
                 + float(solp.get("div_fh_total", 0.0))
@@ -4654,6 +4714,10 @@ class NewLoop:
                 (nonbank_corporate_payout_total + nonbank_corporate_retained_total) / prev_nonbank_eq_total
                 if prev_nonbank_eq_total > 1e-9 else 0.0
             )
+            corporate_nonbank_deployed_roe_q = (
+                (nonbank_corporate_payout_total + nonbank_corporate_retained_total) / prev_nonbank_deployed_eq_total
+                if prev_nonbank_deployed_eq_total > 1e-9 else 0.0
+            )
             corporate_broad_roe_q = (
                 (total_corporate_payout_total + total_corporate_retained_total) / prev_corporate_eq_total
                 if prev_corporate_eq_total > 1e-9 else 0.0
@@ -4663,6 +4727,7 @@ class NewLoop:
             self.state["corporate_info_equity_prev_total"] = float(max(0.0, fa_broad_equity_proxy_hist))
             self.state["corporate_physical_equity_prev_total"] = float(max(0.0, fh_broad_equity_proxy_hist))
             self.state["corporate_nonbank_equity_prev_total"] = float(max(0.0, fa_broad_equity_proxy_hist + fh_broad_equity_proxy_hist))
+            self.state["corporate_nonbank_deployed_equity_prev_total"] = float(nonbank_deployed_equity_total)
 
             wages_total = float(solp["w_total"])
             c_total = float(solp["c_total"])
@@ -4765,6 +4830,7 @@ class NewLoop:
                 sector_op_margin_info=float(sector_op_margin_info),
                 sector_op_margin_phys=float(sector_op_margin_phys),
                 corporate_nonbank_broad_roe_q=float(corporate_nonbank_broad_roe_q),
+                corporate_nonbank_deployed_roe_q=float(corporate_nonbank_deployed_roe_q),
                 corporate_broad_roe_q=float(corporate_broad_roe_q),
                 private_inv_cov=float(private_inv_cov),
                 # --- Fiscal / funding diagnostics (per household) ---
@@ -4795,6 +4861,8 @@ class NewLoop:
                 ums_recycle_to_phys_per_h=float(self.state.get("ums_recycle_to_phys_total", 0.0)) / float(self.hh.n),
                 ums_recycle_total_per_h=float(self.state.get("ums_recycle_total", 0.0)) / float(self.hh.n),
                 capex_per_h=float(self.state.get("capex_total", 0.0)) / float(self.hh.n),
+                capex_maintenance_need_per_h=float(self.state.get("capex_maintenance_need_total", 0.0)) / float(self.hh.n),
+                capex_maintenance_gap_per_h=float(self.state.get("capex_maintenance_gap_total", 0.0)) / float(self.hh.n),
                 hh_equity_investment_per_h=float(self.state.get("hh_equity_investment_total", 0.0)) / float(self.hh.n),
                 sector_capex_reserve_info_per_h=float(self.nodes["FA"].get("capex_reserve", 0.0)) / float(self.hh.n),
                 sector_capex_reserve_physical_per_h=float(self.nodes["FH"].get("capex_reserve", 0.0)) / float(self.hh.n),
@@ -4855,6 +4923,9 @@ class NewLoop:
                 hh_mortgage_bridge_to_revolving_per_h=float(self.state.get("mort_revolving_bridge_total", 0.0)) / float(self.hh.n),
                 hh_overdraft_to_revolving_per_h=float(self.state.get("hh_overdraft_total", 0.0)) / float(self.hh.n),
                 hh_mortgage_unpaid_shortfall_per_h=float(self.state.get("mort_unpaid_cash_shortfall_total", 0.0)) / float(self.hh.n),
+                household_credit_created_per_h=float(self.state.get("household_credit_created_total", 0.0)) / float(self.hh.n),
+                household_credit_retired_per_h=float(self.state.get("household_credit_retired_total", 0.0)) / float(self.hh.n),
+                household_net_credit_flow_per_h=float(self.state.get("household_net_credit_flow_total", 0.0)) / float(self.hh.n),
                 mortgagor_active_count=mortgagor_active_count,
                 mortgagor_gross_cash_income_per_active=mortgagor_gross_cash_income_total / mortgagor_den,
                 mortgagor_disp_pre_debt_per_active=mortgagor_disp_pre_debt_total / mortgagor_den,

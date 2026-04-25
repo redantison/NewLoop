@@ -1068,6 +1068,7 @@ def main() -> None:
         [
             "capex_per_h",
             "corporate_nonbank_broad_roe_q",
+            "corporate_nonbank_deployed_roe_q",
             "sector_op_margin_info",
             "sector_op_margin_phys",
         ],
@@ -1075,6 +1076,7 @@ def main() -> None:
         primary_ylabel="CAPEX / Household",
         secondary_metrics=[
             "corporate_nonbank_broad_roe_q",
+            "corporate_nonbank_deployed_roe_q",
             "sector_op_margin_info",
             "sector_op_margin_phys",
         ],

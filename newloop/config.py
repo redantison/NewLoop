@@ -97,6 +97,9 @@ config = {
         "old_loop_gov_sector_spend_rate": 1.00,
         "old_loop_gov_sector_spend_mode": "RevenueShare",
         "old_loop_gov_sector_spend_info_share": 0.50,
+        "old_loop_self_fund_maintenance_capex": True,
+        "old_loop_startup_seed_retained_cash": True,
+        "old_loop_startup_retained_cash_quarters": 1.50,
         "old_loop_profit_markup_sensitivity": 0.00,
         "old_loop_profit_markup_max": 0.25,
         "old_loop_margin_floor_info": 0.20,
@@ -428,6 +431,8 @@ def apply_economic_regime_overrides(cfg: Dict[str, Any]) -> Dict[str, Any]:
         params["dividend_payout_rate_bank"] = 1.0
         params["old_loop_gov_sector_spend_rate"] = 1.0
         params["old_loop_gov_sector_spend_mode"] = "RevenueShare"
+        params["old_loop_self_fund_maintenance_capex"] = True
+        params["old_loop_startup_seed_retained_cash"] = bool(params.get("old_loop_startup_seed_retained_cash", True))
     params["tax_policy_mode"] = resolve_tax_policy_mode(params)
     effective_cfg["parameters"] = params
     return effective_cfg

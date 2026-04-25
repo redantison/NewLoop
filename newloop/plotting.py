@@ -43,6 +43,7 @@ METRIC_LABELS: Dict[str, str] = {
     "sector_op_margin_info": "Info Operating Margin (%)",
     "sector_op_margin_phys": "Physical Operating Margin (%)",
     "corporate_nonbank_broad_roe_q": "Non-Bank Corporate Broad ROE (Annualized %)",
+    "corporate_nonbank_deployed_roe_q": "Non-Bank Deployed ROE (Annualized %)",
     "corporate_broad_roe_q": "Total Corporate Broad ROE (Annualized %)",
     "private_inv_cov": "Investment Coverage",
     "pop_dti_med": "Mortgage Payment / Pre-Debt Disposable Income P50",
@@ -75,6 +76,8 @@ METRIC_LABELS: Dict[str, str] = {
     "ums_recycle_to_phys_per_h": "UMS Recycled To PS / Household",
     "ums_recycle_total_per_h": "Total UMS Recycled / Household",
     "capex_per_h": "Capital Investment / Household",
+    "capex_maintenance_need_per_h": "Maintenance CAPEX Need / Household",
+    "capex_maintenance_gap_per_h": "Maintenance CAPEX Gap / Household",
     "hh_equity_investment_per_h": "HH Equity Investment / Household",
     "sector_capex_reserve_info_per_h": "IS CAPEX Reserve / Household",
     "sector_capex_reserve_physical_per_h": "PS CAPEX Reserve / Household",
@@ -102,6 +105,9 @@ METRIC_LABELS: Dict[str, str] = {
     "hh_mortgage_bridge_to_revolving_per_h": "Mortgage Bridge To Revolving / Household",
     "hh_overdraft_to_revolving_per_h": "Overdraft To Revolving / Household",
     "hh_mortgage_unpaid_shortfall_per_h": "Unpaid Mortgage Shortfall / Household",
+    "household_credit_created_per_h": "Household Credit Created / Household",
+    "household_credit_retired_per_h": "Household Credit Retired / Household",
+    "household_net_credit_flow_per_h": "Household Net Credit Flow / Household",
     "mortgagor_active_count": "Mortgagors With Payment Due",
     "mortgagor_gross_cash_income_per_active": "Mortgagor Gross Cash Inflow / Active Mortgagor",
     "mortgagor_disp_pre_debt_per_active": "Mortgagor Disposable Income Before Debt Service / Active Mortgagor",
@@ -195,6 +201,7 @@ def _series(rows: Sequence[Mapping[str, Any]], metric: str) -> List[float]:
         "sector_op_margin_info",
         "sector_op_margin_phys",
         "corporate_nonbank_broad_roe_q",
+        "corporate_nonbank_deployed_roe_q",
         "corporate_broad_roe_q",
     }:
         values = [float(r.get(metric, 0.0)) for r in rows]
@@ -217,6 +224,7 @@ def _series(rows: Sequence[Mapping[str, Any]], metric: str) -> List[float]:
             "corporate_info_broad_roe_q",
             "corporate_physical_broad_roe_q",
             "corporate_nonbank_broad_roe_q",
+            "corporate_nonbank_deployed_roe_q",
             "corporate_broad_roe_q",
         }:
             values = [_annualize_quarterly_rate(v) for v in values]
@@ -229,6 +237,7 @@ def _series(rows: Sequence[Mapping[str, Any]], metric: str) -> List[float]:
                 "corporate_info_broad_roe_q",
                 "corporate_physical_broad_roe_q",
                 "corporate_nonbank_broad_roe_q",
+                "corporate_nonbank_deployed_roe_q",
                 "corporate_broad_roe_q",
             }:
                 values[0] = float("nan")
@@ -296,6 +305,8 @@ def _line_style(metric: str, *, secondary: bool) -> Dict[str, Any]:
         style["color"] = "#ff7f0e"
     elif metric == "corporate_nonbank_broad_roe_q":
         style["color"] = "tab:red"
+    elif metric == "corporate_nonbank_deployed_roe_q":
+        style["color"] = "#8c564b"
     if metric == "automation":
         style["linewidth"] = 2.6
         style["linestyle"] = "-"
@@ -309,6 +320,7 @@ def _line_style(metric: str, *, secondary: bool) -> Dict[str, Any]:
         "sector_op_margin_info",
         "sector_op_margin_phys",
         "corporate_nonbank_broad_roe_q",
+        "corporate_nonbank_deployed_roe_q",
     }:
         style["linestyle"] = "-"
     elif metric == "automation_flow":

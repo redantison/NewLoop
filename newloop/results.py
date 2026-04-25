@@ -1090,6 +1090,45 @@ def _reseed_visible_start_capacity(sim: NewLoop) -> Dict[str, Any] | None:
     }
 
 
+def _seed_old_loop_startup_retained_cash(sim: NewLoop) -> Dict[str, Any] | None:
+    """Seed OldLoop visible-start firms with retained cash for initial maintenance CAPEX."""
+    regime = normalize_economic_regime_name(sim.params.get("economic_regime", "NewLoop"))
+    if regime != "OldLoop" or not bool(sim.params.get("old_loop_startup_seed_retained_cash", True)):
+        return None
+
+    quarters = max(0.0, float(sim.params.get("old_loop_startup_retained_cash_quarters", 0.0)))
+    if quarters <= 0.0:
+        return None
+
+    p_now = max(float(sim.state.get("price_level", 1.0)), 1e-9)
+    total_added = 0.0
+    out: Dict[str, Any] = {"quarters": float(quarters)}
+    for firm_id, free_cash_key in (
+        ("FA", "sector_free_cash_info_prev"),
+        ("FH", "sector_free_cash_phys_prev"),
+    ):
+        maintenance_nom = quarters * max(0.0, float(sim._sector_maintenance_capex_nom(firm_id, p_now)))
+        existing_cash = max(0.0, float(sim._firm_discretionary_deposits_nom(firm_id)))
+        add_cash = max(0.0, maintenance_nom - existing_cash)
+        if add_cash > 0.0:
+            sim.nodes[firm_id].add("deposits", add_cash)
+            total_added += add_cash
+            existing_cash += add_cash
+        sim.state[free_cash_key] = max(
+            max(0.0, float(sim.state.get(free_cash_key, 0.0))),
+            existing_cash,
+        )
+        suffix = "info" if firm_id == "FA" else "phys"
+        out[f"{suffix}_maintenance_target_nom"] = float(maintenance_nom)
+        out[f"{suffix}_retained_cash_added_nom"] = float(add_cash)
+        out[f"{suffix}_free_cash_prev_nom"] = float(sim.state[free_cash_key])
+
+    if total_added > 0.0:
+        _sync_startup_household_state(sim)
+    out["total_retained_cash_added_nom"] = float(total_added)
+    return out
+
+
 def _extract_sector_planner_seed(sim: NewLoop) -> Dict[str, float]:
     """Capture the lagged CAPEX planner state that should survive a policy switch."""
     keys = (
@@ -1197,7 +1236,8 @@ def _build_old_to_new_startup_sim(cfg: Dict[str, Any]) -> tuple[NewLoop, int, Di
     old_phase_cfg = _old_to_new_old_phase_cfg(cfg)
     sim = NewLoop(old_phase_cfg)
     _prepare_startup_sim(sim)
-    return sim, len(sim.history), {
+    retained_cash_seed = _seed_old_loop_startup_retained_cash(sim)
+    report = {
         "requested_quarters": 0,
         "completed_quarters": 0,
         "completed_fully": True,
@@ -1206,6 +1246,9 @@ def _build_old_to_new_startup_sim(cfg: Dict[str, Any]) -> tuple[NewLoop, int, Di
         "old_to_new_launch_newloop_policies": _old_to_new_launch_newloop_policies(cfg),
         "startup_mode": "old_to_new_visible_old_loop",
     }
+    if retained_cash_seed is not None:
+        report["visible_start_retained_cash_seed"] = dict(retained_cash_seed)
+    return sim, len(sim.history), report
 
 
 def _build_startup_sim(cfg: Dict[str, Any]) -> tuple[NewLoop, int, Dict[str, Any]]:
@@ -1246,6 +1289,9 @@ def _build_startup_sim(cfg: Dict[str, Any]) -> tuple[NewLoop, int, Dict[str, Any
         if reseed_stats is not None:
             warmup_report["visible_start_capacity_reseed"] = dict(reseed_stats)
             warmup_report["visible_start_capex_seed"] = dict(legacy_planner_seed or {})
+        retained_cash_seed = _seed_old_loop_startup_retained_cash(sim)
+        if retained_cash_seed is not None:
+            warmup_report["visible_start_retained_cash_seed"] = dict(retained_cash_seed)
     else:
         legacy_planner_seed = _build_legacy_sector_planner_seed(cfg)
         _apply_sector_planner_seed(sim, legacy_planner_seed)
@@ -1254,6 +1300,9 @@ def _build_startup_sim(cfg: Dict[str, Any]) -> tuple[NewLoop, int, Dict[str, Any
             warmup_report["visible_start_capacity_reseed"] = dict(reseed_stats)
         if legacy_planner_seed is not None:
             warmup_report["visible_start_capex_seed"] = dict(legacy_planner_seed)
+        retained_cash_seed = _seed_old_loop_startup_retained_cash(sim)
+        if retained_cash_seed is not None:
+            warmup_report["visible_start_retained_cash_seed"] = dict(retained_cash_seed)
 
     return sim, len(sim.history), warmup_report
 
