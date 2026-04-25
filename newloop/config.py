@@ -50,6 +50,10 @@ config = {
         "sector_input_cost_rate_phys": 0.15,
         "ums_recycle_rate_q": 1.00,
         "capital_depr_rate_per_quarter": 0.02,
+        "capital_depr_rate_info_per_quarter": 0.02,
+        "capital_depr_rate_phys_per_quarter": 0.02,
+        "old_loop_capital_depr_rate_info_per_quarter": 0.0125,
+        "old_loop_capital_depr_rate_phys_per_quarter": 0.0125,
         # Sector-fulfillment pass 1: fixed household demand split plus
         # supplier-first capacity rationing with no new firm debt.
         "hh_demand_info_share": 0.30,
@@ -433,6 +437,12 @@ def apply_economic_regime_overrides(cfg: Dict[str, Any]) -> Dict[str, Any]:
         params["old_loop_gov_sector_spend_mode"] = "RevenueShare"
         params["old_loop_self_fund_maintenance_capex"] = True
         params["old_loop_startup_seed_retained_cash"] = bool(params.get("old_loop_startup_seed_retained_cash", True))
+        params["capital_depr_rate_info_per_quarter"] = float(
+            params.get("old_loop_capital_depr_rate_info_per_quarter", 0.0125)
+        )
+        params["capital_depr_rate_phys_per_quarter"] = float(
+            params.get("old_loop_capital_depr_rate_phys_per_quarter", 0.0125)
+        )
     params["tax_policy_mode"] = resolve_tax_policy_mode(params)
     effective_cfg["parameters"] = params
     return effective_cfg

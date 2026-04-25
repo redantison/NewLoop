@@ -485,16 +485,18 @@ class NewLoop:
             return
 
         p_now = max(1e-9, float(self.state.get("price_level", self.params.get("price_level_initial", 1.0))))
-        depr_q = max(0.0, min(1.0, float(self.params.get("capital_depr_rate_per_quarter", 0.0))))
         reinvest_rate = max(0.0, float(self.params.get("reinvest_rate_of_retained", 0.0)))
         capital_scale = max(0.0, float(self.params.get("startup_bootstrap_capital_scale", 1.0)))
-        if depr_q <= 1e-12 or reinvest_rate <= 0.0 or capital_scale <= 0.0:
+        if reinvest_rate <= 0.0 or capital_scale <= 0.0:
             return
 
         for firm_id, retained_key, base_key in (
             ("FA", "retained_fa", "sector_base_capacity_info_real"),
             ("FH", "retained_fh", "sector_base_capacity_phys_real"),
         ):
+            depr_q = self._sector_depr_rate_q(firm_id)
+            if depr_q <= 1e-12:
+                continue
             capacity_per_k = self._sector_capacity_per_k(firm_id)
             if capacity_per_k <= 1e-12:
                 continue
@@ -1450,7 +1452,7 @@ class NewLoop:
         if self._capex_and_depreciation_disabled():
             return 0.0
         p_now = max(1e-9, float(price_level))
-        depr_q = max(0.0, min(1.0, float(self.params.get("capital_depr_rate_per_quarter", 0.0))))
+        depr_q = self._sector_depr_rate_q(firm_id)
         capacity_per_k = self._sector_capacity_per_k(firm_id)
         capital = max(0.0, float(self.nodes[firm_id].get("K", 0.0)))
         if firm_id == "FA":
@@ -1462,6 +1464,17 @@ class NewLoop:
         else:
             maintenance_stock = capital
         return float(depr_q * maintenance_stock * p_now)
+
+    def _sector_depr_rate_q(self, firm_id: str) -> float:
+        """Return the sector-specific quarterly capital depreciation rate."""
+        fallback = float(self.params.get("capital_depr_rate_per_quarter", 0.0))
+        if firm_id == "FA":
+            rate = float(self.params.get("capital_depr_rate_info_per_quarter", fallback))
+        elif firm_id == "FH":
+            rate = float(self.params.get("capital_depr_rate_phys_per_quarter", fallback))
+        else:
+            rate = fallback
+        return max(0.0, min(1.0, rate))
 
     def _sector_maturity_signal(self, firm_id: str) -> float:
         half_sat = max(1e-9, float(self.params.get("sector_dividend_maturity_gap_half_sat", 0.02)))
@@ -3132,9 +3145,8 @@ class NewLoop:
         self.state["capex_maintenance_gap_total"] = float(capex_maintenance_gap_total)
 
         # Depreciate existing capital (real units, non-cash)
-        depr_q = 0.0 if self._capex_and_depreciation_disabled() else float(self.params.get("capital_depr_rate_per_quarter", 0.0))
-        depr_q = max(0.0, min(1.0, depr_q))
         for firm in ["FA", "FH"]:
+            depr_q = 0.0 if self._capex_and_depreciation_disabled() else self._sector_depr_rate_q(firm)
             k0 = float(self.nodes[firm].get("K", 0.0))
             if k0 > 0 and depr_q > 0:
                 self.nodes[firm].set("K", max(0.0, k0 * (1.0 - depr_q)))

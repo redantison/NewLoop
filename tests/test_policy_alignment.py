@@ -764,6 +764,58 @@ class PolicyAlignmentTests(unittest.TestCase):
         self.assertAlmostEqual(float(sim.nodes["FA"].get("deposits", 0.0)), info_need, places=6)
         self.assertAlmostEqual(float(sim.nodes["FH"].get("deposits", 0.0)), phys_need, places=6)
 
+    def test_old_loop_uses_longer_capital_depreciation(self):
+        cfg_old = make_cfg()
+        cfg_old["parameters"]["economic_regime"] = "OldLoop"
+        sim_old = NewLoop(cfg_old)
+
+        cfg_new = make_cfg()
+        cfg_new["parameters"]["economic_regime"] = "NewLoop"
+        sim_new = NewLoop(cfg_new)
+
+        self.assertAlmostEqual(sim_old._sector_depr_rate_q("FA"), 0.0125, places=9)
+        self.assertAlmostEqual(sim_old._sector_depr_rate_q("FH"), 0.0125, places=9)
+        self.assertAlmostEqual(sim_new._sector_depr_rate_q("FA"), 0.02, places=9)
+        self.assertAlmostEqual(sim_new._sector_depr_rate_q("FH"), 0.02, places=9)
+
+    def test_old_to_new_transition_restores_shorter_newloop_depreciation(self):
+        cfg = make_cfg()
+        cfg["parameters"]["economic_regime"] = "OldToNew"
+        cfg["parameters"]["old_to_new_transition_quarters"] = 1
+        cfg["parameters"]["neutral_warmup_quarters"] = 0
+
+        run = run_simulation(n_quarters=2, cfg=cfg)
+
+        self.assertTrue(bool(run.sim.state.get("old_to_new_transition_applied", False)))
+        self.assertEqual(str(run.sim.params.get("economic_regime", "")), "NewLoop")
+        self.assertAlmostEqual(run.sim._sector_depr_rate_q("FA"), 0.02, places=9)
+        self.assertAlmostEqual(run.sim._sector_depr_rate_q("FH"), 0.02, places=9)
+
+    def test_sector_depreciation_rates_drive_maintenance_and_capital_decay(self):
+        cfg = make_cfg()
+        cfg["parameters"]["automation_disabled"] = True
+        cfg["parameters"]["capital_depr_rate_info_per_quarter"] = 0.02
+        cfg["parameters"]["capital_depr_rate_phys_per_quarter"] = 0.0125
+        cfg["nodes"]["FA"]["stocks"]["K"] = 1000.0
+        cfg["nodes"]["FH"]["stocks"]["K"] = 1000.0
+        sim = NewLoop(cfg)
+
+        sim.state["price_level"] = 1.0
+        sim.state["sector_base_capacity_info_real"] = 0.0
+        sim.state["sector_base_capacity_phys_real"] = 0.0
+        sim.state["sector_free_cash_info_prev"] = 0.0
+        sim.state["sector_free_cash_phys_prev"] = 0.0
+        sim.state["sector_capex_reserve_info_prev"] = 0.0
+        sim.state["sector_capex_reserve_phys_prev"] = 0.0
+
+        self.assertAlmostEqual(sim._sector_maintenance_capex_nom("FA", 1.0), 20.0, places=9)
+        self.assertAlmostEqual(sim._sector_maintenance_capex_nom("FH", 1.0), 12.5, places=9)
+
+        sim.step()
+
+        self.assertAlmostEqual(float(sim.nodes["FA"].get("K", 0.0)), 980.0, places=6)
+        self.assertAlmostEqual(float(sim.nodes["FH"].get("K", 0.0)), 987.5, places=6)
+
     def test_mortgage_gap_neutralization_funds_bank_when_gap_exists(self):
         cfg = make_cfg()
         params = cfg["parameters"]
