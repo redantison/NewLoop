@@ -12,10 +12,12 @@ from newloop.config import get_default_config
 from newloop.engine import NewLoop
 from newloop.plotting import _title_with_mode
 from newloop.results import (
+    _distribute_startup_mortgage_money_seed,
     _population_distribution_snapshot,
     _startup_deposit_blend,
     _prepare_startup_sim,
     _seed_old_loop_startup_retained_cash,
+    _startup_mortgage_money_seed_estimate,
     _startup_reset_deposits_enabled,
     _quarter_state_diagnostics,
     _startup_diagnostics,
@@ -1296,6 +1298,68 @@ class PolicyAlignmentTests(unittest.TestCase):
         self.assertEqual(len(run.rows), 5)
         self.assertTrue(all(float(row["hh_mortgage_active_count"]) <= 1e-12 for row in run.rows))
         self.assertTrue(all(float(row["hh_mortgage_req_per_h"]) <= 1e-12 for row in run.rows))
+
+    def test_old_loop_startup_mortgage_money_seed_estimate_uses_principal_runoff(self):
+        cfg = make_cfg()
+        cfg["parameters"]["economic_regime"] = "OldLoop"
+        cfg["parameters"]["old_loop_startup_mortgage_money_seed_horizon_q"] = 20
+        cfg["parameters"]["old_loop_startup_mortgage_money_seed_fraction"] = 0.44
+        sim = NewLoop(cfg)
+        _prepare_startup_sim(sim)
+
+        estimate = _startup_mortgage_money_seed_estimate(sim)
+
+        self.assertIsNotNone(estimate)
+        assert estimate is not None
+        self.assertEqual(int(estimate["horizon_q"]), 20)
+        self.assertGreater(float(estimate["scheduled_principal_total"]), 0.0)
+        self.assertAlmostEqual(
+            float(estimate["estimated_seed_total"]),
+            0.44 * float(estimate["scheduled_principal_total"]),
+            places=6,
+        )
+        self.assertAlmostEqual(
+            float(estimate["estimated_seed_per_h"]),
+            float(estimate["estimated_seed_total"]) / float(sim.hh.n),
+            places=6,
+        )
+
+    def test_old_loop_startup_mortgage_money_seed_distribution_adds_deposits_only(self):
+        cfg = make_cfg()
+        cfg["parameters"]["economic_regime"] = "OldLoop"
+        cfg["parameters"]["old_loop_startup_mortgage_money_seed_horizon_q"] = 20
+        cfg["parameters"]["old_loop_startup_mortgage_money_seed_fraction"] = 0.44
+        sim = NewLoop(cfg)
+        _prepare_startup_sim(sim)
+        assert sim.hh is not None
+        deposits_before = np.asarray(sim.hh.deposits, dtype=float).copy()
+        mortgages_before = np.asarray(sim.hh.mortgage_loans, dtype=float).copy()
+
+        distribution = _distribute_startup_mortgage_money_seed(sim)
+
+        self.assertIsNotNone(distribution)
+        assert distribution is not None
+        deposits_after = np.asarray(sim.hh.deposits, dtype=float)
+        mortgages_after = np.asarray(sim.hh.mortgage_loans, dtype=float)
+        seed_total = float(distribution["seed_total"])
+        self.assertGreater(seed_total, 0.0)
+        self.assertAlmostEqual(float(np.sum(deposits_after - deposits_before)), seed_total, places=6)
+        self.assertTrue(np.allclose(mortgages_after, mortgages_before, rtol=0.0, atol=1e-9))
+        self.assertGreater(float(distribution["mortgagor_seed_total"]), 0.0)
+        self.assertGreater(float(distribution["nonmortgagor_seed_total"]), 0.0)
+
+    def test_old_loop_wage_share_overrides_raise_wages(self):
+        base_cfg = make_cfg()
+        base_cfg["parameters"]["economic_regime"] = "OldLoop"
+        base_cfg["parameters"]["old_loop_startup_mortgage_money_seed_enabled"] = False
+        high_cfg = copy.deepcopy(base_cfg)
+        high_cfg["parameters"]["old_loop_wage_share_info"] = 0.50
+        high_cfg["parameters"]["old_loop_wage_share_phys"] = 0.60
+
+        base_run = run_simulation(n_quarters=1, cfg=base_cfg)
+        high_run = run_simulation(n_quarters=1, cfg=high_cfg)
+
+        self.assertGreater(float(high_run.rows[0]["wages_total"]), float(base_run.rows[0]["wages_total"]))
 
     def test_old_loop_small_gov_procurement_runs_and_records_spend(self):
         cfg = make_cfg()

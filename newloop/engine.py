@@ -2478,6 +2478,11 @@ class NewLoop:
 
         ws_fh_base = float(self.params["wage_share_of_revenue"]["FH"])
         ws_fa_base = float(self.params["wage_share_of_revenue"]["FA"])
+        if regime_name == "OldLoop":
+            ws_fa_base = float(self.params.get("old_loop_wage_share_info", ws_fa_base))
+            ws_fh_base = float(self.params.get("old_loop_wage_share_phys", ws_fh_base))
+            ws_fa_base = max(0.0, min(1.0, ws_fa_base))
+            ws_fh_base = max(0.0, min(1.0, ws_fh_base))
         ws_fh = ws_fh_base * (1.0 - max(0.0, min(1.0, auto_phys)))
         ws_fa = ws_fa_base * (1.0 - max(0.0, min(1.0, auto_info)))
 

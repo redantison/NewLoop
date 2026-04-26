@@ -14,7 +14,13 @@ from .config import apply_economic_regime_overrides, get_default_config, normali
 from .engine import NewLoop
 from .housing_affordability import compute_affordable_housing_profile
 from .income_support import make_income_support_policy
-from .mortgage import annuity_factor, balance_from_orig_principal, payment_from_orig_principal
+from .mortgage import (
+    annuity_factor,
+    balance_from_orig_principal,
+    payment_from_orig_principal,
+    remaining_term,
+    scheduled_payment_components,
+)
 from .newloop_types import TickResult
 from .tax_policy import make_tax_policy
 
@@ -946,6 +952,237 @@ def _prepare_startup_sim(sim: NewLoop) -> Dict[str, Any] | None:
     return reset_stats
 
 
+def _startup_mortgage_money_seed_estimate(sim: NewLoop) -> Dict[str, Any] | None:
+    """Estimate the missing historical mortgage-money stock from inherited runoff."""
+    regime = normalize_economic_regime_name(sim.params.get("economic_regime", "NewLoop"))
+    if regime != "OldLoop" or sim.hh is None or sim.hh.n <= 0:
+        return None
+
+    hh = sim.hh
+    horizon_q = max(
+        0,
+        int(sim.params.get("old_loop_startup_mortgage_money_seed_horizon_q", 20)),
+    )
+    seed_fraction = max(
+        0.0,
+        float(sim.params.get("old_loop_startup_mortgage_money_seed_fraction", 0.44)),
+    )
+
+    balance = np.maximum(0.0, np.asarray(hh.mortgage_loans, dtype=float)).copy()
+    rate_q = np.maximum(0.0, np.asarray(hh.mort_rate_q, dtype=float)).copy()
+    payment_q = np.maximum(0.0, np.asarray(hh.mort_payment_sched_q, dtype=float)).copy()
+    term_q = np.maximum(0.0, np.asarray(hh.mort_term_q, dtype=float))
+    age_q = np.maximum(0.0, np.asarray(hh.mort_age_q, dtype=float))
+    if not (
+        balance.shape == rate_q.shape == payment_q.shape == term_q.shape == age_q.shape
+    ):
+        return None
+
+    active = balance > 1e-9
+    remaining_q = remaining_term(term_q, age_q)
+    n = float(max(1, hh.n))
+    scheduled_payment_total = 0.0
+    scheduled_interest_total = 0.0
+    scheduled_principal_total = 0.0
+    scheduled_final_principal_total = 0.0
+    runoff_rows: List[Dict[str, Any]] = []
+
+    for q in range(horizon_q + 1):
+        due_i, interest_i, principal_i = scheduled_payment_components(
+            balance,
+            rate_q,
+            payment_q,
+            remaining_q,
+        )
+        active_q = balance > 1e-9
+        final_q = active_q & (remaining_q <= 1.0 + 1e-12)
+        payment_total = float(np.sum(np.maximum(0.0, due_i)))
+        interest_total = float(np.sum(np.maximum(0.0, interest_i)))
+        principal_total = float(np.sum(np.maximum(0.0, principal_i)))
+        final_principal_total = float(np.sum(np.maximum(0.0, principal_i[final_q])))
+        scheduled_payment_total += payment_total
+        scheduled_interest_total += interest_total
+        scheduled_principal_total += principal_total
+        scheduled_final_principal_total += final_principal_total
+        if q in {0, 1, 2, 5, 10, 15, 20, 40, 60, 79, horizon_q}:
+            runoff_rows.append(
+                {
+                    "q": int(q),
+                    "active_count": int(np.sum(active_q)),
+                    "payment_total": payment_total,
+                    "interest_total": interest_total,
+                    "principal_total": principal_total,
+                    "payment_per_h": payment_total / n,
+                    "interest_per_h": interest_total / n,
+                    "principal_per_h": principal_total / n,
+                    "final_period_count": int(np.sum(final_q)),
+                    "final_principal_total": final_principal_total,
+                }
+            )
+        balance = np.maximum(0.0, balance - principal_i)
+        remaining_q = np.maximum(0.0, remaining_q - 1.0)
+
+    initial_balance_total = float(np.sum(np.maximum(0.0, np.asarray(hh.mortgage_loans, dtype=float))))
+    initial_sched_payment_total = float(np.sum(np.maximum(0.0, payment_q[active])))
+    if np.any(active):
+        rem_active = np.maximum(0.0, remaining_term(term_q, age_q)[active])
+        remaining_stats = {
+            "remaining_q_min": float(np.min(rem_active)),
+            "remaining_q_p10": float(np.percentile(rem_active, 10.0)),
+            "remaining_q_median": float(np.median(rem_active)),
+            "remaining_q_p90": float(np.percentile(rem_active, 90.0)),
+            "remaining_q_max": float(np.max(rem_active)),
+        }
+    else:
+        remaining_stats = {
+            "remaining_q_min": 0.0,
+            "remaining_q_p10": 0.0,
+            "remaining_q_median": 0.0,
+            "remaining_q_p90": 0.0,
+            "remaining_q_max": 0.0,
+        }
+
+    seed_total = seed_fraction * scheduled_principal_total
+    out: Dict[str, Any] = {
+        "horizon_q": int(horizon_q),
+        "included_quarter_count": int(horizon_q + 1),
+        "seed_fraction": float(seed_fraction),
+        "active_count": int(np.sum(active)),
+        "initial_balance_total": initial_balance_total,
+        "initial_balance_per_h": initial_balance_total / n,
+        "initial_sched_payment_total": initial_sched_payment_total,
+        "initial_sched_payment_per_h": initial_sched_payment_total / n,
+        "scheduled_payment_total": float(scheduled_payment_total),
+        "scheduled_interest_total": float(scheduled_interest_total),
+        "scheduled_principal_total": float(scheduled_principal_total),
+        "scheduled_final_principal_total": float(scheduled_final_principal_total),
+        "scheduled_payment_per_h": float(scheduled_payment_total / n),
+        "scheduled_interest_per_h": float(scheduled_interest_total / n),
+        "scheduled_principal_per_h": float(scheduled_principal_total / n),
+        "estimated_seed_total": float(seed_total),
+        "estimated_seed_per_h": float(seed_total / n),
+        "remaining_balance_after_horizon_total": float(np.sum(balance)),
+        "remaining_balance_after_horizon_per_h": float(np.sum(balance) / n),
+        "runoff_rows": runoff_rows,
+    }
+    out.update(remaining_stats)
+    return out
+
+
+def _distribute_startup_mortgage_money_seed(sim: NewLoop) -> Dict[str, Any] | None:
+    """Create estimated historical mortgage-money deposits at OldLoop startup."""
+    regime = normalize_economic_regime_name(sim.params.get("economic_regime", "NewLoop"))
+    if regime != "OldLoop" or sim.hh is None or sim.hh.n <= 0:
+        return None
+    if not bool(sim.params.get("old_loop_startup_mortgage_money_seed_enabled", True)):
+        return None
+
+    estimate = _startup_mortgage_money_seed_estimate(sim)
+    if estimate is None:
+        return None
+    seed_total = max(0.0, float(estimate.get("estimated_seed_total", 0.0)))
+    if seed_total <= 1e-12:
+        return None
+
+    hh = sim.hh
+    hh.ensure_memos()
+    n = int(hh.n)
+    deposits_before = np.asarray(hh.deposits, dtype=float).copy()
+    mort = np.maximum(0.0, np.asarray(hh.mortgage_loans, dtype=float))
+    housing = np.maximum(0.0, np.asarray(hh.housing_escrow, dtype=float))
+    mpc = np.maximum(0.0, np.asarray(hh.mpc_q, dtype=float))
+    if mort.shape[0] != n or housing.shape[0] != n or mpc.shape[0] != n:
+        return None
+
+    raw_universal = max(0.0, float(sim.params.get("old_loop_startup_mortgage_money_seed_universal_share", 0.50)))
+    raw_liquidity = max(0.0, float(sim.params.get("old_loop_startup_mortgage_money_seed_liquidity_share", 0.35)))
+    raw_seller = max(0.0, float(sim.params.get("old_loop_startup_mortgage_money_seed_seller_share", 0.15)))
+    share_sum = raw_universal + raw_liquidity + raw_seller
+    if share_sum <= 1e-12:
+        return None
+    universal_share = raw_universal / share_sum
+    liquidity_share = raw_liquidity / share_sum
+    seller_share = raw_seller / share_sum
+
+    allocation = np.zeros(n, dtype=float)
+    universal_total = seed_total * universal_share
+    liquidity_total = seed_total * liquidity_share
+    seller_total = seed_total * seller_share
+
+    if universal_total > 0.0:
+        allocation += universal_total / float(n)
+
+    snapshot = _startup_solver_snapshot(sim)
+    target_buffer = (
+        np.asarray(snapshot.get("target_buffer_i", np.zeros(n, dtype=float)), dtype=float)
+        if isinstance(snapshot, dict)
+        else np.zeros(n, dtype=float)
+    )
+    if target_buffer.shape[0] != n:
+        target_buffer = np.zeros(n, dtype=float)
+    liquidity_gap = np.maximum(0.0, target_buffer - deposits_before)
+    liquidity_weight = liquidity_gap * np.maximum(0.0, mpc)
+    if liquidity_total > 0.0:
+        weight_sum = float(np.sum(liquidity_weight))
+        if weight_sum <= 1e-12:
+            liquidity_weight = np.ones(n, dtype=float)
+            weight_sum = float(n)
+        allocation += liquidity_total * (liquidity_weight / weight_sum)
+
+    active_mort = mort > 1e-9
+    nonmort = ~active_mort
+    seller_weight = np.zeros(n, dtype=float)
+    owner_nonmort = nonmort & (housing > 1e-9)
+    renter_nonmort = nonmort & (~owner_nonmort)
+    seller_weight[owner_nonmort] = housing[owner_nonmort]
+    if np.any(owner_nonmort) and np.any(renter_nonmort):
+        renter_base = 0.25 * float(np.median(housing[owner_nonmort]))
+        seller_weight[renter_nonmort] = max(0.0, renter_base)
+    elif np.any(renter_nonmort):
+        seller_weight[renter_nonmort] = 1.0
+    if seller_total > 0.0:
+        seller_weight_sum = float(np.sum(seller_weight))
+        if seller_weight_sum <= 1e-12 and np.any(nonmort):
+            seller_weight[nonmort] = 1.0
+            seller_weight_sum = float(np.sum(seller_weight))
+        if seller_weight_sum > 1e-12:
+            allocation += seller_total * (seller_weight / seller_weight_sum)
+
+    actual_total = float(np.sum(allocation))
+    if actual_total <= 1e-12:
+        return None
+    hh.deposits = (deposits_before + allocation).astype(float, copy=True)
+    _sync_startup_household_state(sim)
+
+    mortgagor_seed_total = float(np.sum(allocation[active_mort]))
+    nonmort_seed_total = float(np.sum(allocation[nonmort]))
+    liquidity_recipient_count = int(np.sum(liquidity_weight > 1e-12))
+    seller_recipient_count = int(np.sum(seller_weight > 1e-12))
+    out: Dict[str, Any] = {
+        "enabled": True,
+        "seed_total": actual_total,
+        "seed_per_h": actual_total / float(n),
+        "universal_total": float(universal_total),
+        "liquidity_total": float(liquidity_total),
+        "seller_total": float(seller_total),
+        "universal_share": float(universal_share),
+        "liquidity_share": float(liquidity_share),
+        "seller_share": float(seller_share),
+        "mortgagor_seed_total": mortgagor_seed_total,
+        "mortgagor_seed_per_active": mortgagor_seed_total / max(1.0, float(np.sum(active_mort))),
+        "nonmortgagor_seed_total": nonmort_seed_total,
+        "nonmortgagor_seed_per_active": nonmort_seed_total / max(1.0, float(np.sum(nonmort))),
+        "liquidity_recipient_count": liquidity_recipient_count,
+        "seller_recipient_count": seller_recipient_count,
+        "mean_deposit_before": float(np.mean(deposits_before)),
+        "mean_deposit_after": float(np.mean(np.asarray(hh.deposits, dtype=float))),
+        "mortgagor_mean_deposit_after": float(np.mean(np.asarray(hh.deposits, dtype=float)[active_mort])) if np.any(active_mort) else 0.0,
+        "nonmortgagor_mean_deposit_after": float(np.mean(np.asarray(hh.deposits, dtype=float)[nonmort])) if np.any(nonmort) else 0.0,
+        "estimate": estimate,
+    }
+    return out
+
+
 def _reunderwrite_old_loop_startup_housing(sim: NewLoop) -> Dict[str, Any] | None:
     """Reset OldLoop startup housing burdens to the model's own settled income path."""
     regime = str(sim.params.get("economic_regime", "NewLoop")).strip()
@@ -1236,6 +1473,7 @@ def _build_old_to_new_startup_sim(cfg: Dict[str, Any]) -> tuple[NewLoop, int, Di
     old_phase_cfg = _old_to_new_old_phase_cfg(cfg)
     sim = NewLoop(old_phase_cfg)
     _prepare_startup_sim(sim)
+    mortgage_money_seed = _distribute_startup_mortgage_money_seed(sim)
     retained_cash_seed = _seed_old_loop_startup_retained_cash(sim)
     report = {
         "requested_quarters": 0,
@@ -1246,6 +1484,8 @@ def _build_old_to_new_startup_sim(cfg: Dict[str, Any]) -> tuple[NewLoop, int, Di
         "old_to_new_launch_newloop_policies": _old_to_new_launch_newloop_policies(cfg),
         "startup_mode": "old_to_new_visible_old_loop",
     }
+    if mortgage_money_seed is not None:
+        report["visible_start_mortgage_money_seed"] = dict(mortgage_money_seed)
     if retained_cash_seed is not None:
         report["visible_start_retained_cash_seed"] = dict(retained_cash_seed)
     return sim, len(sim.history), report
@@ -1285,6 +1525,9 @@ def _build_startup_sim(cfg: Dict[str, Any]) -> tuple[NewLoop, int, Dict[str, Any
         _reset_post_warmup_sector_planner_state(sim)
         _sync_startup_household_state(sim)
         _apply_sector_planner_seed(sim, legacy_planner_seed)
+        mortgage_money_seed = _distribute_startup_mortgage_money_seed(sim)
+        if mortgage_money_seed is not None:
+            warmup_report["visible_start_mortgage_money_seed"] = dict(mortgage_money_seed)
         reseed_stats = _reseed_visible_start_capacity(sim)
         if reseed_stats is not None:
             warmup_report["visible_start_capacity_reseed"] = dict(reseed_stats)
@@ -1295,6 +1538,9 @@ def _build_startup_sim(cfg: Dict[str, Any]) -> tuple[NewLoop, int, Dict[str, Any
     else:
         legacy_planner_seed = _build_legacy_sector_planner_seed(cfg)
         _apply_sector_planner_seed(sim, legacy_planner_seed)
+        mortgage_money_seed = _distribute_startup_mortgage_money_seed(sim)
+        if mortgage_money_seed is not None:
+            warmup_report["visible_start_mortgage_money_seed"] = dict(mortgage_money_seed)
         reseed_stats = _reseed_visible_start_capacity(sim)
         if reseed_stats is not None:
             warmup_report["visible_start_capacity_reseed"] = dict(reseed_stats)
@@ -1367,6 +1613,13 @@ def run_simulation(
     startup_diag_out["neutral_warmup_quarters_completed"] = int(warmup_report.get("completed_quarters", 0))
     startup_diag_out["neutral_warmup_completed_fully"] = bool(warmup_report.get("completed_fully", True))
     startup_diag_out["neutral_warmup_error"] = str(warmup_report.get("error", ""))
+    mortgage_money_seed_estimate = _startup_mortgage_money_seed_estimate(startup_diag_sim)
+    if mortgage_money_seed_estimate is not None:
+        startup_diag_out["startup_mortgage_money_seed_estimate"] = mortgage_money_seed_estimate
+    if "visible_start_mortgage_money_seed" in warmup_report:
+        startup_diag_out["startup_mortgage_money_seed_distribution"] = dict(
+            warmup_report["visible_start_mortgage_money_seed"]
+        )
     if old_to_new_transition_q is not None:
         startup_diag_out["old_to_new_transition"] = (
             dict(old_to_new_transition_report)

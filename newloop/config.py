@@ -92,6 +92,8 @@ config = {
         "old_loop_permanent_income_mpc_scale": 0.25,
         "old_loop_transitory_mpc_scale": 1.0,
         "old_loop_wage_floor_share": 0.00,
+        "old_loop_wage_share_info": 0.40,
+        "old_loop_wage_share_phys": 0.50,
         "old_loop_consumption_kappa_by_wage_pct": (
             (20.0, 0.98),
             (50.0, 0.93),
@@ -182,6 +184,12 @@ config = {
         "old_loop_auto_reissue_paid_off_mortgages": True,
         "old_loop_paid_off_reissue_ltv": 0.90,
         "old_loop_disable_mortgages": False,
+        "old_loop_startup_mortgage_money_seed_enabled": True,
+        "old_loop_startup_mortgage_money_seed_horizon_q": 20,
+        "old_loop_startup_mortgage_money_seed_fraction": 0.44,
+        "old_loop_startup_mortgage_money_seed_universal_share": 0.50,
+        "old_loop_startup_mortgage_money_seed_liquidity_share": 0.35,
+        "old_loop_startup_mortgage_money_seed_seller_share": 0.15,
         "send_fund_residual_to_gov": False, # legacy compatibility toggle for a full FUND residual sweep
         "fund_residual_to_gov_share": 0.0,  # optional share of residual FUND deposits sent to GOV after debt-first treatment
         "disable_income_support": False,
