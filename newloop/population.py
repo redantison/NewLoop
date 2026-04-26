@@ -236,6 +236,7 @@ class PopulationConfig:
     old_loop_mortgage_payment_coverage_min: float = 1.25
     old_loop_mortgage_buffer_quarters_min: float = 3.0
     old_loop_mortgage_stress_income_haircut: float = 0.75
+    old_loop_disable_mortgages: bool = False
     old_loop_zero_startup_household_debt: bool = False
     old_loop_zero_startup_rent: bool = False
     disable_income_tax: bool = False
@@ -896,22 +897,22 @@ def generate_population(cfg: PopulationConfig) -> Population:
         raw_rent_q = np.maximum(0.0, renter_owner_equiv_payment_q * rent_mult)
         renter_rent_q[renter_mask] = np.minimum(raw_rent_q, housing_payment_target_q[renter_mask])
 
-    zero_startup_household_debt = (
-        str(getattr(cfg, "economic_regime", "NewLoop")).strip() == "OldLoop"
-        and bool(getattr(cfg, "old_loop_zero_startup_household_debt", False))
-    )
+    old_loop_mode = str(getattr(cfg, "economic_regime", "NewLoop")).strip() == "OldLoop"
+    zero_startup_mortgages = old_loop_mode and bool(getattr(cfg, "old_loop_disable_mortgages", False))
+    zero_startup_household_debt = old_loop_mode and bool(getattr(cfg, "old_loop_zero_startup_household_debt", False))
     zero_startup_rent = (
-        str(getattr(cfg, "economic_regime", "NewLoop")).strip() == "OldLoop"
+        old_loop_mode
         and bool(getattr(cfg, "old_loop_zero_startup_rent", False))
     )
-    if zero_startup_household_debt:
+    if zero_startup_mortgages or zero_startup_household_debt:
         mortgage_loans[:] = 0.0
-        revolving_loans[:] = 0.0
         mortgage_rate_q[:] = 0.0
         mortgage_age_q[:] = 0.0
         mortgage_term_q[:] = 0.0
         mortgage_payment_sched_q[:] = 0.0
         mortgage_orig_principal[:] = 0.0
+    if zero_startup_household_debt:
+        revolving_loans[:] = 0.0
     if zero_startup_rent:
         renter_rent_q[:] = 0.0
 

@@ -143,6 +143,13 @@ PARAMETER_CONTROLS: tuple[ParamControl, ...] = (
         help_text="In Old Loop mode, floor the private wage bill at this share of the startup wage bill. `1.0` means wages are not allowed to fall below their startup total.",
     ),
     ParamControl(
+        ("old_loop_disable_mortgages",),
+        "Old Loop Disable Mortgages",
+        EXPERIMENTS_SECTION,
+        "bool",
+        help_text="Experimental Old Loop option: clear startup mortgage contracts while leaving owned housing in place, and suppress Old Loop mortgage re-origination.",
+    ),
+    ParamControl(
         ("old_loop_zero_startup_household_debt",),
         "Old Loop Zero Startup HH Debt",
         EXPERIMENTS_SECTION,

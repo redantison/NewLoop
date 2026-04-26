@@ -284,6 +284,39 @@ class PolicyAlignmentTests(unittest.TestCase):
         c_real_core = np.asarray(targets["c_real_core"], dtype=float)
         self.assertAlmostEqual(float(np.mean(c_real_core)), 123.0, places=6)
 
+    def test_old_loop_consumption_targets_rise_with_permanent_income(self):
+        cfg = make_cfg()
+        params = cfg["parameters"]
+        params["economic_regime"] = "OldLoop"
+        params["old_loop_perm_income_update_rate_q"] = 1.0
+        params["old_loop_permanent_income_mpc_scale"] = 0.5
+        params["old_loop_transitory_mpc_scale"] = 0.0
+
+        sim = NewLoop(cfg)
+        assert sim.hh is not None
+        hh = sim.hh
+        n = hh.n
+        hh.base_real_cons_q = np.full(n, 100.0, dtype=float)
+        hh.prev_perm_income = np.full(n, 200.0, dtype=float)
+        mpc = np.full(n, 0.8, dtype=float)
+
+        targets = sim._household_consumption_targets(
+            y_guess=np.full(n, 200.0, dtype=float),
+            dep0=np.zeros(n, dtype=float),
+            base_real=hh.base_real_cons_q,
+            mpc=mpc,
+            liquid_buffer_months_target=np.zeros(n, dtype=float),
+            baseline_wages_i=hh.wages0_q,
+            p_cons=1.0,
+            rev_interest_nom=np.zeros(n, dtype=float),
+            rev_balance_nom=np.zeros(n, dtype=float),
+            mort_payment_nom=np.zeros(n, dtype=float),
+            renter_rent_q=np.zeros(n, dtype=float),
+        )
+
+        c_income = np.asarray(targets["c_hh_nom_income"], dtype=float)
+        self.assertAlmostEqual(float(np.mean(c_income)), 180.0, places=6)
+
     def test_old_loop_consumption_targets_prioritize_arrears_and_revolver_paydown(self):
         cfg = make_cfg()
         params = cfg["parameters"]
@@ -721,6 +754,35 @@ class PolicyAlignmentTests(unittest.TestCase):
         capex_plan_nom = sim._sector_capex_plan_nom("FH", 1.0)
 
         self.assertAlmostEqual(capex_plan_nom, maintenance_nom, places=6)
+
+    def test_old_loop_capex_plan_reinvests_surplus_without_unmet_demand(self):
+        cfg = make_cfg()
+        cfg["parameters"]["economic_regime"] = "OldLoop"
+        cfg["parameters"]["old_loop_autonomous_growth_capex_rate_q"] = 0.01
+        cfg["parameters"]["sector_capex_share_min"] = 1.0
+        cfg["parameters"]["sector_capex_share_max"] = 1.0
+        sim = NewLoop(cfg)
+
+        sim.state["price_level"] = 1.0
+        sim.nodes["FH"].set("K", 1000.0)
+        sim.state["sector_base_capacity_phys_real"] = 1000.0
+        sim.state["sector_capacity_phys_real_prev"] = sim._sector_capacity_real("FH")
+        maintenance_nom = sim._sector_maintenance_capex_nom("FH", 1.0)
+        normal_growth_nom = (
+            0.01
+            * float(sim.state["sector_capacity_phys_real_prev"])
+            / sim._sector_capacity_per_k("FH")
+        )
+        sim.state["sector_free_cash_phys_prev"] = maintenance_nom + normal_growth_nom + 100.0
+        sim.state["sector_unmet_phys_real_prev"] = 0.0
+        sim.state["sector_unmet_phys_real_sm_prev"] = 0.0
+        sim.state["sector_load_gap_phys_real_prev"] = 0.0
+        sim.state["sector_load_gap_phys_real_sm_prev"] = 0.0
+
+        capex_plan_nom = sim._sector_capex_plan_nom("FH", 1.0)
+
+        self.assertGreater(capex_plan_nom, maintenance_nom)
+        self.assertAlmostEqual(capex_plan_nom, maintenance_nom + normal_growth_nom, places=6)
 
     def test_old_loop_dividend_base_reserves_full_maintenance_before_payout(self):
         cfg = make_cfg()
@@ -1223,6 +1285,17 @@ class PolicyAlignmentTests(unittest.TestCase):
 
         self.assertEqual(len(run.rows), 1)
         self.assertGreater(float(run.rows[0]["hh_mortgage_active_count"]), 1000.0)
+
+    def test_old_loop_disable_mortgages_suppresses_startup_and_reorigination(self):
+        cfg = make_cfg()
+        cfg["parameters"]["economic_regime"] = "OldLoop"
+        cfg["parameters"]["old_loop_disable_mortgages"] = True
+
+        run = run_simulation(n_quarters=5, cfg=cfg)
+
+        self.assertEqual(len(run.rows), 5)
+        self.assertTrue(all(float(row["hh_mortgage_active_count"]) <= 1e-12 for row in run.rows))
+        self.assertTrue(all(float(row["hh_mortgage_req_per_h"]) <= 1e-12 for row in run.rows))
 
     def test_old_loop_small_gov_procurement_runs_and_records_spend(self):
         cfg = make_cfg()

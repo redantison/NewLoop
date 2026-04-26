@@ -89,6 +89,7 @@ config = {
         "hh_equity_issue_price_floor": 0.01,
         "hh_capex_reserve_spend_rate_q": 0.25,
         "old_loop_perm_income_update_rate_q": 0.30,
+        "old_loop_permanent_income_mpc_scale": 0.25,
         "old_loop_transitory_mpc_scale": 1.0,
         "old_loop_wage_floor_share": 0.00,
         "old_loop_consumption_kappa_by_wage_pct": (
@@ -106,6 +107,7 @@ config = {
         "old_loop_startup_retained_cash_quarters": 1.50,
         "old_loop_profit_markup_sensitivity": 0.00,
         "old_loop_profit_markup_max": 0.25,
+        "old_loop_autonomous_growth_capex_rate_q": 0.005,
         "old_loop_margin_floor_info": 0.20,
         "old_loop_margin_floor_phys": 0.12,
         # Capital -> productivity feedback (A_eff = clamp(A + kappa*(K_per_h/K_scale)))
@@ -179,6 +181,7 @@ config = {
         "old_loop_reissue_existing_mortgage_balance_on_turnover": False,
         "old_loop_auto_reissue_paid_off_mortgages": True,
         "old_loop_paid_off_reissue_ltv": 0.90,
+        "old_loop_disable_mortgages": False,
         "send_fund_residual_to_gov": False, # legacy compatibility toggle for a full FUND residual sweep
         "fund_residual_to_gov_share": 0.0,  # optional share of residual FUND deposits sent to GOV after debt-first treatment
         "disable_income_support": False,
@@ -235,6 +238,7 @@ config = {
         "old_loop_mortgage_payment_coverage_min": 1.25,
         "old_loop_mortgage_buffer_quarters_min": 3.0,
         "old_loop_mortgage_stress_income_haircut": 0.75,
+        "old_loop_disable_mortgages": False,
         "old_loop_zero_startup_household_debt": False,
         "old_loop_zero_startup_rent": False,
         "neutral_warmup_quarters": 3,
@@ -429,6 +433,11 @@ def apply_economic_regime_overrides(cfg: Dict[str, Any]) -> Dict[str, Any]:
         params["disable_income_tax"] = False
         params["automation_disabled"] = True
         params["mortgage_turnover_enabled"] = True
+        if bool(params.get("old_loop_disable_mortgages", False)):
+            params["mortgage_turnover_enabled"] = False
+            params["mortgage_maturity_roll_enabled"] = False
+            params["housing_turnover_owner_mortgage_share"] = 0.0
+            params["old_loop_auto_reissue_paid_off_mortgages"] = False
         params["policy_rate_rule_enabled"] = False
         params["corporate_tax_dynamic_with_wages"] = False
         params["gov_tax_rebate_rate"] = 0.0

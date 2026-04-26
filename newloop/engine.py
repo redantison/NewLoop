@@ -212,6 +212,7 @@ class NewLoop:
                 "old_loop_mortgage_payment_coverage_min",
                 "old_loop_mortgage_buffer_quarters_min",
                 "old_loop_mortgage_stress_income_haircut",
+                "old_loop_disable_mortgages",
                 "old_loop_zero_startup_household_debt",
                 "old_loop_zero_startup_rent",
             ):
@@ -1220,6 +1221,7 @@ class NewLoop:
             )
             lambda_q = self._old_loop_perm_income_update_rate_q()
             transitory_scale = self._old_loop_transitory_mpc_scale()
+            permanent_scale = max(0.0, float(self.params.get("old_loop_permanent_income_mpc_scale", 0.0)))
             y_perm_nom = ((1.0 - lambda_q) * np.maximum(0.0, prev_perm_income)) + (lambda_q * np.maximum(0.0, y_guess_arr))
             # OldLoop startup housing is now assigned from an affordability
             # construction that leaves room for baseline non-housing consumption.
@@ -1227,9 +1229,13 @@ class NewLoop:
             # housing initializer and the in-run consumption rule stay aligned.
             c_real_core = np.maximum(0.0, base_real_arr)
             core_nom = p_cons * c_real_core
+            c_real_permanent = np.maximum(
+                0.0,
+                (permanent_scale * mpc_arr * np.maximum(0.0, y_perm_nom)) / max(p_cons, 1e-9),
+            )
             transitory_nom = np.maximum(0.0, y_guess_arr - y_perm_nom)
             c_real_transitory = np.maximum(0.0, (transitory_scale * mpc_arr * transitory_nom) / max(p_cons, 1e-9))
-            c_hh_nom_income = p_cons * (c_real_core + c_real_transitory)
+            c_hh_nom_income = p_cons * (c_real_core + c_real_permanent + c_real_transitory)
             arrears_nom = (
                 np.maximum(0.0, np.asarray(hh.mort_interest_arrears_q, dtype=float))
                 + np.maximum(0.0, np.asarray(hh.mort_principal_arrears_q, dtype=float))
@@ -1677,6 +1683,13 @@ class NewLoop:
             growth_cap_nom = maintenance_nom
         else:
             expand_need_nom = gap_close * prev_unmet * (p_now / capacity_per_k)
+            if regime == "OldLoop":
+                old_loop_growth_rate = max(
+                    0.0,
+                    float(self.params.get("old_loop_autonomous_growth_capex_rate_q", 0.0) or 0.0),
+                )
+                normal_growth_nom = old_loop_growth_rate * max(0.0, prev_capacity) * (p_now / capacity_per_k)
+                expand_need_nom = max(expand_need_nom, normal_growth_nom)
             growth_cap_nom = maintenance_nom + (growth_cap_rate * max(0.0, prev_capacity) * (p_now / capacity_per_k))
 
         capex_need_nom = maintenance_nom + expand_need_nom
