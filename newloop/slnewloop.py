@@ -116,9 +116,12 @@ DECIMAL_COLUMNS = {
 }
 
 DISPLAY_VALUE_MODES: tuple[str, str] = ("nominal", "real")
-CONTROL_DEFAULTS_VERSION = 17
+CONTROL_DEFAULTS_VERSION = 19
 LOOP_MODE_SELECT_KEY = "run__economic_regime_select"
 LOOP_MODE_PLACEHOLDER = "(Select loop mode)"
+CORE_LOOP_RUN_MODES = {"StayOldLoop", "AutomationOnly", "NewLoopPolicies"}
+MORTGAGE_POLICY_RUN_MODE = "MortgagePolicy"
+OLD_TO_NEW_RUN_MODES = CORE_LOOP_RUN_MODES | {MORTGAGE_POLICY_RUN_MODE}
 UBI_PERCENTILE_PARAM_KEY = "param__ubi_target_percentile"
 UBI_PERCENTILE_UI_KEY = "ui__ubi_target_percentile"
 MORTGAGE_RATE_PARAM_PATH: tuple[str, ...] = ("mortgage_fixed_rate_q",)
@@ -136,9 +139,46 @@ REGIME_UI_SYNC_PATHS: tuple[tuple[str, ...], ...] = (
     ("corporate_tax_dynamic_with_wages",),
     ("gov_tax_rebate_rate",),
     ("old_to_new_transition_quarters",),
-    ("old_to_new_launch_newloop_policies",),
+    ("old_to_new_transition_mode",),
+    ("old_loop_disable_mortgages",),
 )
 _TITLE_MODE_SUFFIX_RE = re.compile(r"\s+\((?:UIS|UBI|OL|OTN|Stale)\)\s*$", re.IGNORECASE)
+
+
+def _regime_for_loop_mode(loop_mode: str) -> str | None:
+    mode = str(loop_mode).strip()
+    if mode in {"NewLoop", "OldLoop", "OldToNew"}:
+        return mode
+    if mode in OLD_TO_NEW_RUN_MODES:
+        return "OldToNew"
+    return None
+
+
+def _transition_mode_for_loop_mode(loop_mode: str) -> str | None:
+    mode = str(loop_mode).strip()
+    if mode == MORTGAGE_POLICY_RUN_MODE:
+        return "StayOldLoop"
+    return mode if mode in CORE_LOOP_RUN_MODES else None
+
+
+def _disable_mortgages_for_loop_mode(loop_mode: str) -> bool | None:
+    mode = str(loop_mode).strip()
+    if mode in CORE_LOOP_RUN_MODES:
+        return True
+    if mode == MORTGAGE_POLICY_RUN_MODE:
+        return False
+    return None
+
+
+def _apply_loop_mode_mortgage_defaults(params: Dict[str, Any], disable_mortgages: bool | None) -> None:
+    if disable_mortgages is None:
+        return
+    params["old_loop_disable_mortgages"] = bool(disable_mortgages)
+    if disable_mortgages:
+        params["mortgage_turnover_enabled"] = False
+        params["mortgage_maturity_roll_enabled"] = False
+        params["housing_turnover_owner_mortgage_share"] = 0.0
+        params["old_loop_auto_reissue_paid_off_mortgages"] = False
 
 
 def _annualize_quarterly_rate(value: float) -> float:
@@ -453,9 +493,10 @@ def _coerce_value(raw: Any, kind: str) -> Any:
 def _build_cfg_from_state(st: Any, base_cfg: Dict[str, Any]) -> Dict[str, Any]:
     cfg = copy.deepcopy(base_cfg)
     params = cfg.get("parameters", {})
-    selected_regime = str(st.session_state.get(LOOP_MODE_SELECT_KEY, "")).strip()
-    if selected_regime in {"NewLoop", "OldLoop", "OldToNew"}:
-        st.session_state["param__economic_regime"] = selected_regime
+    loop_mode = str(st.session_state.get(LOOP_MODE_SELECT_KEY, "")).strip()
+    selected_regime = _regime_for_loop_mode(loop_mode)
+    selected_transition_mode = _transition_mode_for_loop_mode(loop_mode)
+    selected_disable_mortgages = _disable_mortgages_for_loop_mode(loop_mode)
     for control in PARAMETER_CONTROLS:
         key = control_widget_key(control)
         raw = st.session_state.get(key, resolve_control_default(control, params))
@@ -465,6 +506,12 @@ def _build_cfg_from_state(st: Any, base_cfg: Dict[str, Any]) -> Dict[str, Any]:
             set_by_path(params, control.path, max(1, int(raw) * 4))
         else:
             set_by_path(params, control.path, _coerce_value(raw, control.kind))
+
+    if selected_regime is not None:
+        params["economic_regime"] = selected_regime
+    if selected_transition_mode is not None:
+        params["old_to_new_transition_mode"] = selected_transition_mode
+    _apply_loop_mode_mortgage_defaults(params, selected_disable_mortgages)
 
     # Guardrail: a zero UBI percentile anchors to zero in this population (some households have zero market income).
     # Keep run config sane even if a stale UI state slips through.
@@ -482,17 +529,27 @@ def _build_cfg_from_state(st: Any, base_cfg: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _apply_regime_ui_defaults(session_state: Dict[str, Any], base_cfg: Dict[str, Any], selected_regime: str) -> bool:
-    regime = str(selected_regime).strip()
+    loop_mode = str(selected_regime).strip()
+    regime = _regime_for_loop_mode(loop_mode)
     if regime not in {"NewLoop", "OldLoop", "OldToNew"}:
         return False
 
     regime_cfg = copy.deepcopy(base_cfg)
     regime_params = regime_cfg.setdefault("parameters", {})
     regime_params["economic_regime"] = regime
+    transition_mode = _transition_mode_for_loop_mode(loop_mode)
+    if transition_mode is not None:
+        regime_params["old_to_new_transition_mode"] = transition_mode
+    disable_mortgages = _disable_mortgages_for_loop_mode(loop_mode)
+    _apply_loop_mode_mortgage_defaults(regime_params, disable_mortgages)
     effective_cfg = apply_economic_regime_overrides(regime_cfg)
     effective_params = effective_cfg.get("parameters", {})
 
     session_state["param__economic_regime"] = regime
+    if transition_mode is not None:
+        session_state["param__old_to_new_transition_mode"] = transition_mode
+    if disable_mortgages is not None:
+        session_state["param__old_loop_disable_mortgages"] = bool(disable_mortgages)
     for control in PARAMETER_CONTROLS:
         path = tuple(control.path)
         if path not in REGIME_UI_SYNC_PATHS:
@@ -504,7 +561,7 @@ def _apply_regime_ui_defaults(session_state: Dict[str, Any], base_cfg: Dict[str,
             value = max(1, int(round(float(value) / 4.0)))
         session_state[control_widget_key(control)] = value
 
-    session_state["app__last_applied_regime_ui"] = regime
+    session_state["app__last_applied_regime_ui"] = loop_mode
     return True
 
 
@@ -696,11 +753,19 @@ def _render_parameter_controls(
         reset_clicked = col_reset.button("Reset", on_click=_request_reset_defaults)
         loop_mode = st.selectbox(
             "Loop Type",
-            options=(LOOP_MODE_PLACEHOLDER, "NewLoop", "OldLoop", "OldToNew"),
+            options=(
+                LOOP_MODE_PLACEHOLDER,
+                "NewLoop",
+                "OldLoop",
+                "StayOldLoop",
+                "AutomationOnly",
+                "NewLoopPolicies",
+                "MortgagePolicy",
+            ),
             key=LOOP_MODE_SELECT_KEY,
             help="Choose the loop mode before running the model.",
         )
-        if loop_mode in {"NewLoop", "OldLoop", "OldToNew"}:
+        if _regime_for_loop_mode(loop_mode) is not None:
             last_regime = str(st.session_state.get("app__last_applied_regime_ui", "")).strip()
             if loop_mode != last_regime:
                 _apply_regime_ui_defaults(st.session_state, {"parameters": copy.deepcopy(base_params)}, loop_mode)
@@ -721,17 +786,27 @@ def _render_parameter_controls(
             format_func=lambda m: "Nominal" if m == "nominal" else "Real (Price-normalized)",
             help="Controls how monetary values are displayed in charts/tables. Simulation mechanics are unchanged.",
         )
-        if str(st.session_state.get(LOOP_MODE_SELECT_KEY, "")).strip() == "OldLoop":
+        active_loop_mode = str(st.session_state.get(LOOP_MODE_SELECT_KEY, "")).strip()
+        if active_loop_mode == "OldLoop":
             st.caption(
                 "Old Loop forces trust, income support, mortgage assistance, VAT/prebate, "
                 "and GOV surplus rebate off, keeps mortgage turnover on, disables automation entirely for now, "
                 "and uses the Old Loop tax regime."
             )
-        elif str(st.session_state.get(LOOP_MODE_SELECT_KEY, "")).strip() == "OldToNew":
+        elif active_loop_mode in CORE_LOOP_RUN_MODES:
             st.caption(
-                "OldToNew runs visible Old Loop quarters first, then hands off to the configured NewLoop "
-                "transition point without a hidden NewLoop warm-start. You can choose whether that handoff "
-                "launches the NewLoop policy stack or only turns on automation under OldLoop rules."
+                "Core loop experiment: visible Old Loop quarters first, mortgages disabled, then the selected "
+                "automation/New Loop policy treatment begins."
+            )
+        elif active_loop_mode == MORTGAGE_POLICY_RUN_MODE:
+            st.caption(
+                "Mortgage policy experiment: visible Old Loop quarters first, mortgages enabled, and no automation "
+                "or New Loop policy handoff unless you change the lower-level controls."
+            )
+        elif active_loop_mode == "OldToNew":
+            st.caption(
+                "OldToNew runs visible Old Loop quarters first, then follows the selected experiment: "
+                "continue OldLoop, start automation under OldLoop rules, or start automation with NewLoop policies."
             )
 
         for section in SECTION_ORDER:
@@ -893,8 +968,8 @@ def main() -> None:
     current_cfg_json = _cfg_json(current_cfg)
     current_params = current_cfg.get("parameters", {}) if isinstance(current_cfg.get("parameters", {}), dict) else {}
     selected_regime = str(st.session_state.get(LOOP_MODE_SELECT_KEY, "")).strip()
-    has_selected_regime = selected_regime in {"NewLoop", "OldLoop", "OldToNew"}
-    if selected_regime == "OldLoop":
+    has_selected_regime = _regime_for_loop_mode(selected_regime) is not None
+    if _regime_for_loop_mode(selected_regime) == "OldLoop":
         wage_floor_share = float(current_params.get("old_loop_wage_floor_share", 0.0) or 0.0)
         profit_markup_sens = float(current_params.get("old_loop_profit_markup_sensitivity", 0.0) or 0.0)
         if wage_floor_share >= 0.05 or (wage_floor_share > 0.0 and profit_markup_sens > 0.0):
@@ -1278,7 +1353,13 @@ def main() -> None:
         display_rows = rows[-int(tail_n):]
 
     st.caption(f"Displaying {len(display_rows)} of {len(rows)} quarters.")
-    st.dataframe(_build_styled_rows(display_rows), width="stretch")
+    styled_rows = _build_styled_rows(display_rows)
+    try:
+        st.dataframe(styled_rows, width="stretch")
+    except TypeError as exc:
+        if "stretch" not in str(exc) and "width" not in str(exc):
+            raise
+        st.dataframe(styled_rows, use_container_width=True)
 
     csv_data = _rows_csv(rows)
     st.download_button(

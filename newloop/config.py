@@ -87,6 +87,9 @@ config = {
         "hh_equity_investment_info_share": 0.30,
         "hh_equity_issue_price_smoothing_q": 0.15,
         "hh_equity_issue_price_floor": 0.01,
+        "hh_equity_distribution_enabled": True,
+        "hh_equity_owner_share": 0.45,
+        "hh_equity_weight_power": 2.0,
         "hh_capex_reserve_spend_rate_q": 0.25,
         "old_loop_perm_income_update_rate_q": 0.30,
         "old_loop_permanent_income_mpc_scale": 0.25,
@@ -251,7 +254,8 @@ config = {
         "old_loop_zero_startup_rent": False,
         "neutral_warmup_quarters": 3,
         "old_to_new_transition_quarters": 16,
-        "old_to_new_launch_newloop_policies": True,
+        "old_to_new_transition_mode": "NewLoopPolicies",  # "StayOldLoop" | "AutomationOnly" | "NewLoopPolicies"
+        "old_to_new_launch_newloop_policies": True,       # legacy compatibility fallback
         "startup_buffer_alignment_max_iters": 8,
         "startup_buffer_alignment_deposit_blend": 0.35,
         "population_config": {

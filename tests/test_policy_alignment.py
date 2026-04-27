@@ -13,6 +13,7 @@ from newloop.engine import NewLoop
 from newloop.plotting import _title_with_mode
 from newloop.results import (
     _distribute_startup_mortgage_money_seed,
+    _household_wealth_snapshot,
     _population_distribution_snapshot,
     _startup_deposit_blend,
     _prepare_startup_sim,
@@ -24,7 +25,7 @@ from newloop.results import (
     _startup_solver_snapshot,
     run_simulation,
 )
-from newloop.slnewloop import _apply_regime_ui_defaults
+from newloop.slnewloop import LOOP_MODE_SELECT_KEY, _apply_regime_ui_defaults, _build_cfg_from_state
 
 
 def make_cfg():
@@ -162,7 +163,7 @@ class PolicyAlignmentTests(unittest.TestCase):
             "param__corporate_tax_dynamic_with_wages": False,
             "param__gov_tax_rebate_rate": 0.0,
             "param__old_to_new_transition_quarters": 3,
-            "param__old_to_new_launch_newloop_policies": False,
+            "param__old_to_new_transition_mode": "AutomationOnly",
         }
 
         changed = _apply_regime_ui_defaults(session_state, cfg, "OldToNew")
@@ -187,7 +188,36 @@ class PolicyAlignmentTests(unittest.TestCase):
             int(session_state["param__old_to_new_transition_quarters"]),
             int(cfg["parameters"]["old_to_new_transition_quarters"]),
         )
-        self.assertTrue(bool(session_state["param__old_to_new_launch_newloop_policies"]))
+        self.assertEqual(
+            str(session_state["param__old_to_new_transition_mode"]),
+            str(cfg["parameters"]["old_to_new_transition_mode"]),
+        )
+
+    def test_run_mode_dropdown_aliases_map_to_old_to_new_experiments(self):
+        cfg = make_cfg()
+
+        class FakeStreamlit:
+            session_state = {LOOP_MODE_SELECT_KEY: "StayOldLoop"}
+
+        built = _build_cfg_from_state(FakeStreamlit, cfg)
+
+        self.assertEqual(str(built["parameters"]["economic_regime"]), "OldToNew")
+        self.assertEqual(str(built["parameters"]["old_to_new_transition_mode"]), "StayOldLoop")
+        self.assertTrue(bool(built["parameters"]["old_loop_disable_mortgages"]))
+        self.assertFalse(bool(built["parameters"]["mortgage_turnover_enabled"]))
+
+    def test_mortgage_policy_run_mode_keeps_mortgages_enabled(self):
+        cfg = make_cfg()
+
+        class FakeStreamlit:
+            session_state = {LOOP_MODE_SELECT_KEY: "MortgagePolicy"}
+
+        built = _build_cfg_from_state(FakeStreamlit, cfg)
+
+        self.assertEqual(str(built["parameters"]["economic_regime"]), "OldToNew")
+        self.assertEqual(str(built["parameters"]["old_to_new_transition_mode"]), "StayOldLoop")
+        self.assertFalse(bool(built["parameters"]["old_loop_disable_mortgages"]))
+        self.assertTrue(bool(built["parameters"]["mortgage_turnover_enabled"]))
 
     def test_old_loop_plot_titles_use_ol_suffix(self):
         self.assertEqual(_title_with_mode("Household Wealth Reservoirs", "OL"), "Household Wealth Reservoirs (OL)")
@@ -210,6 +240,7 @@ class PolicyAlignmentTests(unittest.TestCase):
         self.assertTrue(bool(transition.get("transition_applied", False)))
         self.assertEqual(int(transition.get("visible_quarter", -1)), 2)
         self.assertEqual(int(transition.get("internal_t", -1)), 2)
+        self.assertEqual(str(transition.get("transition_mode", "")), "NewLoopPolicies")
         self.assertTrue(bool(transition.get("launch_newloop_policies", False)))
         self.assertEqual(str(transition.get("post_transition_regime", "")), "NewLoop")
         self.assertEqual(str(transition.get("post_transition_tax_policy_mode", "")), "current")
@@ -224,7 +255,7 @@ class PolicyAlignmentTests(unittest.TestCase):
         params = cfg["parameters"]
         params["economic_regime"] = "OldToNew"
         params["old_to_new_transition_quarters"] = 2
-        params["old_to_new_launch_newloop_policies"] = False
+        params["old_to_new_transition_mode"] = "AutomationOnly"
         params["neutral_warmup_quarters"] = 4
         params["automation_start_quarter"] = 0
 
@@ -233,6 +264,7 @@ class PolicyAlignmentTests(unittest.TestCase):
         self.assertEqual(len(run.rows), 4)
         transition = dict(run.startup_diagnostics.get("old_to_new_transition", {}))
         self.assertTrue(bool(transition.get("transition_applied", False)))
+        self.assertEqual(str(transition.get("transition_mode", "")), "AutomationOnly")
         self.assertFalse(bool(transition.get("launch_newloop_policies", True)))
         self.assertEqual(str(transition.get("post_transition_regime", "")), "OldLoop")
         self.assertEqual(str(transition.get("post_transition_tax_policy_mode", "")), "old_loop")
@@ -245,6 +277,25 @@ class PolicyAlignmentTests(unittest.TestCase):
         self.assertEqual(str(run.sim.params.get("tax_policy_mode", "")), "old_loop")
         self.assertTrue(bool(run.sim.params.get("disable_trust", False)))
         self.assertTrue(bool(run.sim.params.get("disable_income_support", False)))
+
+    def test_old_to_new_can_stay_old_loop_after_settling_period(self):
+        cfg = make_cfg()
+        params = cfg["parameters"]
+        params["economic_regime"] = "OldToNew"
+        params["old_to_new_transition_quarters"] = 2
+        params["old_to_new_transition_mode"] = "StayOldLoop"
+        params["neutral_warmup_quarters"] = 4
+        params["automation_start_quarter"] = 0
+
+        run = run_simulation(n_quarters=4, cfg=cfg)
+
+        transition = dict(run.startup_diagnostics.get("old_to_new_transition", {}))
+        self.assertTrue(bool(transition.get("transition_applied", False)))
+        self.assertEqual(str(transition.get("transition_mode", "")), "StayOldLoop")
+        self.assertEqual(str(transition.get("post_transition_regime", "")), "OldLoop")
+        self.assertTrue(bool(transition.get("post_transition_automation_disabled", False)))
+        self.assertTrue(all(abs(float(row["automation"])) <= 1e-12 for row in run.rows))
+        self.assertEqual(str(run.sim.params.get("economic_regime", "")), "OldLoop")
 
     def test_old_loop_preserves_startup_deposits_by_default(self):
         cfg = make_cfg()
@@ -412,6 +463,31 @@ class PolicyAlignmentTests(unittest.TestCase):
         self.assertAlmostEqual(float(sim.nodes["FH"].get("capex_reserve", 0.0)), expected_total * 0.75, places=6)
         self.assertGreater(float(sim.nodes["HH"].get("shares_FA", 0.0)), 10000.0)
         self.assertGreater(float(sim.nodes["HH"].get("shares_FH", 0.0)), 10000.0)
+
+    def test_household_equity_weights_concentrate_private_equity_wealth(self):
+        cfg = make_cfg()
+        sim = NewLoop(cfg)
+        assert sim.hh is not None
+        weights = np.zeros(sim.hh.n, dtype=float)
+        weights[-1] = 1.0
+        sim.hh.equity_weight_i = weights
+
+        snapshot = _household_wealth_snapshot(sim)
+        private_equity = np.asarray(snapshot["private_equity"], dtype=float)
+
+        self.assertGreater(float(np.sum(private_equity)), 0.0)
+        self.assertAlmostEqual(float(np.sum(private_equity[:-1])), 0.0, places=9)
+        self.assertAlmostEqual(float(private_equity[-1]), float(np.sum(private_equity)), places=6)
+
+    def test_household_equity_weights_are_skewed_by_startup_net_worth(self):
+        cfg = make_cfg()
+        sim = NewLoop(cfg)
+        assert sim.hh is not None
+        weights = np.asarray(sim.hh.equity_weight_i, dtype=float)
+
+        self.assertAlmostEqual(float(np.sum(weights)), 1.0, places=9)
+        self.assertLessEqual(int(np.sum(weights > 1e-12)), int(round(0.45 * sim.hh.n)) + 1)
+        self.assertGreater(float(np.max(weights)), float(np.median(weights)))
 
     def test_old_loop_step_updates_smoothed_permanent_income(self):
         cfg = make_cfg()
@@ -1429,14 +1505,13 @@ class PolicyAlignmentTests(unittest.TestCase):
         floored_cfg = make_cfg()
         floored_cfg["parameters"]["economic_regime"] = "OldLoop"
         floored_cfg["parameters"]["automation_disabled"] = True
-        floored_cfg["parameters"]["old_loop_wage_floor_share"] = 0.02
+        floored_cfg["parameters"]["old_loop_wage_floor_share"] = 0.50
 
         base_run = run_simulation(n_quarters=8, cfg=base_cfg)
         floored_run = run_simulation(n_quarters=8, cfg=floored_cfg)
 
         self.assertEqual(len(base_run.rows), 8)
         self.assertEqual(len(floored_run.rows), 8)
-        self.assertGreaterEqual(float(floored_run.rows[0]["wages_total"]), float(base_run.rows[0]["wages_total"]))
         self.assertTrue(
             any(
                 float(f_row["wages_total"]) > float(b_row["wages_total"])

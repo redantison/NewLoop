@@ -53,14 +53,31 @@ def _old_to_new_transition_quarters(cfg: Dict[str, Any] | Dict[str, float] | Non
     return max(0, int(params.get("old_to_new_transition_quarters", 0)))
 
 
-def _old_to_new_launch_newloop_policies(cfg: Dict[str, Any] | None) -> bool:
-    """Return whether OldToNew should switch into the NewLoop policy stack."""
+def _old_to_new_transition_mode(cfg: Dict[str, Any] | None) -> str:
+    """Return the configured OldToNew experiment after the OldLoop settling period."""
     if not isinstance(cfg, dict):
-        return True
+        return "NewLoopPolicies"
     params = cfg.get("parameters", cfg)
     if not isinstance(params, dict):
-        return True
-    return bool(params.get("old_to_new_launch_newloop_policies", True))
+        return "NewLoopPolicies"
+    raw = params.get("old_to_new_transition_mode", None)
+    if raw is None:
+        return (
+            "NewLoopPolicies"
+            if bool(params.get("old_to_new_launch_newloop_policies", True))
+            else "AutomationOnly"
+        )
+    normalized = str(raw or "").strip().lower().replace("-", "").replace("_", "").replace(" ", "")
+    if normalized in {"stayoldloop", "oldloop", "oldlooponly", "none", "baseline"}:
+        return "StayOldLoop"
+    if normalized in {"automationonly", "automation", "oldloopautomation", "automationoldloop"}:
+        return "AutomationOnly"
+    return "NewLoopPolicies"
+
+
+def _old_to_new_launch_newloop_policies(cfg: Dict[str, Any] | None) -> bool:
+    """Return whether OldToNew should switch into the NewLoop policy stack."""
+    return _old_to_new_transition_mode(cfg) == "NewLoopPolicies"
 
 
 def _old_to_new_old_phase_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
@@ -156,6 +173,7 @@ def _household_wealth_snapshot(sim: NewLoop, *, comprehensive: bool = COMPREHENS
             wealth_weights = wages0_i / wages0_sum
         else:
             wealth_weights = np.full(deposits_i.shape[0], 1.0 / float(deposits_i.shape[0]), dtype=float)
+        equity_weights = sim._household_equity_weights(fallback_weights=wealth_weights)
 
         price_level = float(sim.state.get("price_level", 1.0))
         if price_level <= 0.0:
@@ -187,7 +205,7 @@ def _household_wealth_snapshot(sim: NewLoop, *, comprehensive: bool = COMPREHENS
             + trust_equity_total
             - float(sim.nodes["FUND"].get("loans", 0.0))
         )
-        equity_i = wealth_weights * max(0.0, float(hh_equity_total))
+        equity_i = equity_weights * max(0.0, float(hh_equity_total))
         trust_i = np.full(deposits_i.shape[0], trust_value_total / float(deposits_i.shape[0]), dtype=float)
 
     wealth_i = deposits_i + housing_i + equity_i + trust_i - loan_i
@@ -1440,16 +1458,32 @@ def _reset_post_warmup_sector_planner_state(sim: NewLoop) -> None:
 
 
 def _activate_old_to_new_transition(sim: NewLoop, cfg: Dict[str, Any], visible_quarter: int) -> Dict[str, Any]:
-    """Switch a live simulation from OldLoop mechanics into the configured NewLoop phase."""
+    """Switch a live simulation into the selected OldToNew transition experiment."""
     current_t = int(sim.state.get("t", 0))
-    launch_newloop_policies = _old_to_new_launch_newloop_policies(cfg)
+    transition_mode = _old_to_new_transition_mode(cfg)
+    if transition_mode == "StayOldLoop":
+        sim.state["old_to_new_transition_applied"] = True
+        sim.state["old_to_new_transition_visible_quarter"] = int(visible_quarter)
+        sim.state["old_to_new_transition_internal_t"] = int(current_t)
+        sim.state["old_to_new_configured_regime"] = "OldToNew"
+        return {
+            "transition_applied": True,
+            "visible_quarter": int(visible_quarter),
+            "internal_t": int(current_t),
+            "transition_mode": transition_mode,
+            "launch_newloop_policies": False,
+            "post_transition_regime": str(sim.params.get("economic_regime", "OldLoop")),
+            "post_transition_tax_policy_mode": str(sim.params.get("tax_policy_mode", "")),
+            "post_transition_automation_disabled": bool(sim.params.get("automation_disabled", True)),
+            "post_transition_automation_start_quarter": int(sim.params.get("automation_start_quarter", 0)),
+        }
+
     next_cfg = (
         _old_to_new_new_phase_cfg(cfg, switch_t=current_t)
-        if launch_newloop_policies else
+        if transition_mode == "NewLoopPolicies" else
         _old_to_new_oldloop_decay_phase_cfg(cfg, switch_t=current_t)
     )
-    next_params = copy.deepcopy(next_cfg.get("parameters", {}))
-    sim.params = next_params
+    sim.params = copy.deepcopy(next_cfg.get("parameters", {}))
     sim.income_support_policy = make_income_support_policy(sim.params)
     sim.tax_policy = make_tax_policy(sim.params)
     sim.state["old_to_new_transition_applied"] = True
@@ -1460,7 +1494,8 @@ def _activate_old_to_new_transition(sim: NewLoop, cfg: Dict[str, Any], visible_q
         "transition_applied": True,
         "visible_quarter": int(visible_quarter),
         "internal_t": int(current_t),
-        "launch_newloop_policies": bool(launch_newloop_policies),
+        "transition_mode": transition_mode,
+        "launch_newloop_policies": bool(transition_mode == "NewLoopPolicies"),
         "post_transition_regime": str(sim.params.get("economic_regime", "NewLoop")),
         "post_transition_tax_policy_mode": str(sim.params.get("tax_policy_mode", "")),
         "post_transition_automation_disabled": bool(sim.params.get("automation_disabled", False)),
@@ -1481,6 +1516,7 @@ def _build_old_to_new_startup_sim(cfg: Dict[str, Any]) -> tuple[NewLoop, int, Di
         "completed_fully": True,
         "error": "",
         "old_to_new_transition_quarters": _old_to_new_transition_quarters(cfg),
+        "old_to_new_transition_mode": _old_to_new_transition_mode(cfg),
         "old_to_new_launch_newloop_policies": _old_to_new_launch_newloop_policies(cfg),
         "startup_mode": "old_to_new_visible_old_loop",
     }
@@ -1626,6 +1662,7 @@ def run_simulation(
             if old_to_new_transition_report is not None else {
                 "transition_applied": False,
                 "visible_quarter": int(old_to_new_transition_q),
+                "transition_mode": _old_to_new_transition_mode(effective_cfg),
                 "launch_newloop_policies": bool(_old_to_new_launch_newloop_policies(effective_cfg)),
             }
         )

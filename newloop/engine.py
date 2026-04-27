@@ -241,6 +241,7 @@ class NewLoop:
                 mort_orig_principal_raw = getattr(pop, "mortgage_orig_principal")
                 mpc_q_raw = getattr(pop, "mpc_q")
                 base_real_cons_q_raw = getattr(pop, "base_real_cons_q")
+                equity_weight_i_raw = getattr(pop, "equity_weight_i", [])
             except Exception:
                 wages0_q_raw = []
                 deposits_raw = []
@@ -255,6 +256,7 @@ class NewLoop:
                 mort_orig_principal_raw = []
                 mpc_q_raw = []
                 base_real_cons_q_raw = []
+                equity_weight_i_raw = []
 
             wages0_q = _as_np(wages0_q_raw, dtype=float)
             deposits = _as_np(deposits_raw, dtype=float)
@@ -278,6 +280,7 @@ class NewLoop:
             initial_tenure_code[initial_owners] = 2
             mpc_q = _as_np(mpc_q_raw, dtype=float)
             base_real_cons_q = _as_np(base_real_cons_q_raw, dtype=float)
+            equity_weight_i = _as_np(equity_weight_i_raw, dtype=float)
             liquid_buffer_months_target_raw = getattr(pop, "liquid_buffer_months_target", np.zeros(base_real_cons_q.shape[0], dtype=float))
             liquid_buffer_months_target = _as_np(liquid_buffer_months_target_raw, dtype=float)
 
@@ -294,6 +297,7 @@ class NewLoop:
                 mort_orig_principal.shape[0] if mort_orig_principal.size else mortgage_loans.shape[0],
                 mpc_q.shape[0],
                 base_real_cons_q.shape[0],
+                equity_weight_i.shape[0] if equity_weight_i.size else base_real_cons_q.shape[0],
                 liquid_buffer_months_target.shape[0],
                 renter_rent_q.shape[0] if renter_rent_q.size else base_real_cons_q.shape[0],
             ))
@@ -316,6 +320,7 @@ class NewLoop:
                     mort_orig_principal=mort_orig_principal[:n].copy(),
                     liquid_buffer_months_target=liquid_buffer_months_target[:n].copy(),
                     initial_tenure_code=initial_tenure_code[:n].copy(),
+                    equity_weight_i=(equity_weight_i[:n].copy() if equity_weight_i.size else np.zeros(n, dtype=float)),
                 )
                 self.hh.ensure_memos()
             else:
@@ -2074,14 +2079,36 @@ class NewLoop:
         if bool(self.params.get("use_population", False)) and (self.hh is not None) and (self.hh.n > 0):
             w0 = _as_np(self.hh.wages0_q, dtype=float)
             w0_sum = float(w0.sum()) if w0.size == self.hh.n else 0.0
-            if w0_sum > 0.0:
-                weights = w0 / w0_sum
-            else:
-                weights = np.full(self.hh.n, 1.0 / float(self.hh.n), dtype=float)
+            fallback = w0 / w0_sum if w0_sum > 0.0 else np.full(self.hh.n, 1.0 / float(self.hh.n), dtype=float)
+            weights = self._household_equity_weights(fallback_weights=fallback)
             self.hh.deposits[:] = self.hh.deposits + (weights * amount)
             self.nodes["HH"].set("deposits", self.hh.sum_deposits())
         else:
             self.nodes["HH"].add("deposits", +amount)
+
+    def _household_equity_weights(self, fallback_weights: Optional[np.ndarray] = None) -> np.ndarray:
+        """Return per-household weights for distributing aggregate private equity income/value."""
+        if self.hh is None or self.hh.n <= 0:
+            return np.asarray([], dtype=float)
+        if not bool(self.params.get("hh_equity_distribution_enabled", True)):
+            if fallback_weights is not None:
+                fallback = np.maximum(0.0, np.asarray(fallback_weights, dtype=float))
+                total = float(np.sum(fallback)) if fallback.shape[0] == self.hh.n else 0.0
+                if total > 1e-12:
+                    return fallback / total
+            return np.full(self.hh.n, 1.0 / float(self.hh.n), dtype=float)
+
+        weights = np.maximum(0.0, _as_np(getattr(self.hh, "equity_weight_i", []), dtype=float))
+        total = float(np.sum(weights)) if weights.shape[0] == self.hh.n else 0.0
+        if total > 1e-12:
+            return weights / total
+
+        if fallback_weights is not None:
+            fallback = np.maximum(0.0, np.asarray(fallback_weights, dtype=float))
+            total = float(np.sum(fallback)) if fallback.shape[0] == self.hh.n else 0.0
+            if total > 1e-12:
+                return fallback / total
+        return np.full(self.hh.n, 1.0 / float(self.hh.n), dtype=float)
 
     def _create_loan(self, borrower: str, amount: float, memo_tag: Optional[str] = None) -> None:
         """
@@ -2500,6 +2527,7 @@ class NewLoop:
         if w0_sum <= 0:
             return None
         w_weights = w0 / w0_sum
+        equity_weights = self._household_equity_weights(fallback_weights=w_weights)
 
         # Taxable-income and eligibility-income ranks are invariant within the
         # fixed-point loop because both are affine transforms of baseline wages.
@@ -2836,10 +2864,10 @@ class NewLoop:
             p_fh = div_fh_total + retained_fh
             bank_profit = div_bk_total + retained_bk
 
-            # 5) Allocate wages and (temporary) household dividends by baseline wage weights
+            # 5) Allocate wages by baseline wage weights and dividends by private-equity weights.
             wage_scale = w_total / w0_sum
             wages_i = w0 * wage_scale
-            div_i = w_weights * float(div_house_total)
+            div_i = equity_weights * float(div_house_total)
 
             # Poverty-line consumption in real units is anchored to baseline average real consumption per household.
             # If baseline is not yet stored, initialize it from the current iteration (baseline quarter t==0).
@@ -4503,8 +4531,8 @@ class NewLoop:
 
             # Net-wealth Gini proxy:
             #   wealth_i = deposits_i + allocated_hh_equity_i + allocated_trust_value_i - loans_i
-            # Direct household equity claims are allocated by baseline wage weights because
-            # ownership is tracked at HH aggregate. Trust value is split equally per household.
+            # Direct household equity claims are allocated by household equity weights.
+            # Trust value is split equally per household.
             dep_i = _as_np(self.hh.deposits, dtype=float)
             housing_i = _as_np(self.hh.housing_escrow, dtype=float)
             mort_i = _as_np(self.hh.mortgage_loans, dtype=float)
@@ -4526,6 +4554,7 @@ class NewLoop:
                     wealth_weights = w0_wealth / w0_wealth_sum
                 else:
                     wealth_weights = np.full(dep_i.size, 1.0 / float(dep_i.size), dtype=float)
+                equity_weights = self._household_equity_weights(fallback_weights=wealth_weights)
 
                 P_wealth = float(self.state.get("price_level", 1.0))
                 if P_wealth <= 0:
@@ -4558,7 +4587,7 @@ class NewLoop:
                     - float(self.nodes["FUND"].get("loans", 0.0))
                 )
                 private_equity_total = float(max(0.0, hh_equity_total))
-                equity_i = wealth_weights * hh_equity_total
+                equity_i = equity_weights * hh_equity_total
                 trust_i = np.full(dep_i.size, trust_value_total / float(dep_i.size), dtype=float)
                 wealth_i = dep_i + housing_i + equity_i + trust_i - loan_i
                 gini_wealth = calculate_gini_np(wealth_i)

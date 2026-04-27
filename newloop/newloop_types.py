@@ -49,6 +49,7 @@ class HouseholdState:
     mort_principal_arrears_q: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=float))
     liquid_buffer_months_target: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=float))
     initial_tenure_code: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=int))
+    equity_weight_i: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=float))
 
     prev_income: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=float))
     prev_perm_income: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=float))
@@ -95,6 +96,8 @@ class HouseholdState:
             initial_codes[initial_renters] = 0
             initial_codes[initial_owners] = 2
             self.initial_tenure_code = initial_codes
+        if (self.equity_weight_i.size == 0) or (self.equity_weight_i.shape[0] != self.n):
+            self.equity_weight_i = np.zeros(self.n, dtype=float)
         if (self.mort_P0.size == 0) or (self.mort_P0.shape[0] != self.n):
             self.mort_P0 = np.zeros(self.n, dtype=float)
         if (self.mort_Y0.size == 0) or (self.mort_Y0.shape[0] != self.n):

@@ -299,6 +299,8 @@ class PopulationConfig:
         (95.0, 675.0),
         (100.0, 800.0),
     )
+    hh_equity_owner_share: float = 0.45
+    hh_equity_weight_power: float = 2.0
 
 
 @dataclass
@@ -318,6 +320,7 @@ class Population:
     mpc_q: List[float]
     base_real_cons_q: List[float]
     liquid_buffer_months_target: List[float]
+    equity_weight_i: List[float]
 
 
 # ----------------------------
@@ -396,6 +399,50 @@ def _assign_mpc_from_deposits(deposits: List[float], schedule: Tuple[Tuple[float
     bin_idx = np.searchsorted(cutoff_idx, rank, side="left")
     mpc = mpc_vals[bin_idx]
     return mpc.astype(float).tolist()
+
+
+def _equity_weights_from_net_worth(
+    net_worth: "NP.ndarray",
+    *,
+    owner_share: float,
+    weight_power: float,
+) -> "NP.ndarray":
+    """Concentrate aggregate household equity ownership among high-net-worth families."""
+    np = NP
+    if np is None:
+        raise RuntimeError("NumPy is required for equity-weight assignment.")
+
+    signal = np.maximum(0.0, np.asarray(net_worth, dtype=float))
+    n = int(signal.size)
+    if n <= 0:
+        return np.asarray([], dtype=float)
+
+    share = clamp(float(owner_share), 0.0, 1.0)
+    if share <= 0.0:
+        return np.zeros(n, dtype=float)
+
+    owner_count = max(1, min(n, int(round(share * n))))
+    order = np.argsort(signal)
+    eligible = np.zeros(n, dtype=bool)
+    eligible[order[-owner_count:]] = True
+
+    eligible_signal = signal[eligible]
+    floor = float(np.min(eligible_signal)) if eligible_signal.size else 0.0
+    shifted = np.zeros(n, dtype=float)
+    shifted[eligible] = np.maximum(0.0, signal[eligible] - floor)
+    if float(np.sum(shifted)) <= 1e-12:
+        ranks = np.zeros(n, dtype=float)
+        ranks[order] = np.arange(1, n + 1, dtype=float)
+        shifted[eligible] = ranks[eligible] / float(n)
+
+    power = max(0.01, float(weight_power))
+    raw = np.zeros(n, dtype=float)
+    raw[eligible] = np.maximum(0.0, shifted[eligible]) ** power
+    raw_sum = float(np.sum(raw))
+    if raw_sum <= 1e-12:
+        raw[eligible] = 1.0
+        raw_sum = float(np.sum(raw))
+    return raw / raw_sum
 
 
 def _assign_piecewise_by_percentile_rank(
@@ -931,6 +978,17 @@ def generate_population(cfg: PopulationConfig) -> Population:
         deposits = debt_aware_buffer_q
 
     loans = mortgage_loans + revolving_loans
+    startup_net_worth = (
+        np.maximum(0.0, deposits)
+        + np.maximum(0.0, housing_values)
+        - np.maximum(0.0, mortgage_loans)
+        - np.maximum(0.0, revolving_loans)
+    )
+    equity_weight_i = _equity_weights_from_net_worth(
+        startup_net_worth,
+        owner_share=float(getattr(cfg, "hh_equity_owner_share", 0.45)),
+        weight_power=float(getattr(cfg, "hh_equity_weight_power", 2.0)),
+    )
 
     return Population(
         wages_q=wages.astype(float).tolist(),
@@ -948,6 +1006,7 @@ def generate_population(cfg: PopulationConfig) -> Population:
         mpc_q=[float(x) for x in mpc_q],
         base_real_cons_q=base_real.astype(float).tolist(),
         liquid_buffer_months_target=target_months.astype(float).tolist(),
+        equity_weight_i=equity_weight_i.astype(float).tolist(),
     )
 
 
