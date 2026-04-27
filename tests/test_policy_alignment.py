@@ -25,7 +25,12 @@ from newloop.results import (
     _startup_solver_snapshot,
     run_simulation,
 )
-from newloop.slnewloop import LOOP_MODE_SELECT_KEY, _apply_regime_ui_defaults, _build_cfg_from_state
+from newloop.slnewloop import (
+    LOOP_MODE_SELECT_KEY,
+    _apply_regime_ui_defaults,
+    _build_cfg_from_state,
+    _plot_mode_for_loop_mode,
+)
 
 
 def make_cfg():
@@ -83,7 +88,7 @@ class PolicyAlignmentTests(unittest.TestCase):
         self.assertTrue(bool(sim.params.get("mortgage_turnover_enabled", False)))
         self.assertAlmostEqual(float(sim.params.get("gov_tax_rebate_rate", 1.0)), 0.0, places=9)
 
-    def test_regime_ui_defaults_snap_visible_controls_to_old_loop(self):
+    def test_regime_ui_defaults_snap_visible_controls_to_old_loop_experiment(self):
         cfg = make_cfg()
         session_state = {
             "param__disable_trust": False,
@@ -102,20 +107,26 @@ class PolicyAlignmentTests(unittest.TestCase):
         changed = _apply_regime_ui_defaults(session_state, cfg, "OldLoop")
 
         self.assertTrue(changed)
-        self.assertEqual(session_state["param__economic_regime"], "OldLoop")
-        self.assertTrue(bool(session_state["param__disable_trust"]))
-        self.assertTrue(bool(session_state["param__disable_income_support"]))
-        self.assertTrue(bool(session_state["param__disable_mortgage_relief"]))
-        self.assertTrue(bool(session_state["param__disable_vat"]))
+        self.assertEqual(session_state["param__economic_regime"], "OldToNew")
+        self.assertEqual(session_state["param__old_to_new_transition_mode"], "StayOldLoop")
+        self.assertTrue(bool(session_state["param__old_loop_disable_mortgages"]))
+        self.assertFalse(bool(session_state["param__disable_trust"]))
+        self.assertFalse(bool(session_state["param__disable_income_support"]))
+        self.assertFalse(bool(session_state["param__disable_mortgage_relief"]))
+        self.assertFalse(bool(session_state["param__disable_vat"]))
         self.assertFalse(bool(session_state["param__disable_income_tax"]))
-        self.assertTrue(bool(session_state["param__mortgage_turnover_enabled"]))
-        self.assertTrue(bool(session_state["param__automation_disabled"]))
+        self.assertFalse(bool(session_state["param__mortgage_turnover_enabled"]))
+        self.assertFalse(bool(session_state["param__automation_disabled"]))
         self.assertFalse(bool(session_state["param__policy_rate_rule_enabled"]))
-        self.assertFalse(bool(session_state["param__corporate_tax_dynamic_with_wages"]))
-        self.assertAlmostEqual(float(session_state["param__gov_tax_rebate_rate"]), 0.0, places=9)
+        self.assertTrue(bool(session_state["param__corporate_tax_dynamic_with_wages"]))
+        self.assertAlmostEqual(
+            float(session_state["param__gov_tax_rebate_rate"]),
+            float(cfg["parameters"]["gov_tax_rebate_rate"]),
+            places=9,
+        )
         self.assertEqual(int(session_state["param__automation_start_quarter"]), 37)
 
-    def test_regime_ui_defaults_restore_newloop_defaults(self):
+    def test_regime_ui_defaults_ignore_retired_raw_newloop_choice(self):
         cfg = make_cfg()
         session_state = {
             "param__disable_trust": True,
@@ -132,24 +143,10 @@ class PolicyAlignmentTests(unittest.TestCase):
 
         changed = _apply_regime_ui_defaults(session_state, cfg, "NewLoop")
 
-        self.assertTrue(changed)
-        self.assertEqual(session_state["param__economic_regime"], "NewLoop")
-        self.assertFalse(bool(session_state["param__disable_trust"]))
-        self.assertFalse(bool(session_state["param__disable_income_support"]))
-        self.assertFalse(bool(session_state["param__disable_mortgage_relief"]))
-        self.assertFalse(bool(session_state["param__disable_vat"]))
-        self.assertFalse(bool(session_state["param__disable_income_tax"]))
-        self.assertTrue(bool(session_state["param__mortgage_turnover_enabled"]))
-        self.assertFalse(bool(session_state["param__automation_disabled"]))
-        self.assertFalse(bool(session_state["param__policy_rate_rule_enabled"]))
-        self.assertTrue(bool(session_state["param__corporate_tax_dynamic_with_wages"]))
-        self.assertAlmostEqual(
-            float(session_state["param__gov_tax_rebate_rate"]),
-            float(cfg["parameters"]["gov_tax_rebate_rate"]),
-            places=9,
-        )
+        self.assertFalse(changed)
+        self.assertNotIn("param__economic_regime", session_state)
 
-    def test_regime_ui_defaults_restore_old_to_new_defaults(self):
+    def test_regime_ui_defaults_ignore_retired_raw_old_to_new_choice(self):
         cfg = make_cfg()
         session_state = {
             "param__disable_trust": True,
@@ -168,36 +165,14 @@ class PolicyAlignmentTests(unittest.TestCase):
 
         changed = _apply_regime_ui_defaults(session_state, cfg, "OldToNew")
 
-        self.assertTrue(changed)
-        self.assertEqual(session_state["param__economic_regime"], "OldToNew")
-        self.assertFalse(bool(session_state["param__disable_trust"]))
-        self.assertFalse(bool(session_state["param__disable_income_support"]))
-        self.assertFalse(bool(session_state["param__disable_mortgage_relief"]))
-        self.assertFalse(bool(session_state["param__disable_vat"]))
-        self.assertFalse(bool(session_state["param__disable_income_tax"]))
-        self.assertTrue(bool(session_state["param__mortgage_turnover_enabled"]))
-        self.assertFalse(bool(session_state["param__automation_disabled"]))
-        self.assertFalse(bool(session_state["param__policy_rate_rule_enabled"]))
-        self.assertTrue(bool(session_state["param__corporate_tax_dynamic_with_wages"]))
-        self.assertAlmostEqual(
-            float(session_state["param__gov_tax_rebate_rate"]),
-            float(cfg["parameters"]["gov_tax_rebate_rate"]),
-            places=9,
-        )
-        self.assertEqual(
-            int(session_state["param__old_to_new_transition_quarters"]),
-            int(cfg["parameters"]["old_to_new_transition_quarters"]),
-        )
-        self.assertEqual(
-            str(session_state["param__old_to_new_transition_mode"]),
-            str(cfg["parameters"]["old_to_new_transition_mode"]),
-        )
+        self.assertFalse(changed)
+        self.assertNotIn("param__economic_regime", session_state)
 
     def test_run_mode_dropdown_aliases_map_to_old_to_new_experiments(self):
         cfg = make_cfg()
 
         class FakeStreamlit:
-            session_state = {LOOP_MODE_SELECT_KEY: "StayOldLoop"}
+            session_state = {LOOP_MODE_SELECT_KEY: "OldLoop"}
 
         built = _build_cfg_from_state(FakeStreamlit, cfg)
 
@@ -219,10 +194,19 @@ class PolicyAlignmentTests(unittest.TestCase):
         self.assertFalse(bool(built["parameters"]["old_loop_disable_mortgages"]))
         self.assertTrue(bool(built["parameters"]["mortgage_turnover_enabled"]))
 
-    def test_old_loop_plot_titles_use_ol_suffix(self):
-        self.assertEqual(_title_with_mode("Household Wealth Reservoirs", "OL"), "Household Wealth Reservoirs (OL)")
+    def test_plot_titles_use_experiment_suffixes(self):
+        self.assertEqual(_title_with_mode("Household Wealth Reservoirs", "OLD"), "Household Wealth Reservoirs (OLD)")
+        self.assertEqual(_title_with_mode("Household Wealth Reservoirs", "AUTO"), "Household Wealth Reservoirs (AUTO)")
+        self.assertEqual(_title_with_mode("Household Wealth Reservoirs", "MORT"), "Household Wealth Reservoirs (MORT)")
         self.assertEqual(_title_with_mode("Household Wealth Reservoirs", "UBI"), "Household Wealth Reservoirs (UBI)")
-        self.assertEqual(_title_with_mode("Household Wealth Reservoirs", "OTN"), "Household Wealth Reservoirs (OTN)")
+        self.assertEqual(_title_with_mode("Household Wealth Reservoirs", "UIS"), "Household Wealth Reservoirs (UIS)")
+
+    def test_plot_mode_comes_from_loop_experiment(self):
+        self.assertEqual(_plot_mode_for_loop_mode("OldLoop", "UBI"), "OLD")
+        self.assertEqual(_plot_mode_for_loop_mode("AutomationOnly", "UBI"), "AUTO")
+        self.assertEqual(_plot_mode_for_loop_mode("MortgagePolicy", "UBI"), "MORT")
+        self.assertEqual(_plot_mode_for_loop_mode("NewLoopPolicies", "UBI"), "UBI")
+        self.assertEqual(_plot_mode_for_loop_mode("NewLoopPolicies", "UIS"), "UIS")
 
     def test_old_to_new_transition_switches_visible_run_into_newloop(self):
         cfg = make_cfg()

@@ -379,7 +379,7 @@ def _normalized_mode(support_mode: str | None) -> str | None:
     if support_mode is None:
         return None
     mode = str(support_mode).strip().upper()
-    if mode in {"UIS", "UBI", "OL", "OTN"}:
+    if mode in {"UIS", "UBI", "OLD", "AUTO", "MORT", "OL", "OTN"}:
         return mode
     return None
 

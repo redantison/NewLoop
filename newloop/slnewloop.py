@@ -116,12 +116,15 @@ DECIMAL_COLUMNS = {
 }
 
 DISPLAY_VALUE_MODES: tuple[str, str] = ("nominal", "real")
-CONTROL_DEFAULTS_VERSION = 19
+CONTROL_DEFAULTS_VERSION = 20
 LOOP_MODE_SELECT_KEY = "run__economic_regime_select"
 LOOP_MODE_PLACEHOLDER = "(Select loop mode)"
-CORE_LOOP_RUN_MODES = {"StayOldLoop", "AutomationOnly", "NewLoopPolicies"}
+OLD_LOOP_RUN_MODE = "OldLoop"
+LEGACY_STAY_OLD_LOOP_RUN_MODE = "StayOldLoop"
+STAY_OLD_LOOP_TRANSITION_MODE = "StayOldLoop"
+CORE_LOOP_RUN_MODES = {OLD_LOOP_RUN_MODE, "AutomationOnly", "NewLoopPolicies"}
 MORTGAGE_POLICY_RUN_MODE = "MortgagePolicy"
-OLD_TO_NEW_RUN_MODES = CORE_LOOP_RUN_MODES | {MORTGAGE_POLICY_RUN_MODE}
+OLD_TO_NEW_RUN_MODES = CORE_LOOP_RUN_MODES | {MORTGAGE_POLICY_RUN_MODE, LEGACY_STAY_OLD_LOOP_RUN_MODE}
 UBI_PERCENTILE_PARAM_KEY = "param__ubi_target_percentile"
 UBI_PERCENTILE_UI_KEY = "ui__ubi_target_percentile"
 MORTGAGE_RATE_PARAM_PATH: tuple[str, ...] = ("mortgage_fixed_rate_q",)
@@ -142,13 +145,11 @@ REGIME_UI_SYNC_PATHS: tuple[tuple[str, ...], ...] = (
     ("old_to_new_transition_mode",),
     ("old_loop_disable_mortgages",),
 )
-_TITLE_MODE_SUFFIX_RE = re.compile(r"\s+\((?:UIS|UBI|OL|OTN|Stale)\)\s*$", re.IGNORECASE)
+_TITLE_MODE_SUFFIX_RE = re.compile(r"\s+\((?:UIS|UBI|OLD|AUTO|MORT|OL|OTN|Stale)\)\s*$", re.IGNORECASE)
 
 
 def _regime_for_loop_mode(loop_mode: str) -> str | None:
     mode = str(loop_mode).strip()
-    if mode in {"NewLoop", "OldLoop", "OldToNew"}:
-        return mode
     if mode in OLD_TO_NEW_RUN_MODES:
         return "OldToNew"
     return None
@@ -156,14 +157,14 @@ def _regime_for_loop_mode(loop_mode: str) -> str | None:
 
 def _transition_mode_for_loop_mode(loop_mode: str) -> str | None:
     mode = str(loop_mode).strip()
-    if mode == MORTGAGE_POLICY_RUN_MODE:
-        return "StayOldLoop"
+    if mode in {OLD_LOOP_RUN_MODE, MORTGAGE_POLICY_RUN_MODE, LEGACY_STAY_OLD_LOOP_RUN_MODE}:
+        return STAY_OLD_LOOP_TRANSITION_MODE
     return mode if mode in CORE_LOOP_RUN_MODES else None
 
 
 def _disable_mortgages_for_loop_mode(loop_mode: str) -> bool | None:
     mode = str(loop_mode).strip()
-    if mode in CORE_LOOP_RUN_MODES:
+    if mode in CORE_LOOP_RUN_MODES or mode == LEGACY_STAY_OLD_LOOP_RUN_MODE:
         return True
     if mode == MORTGAGE_POLICY_RUN_MODE:
         return False
@@ -179,6 +180,22 @@ def _apply_loop_mode_mortgage_defaults(params: Dict[str, Any], disable_mortgages
         params["mortgage_maturity_roll_enabled"] = False
         params["housing_turnover_owner_mortgage_share"] = 0.0
         params["old_loop_auto_reissue_paid_off_mortgages"] = False
+
+
+def _plot_mode_for_loop_mode(loop_mode: str, support_mode: str) -> str:
+    mode = str(loop_mode).strip()
+    support = str(support_mode).strip().upper()
+    if support not in {"UIS", "UBI"}:
+        support = "UBI"
+    if mode in {OLD_LOOP_RUN_MODE, LEGACY_STAY_OLD_LOOP_RUN_MODE}:
+        return "OLD"
+    if mode == "AutomationOnly":
+        return "AUTO"
+    if mode == MORTGAGE_POLICY_RUN_MODE:
+        return "MORT"
+    if mode == "NewLoopPolicies":
+        return support
+    return support
 
 
 def _annualize_quarterly_rate(value: float) -> float:
@@ -755,12 +772,10 @@ def _render_parameter_controls(
             "Loop Type",
             options=(
                 LOOP_MODE_PLACEHOLDER,
-                "NewLoop",
-                "OldLoop",
-                "StayOldLoop",
+                OLD_LOOP_RUN_MODE,
                 "AutomationOnly",
                 "NewLoopPolicies",
-                "MortgagePolicy",
+                MORTGAGE_POLICY_RUN_MODE,
             ),
             key=LOOP_MODE_SELECT_KEY,
             help="Choose the loop mode before running the model.",
@@ -787,11 +802,10 @@ def _render_parameter_controls(
             help="Controls how monetary values are displayed in charts/tables. Simulation mechanics are unchanged.",
         )
         active_loop_mode = str(st.session_state.get(LOOP_MODE_SELECT_KEY, "")).strip()
-        if active_loop_mode == "OldLoop":
+        if active_loop_mode == OLD_LOOP_RUN_MODE:
             st.caption(
-                "Old Loop forces trust, income support, mortgage assistance, VAT/prebate, "
-                "and GOV surplus rebate off, keeps mortgage turnover on, disables automation entirely for now, "
-                "and uses the Old Loop tax regime."
+                "Old Loop experiment: visible Old Loop quarters, mortgages disabled, no automation handoff, "
+                "and no New Loop policy handoff."
             )
         elif active_loop_mode in CORE_LOOP_RUN_MODES:
             st.caption(
@@ -802,11 +816,6 @@ def _render_parameter_controls(
             st.caption(
                 "Mortgage policy experiment: visible Old Loop quarters first, mortgages enabled, and no automation "
                 "or New Loop policy handoff unless you change the lower-level controls."
-            )
-        elif active_loop_mode == "OldToNew":
-            st.caption(
-                "OldToNew runs visible Old Loop quarters first, then follows the selected experiment: "
-                "continue OldLoop, start automation under OldLoop rules, or start automation with NewLoop policies."
             )
 
         for section in SECTION_ORDER:
@@ -1036,13 +1045,7 @@ def main() -> None:
     support_mode = str(support_debug.get("mode", support_mode_cfg)).strip().upper()
     if support_mode not in {"UIS", "UBI"}:
         support_mode = support_mode_cfg
-    economic_regime = str(current_cfg.get("parameters", {}).get("economic_regime", "NewLoop")).strip()
-    if economic_regime == "OldLoop":
-        plot_mode = "OL"
-    elif economic_regime == "OldToNew":
-        plot_mode = "OTN"
-    else:
-        plot_mode = support_mode
+    plot_mode = _plot_mode_for_loop_mode(selected_regime, support_mode)
 
     _render_startup_diagnostics_panel(
         dict(st.session_state.get("startup_diagnostics", {})),
