@@ -6,6 +6,13 @@ from __future__ import annotations
 import copy
 from typing import Any, Dict
 
+from .sectors import (
+    INFO_SECTOR,
+    PHYSICAL_SECTOR,
+    SECTOR_ALIASES,
+    SHARE_ALIASES,
+)
+
 config = {
     "parameters": {
         "economic_regime": "NewLoop",    # "NewLoop" | "OldLoop" | "OldToNew"
@@ -358,7 +365,7 @@ config = {
         "price_adjust_speed": 0.10,    # pass-through speed to target price (1.0=no stickiness, lower=more inertia)
 
         # Production structure
-        "wage_share_of_revenue": {"FH": 0.50, "FA": 0.40},
+        "wage_share_of_revenue": {"PS": 0.50, "IS": 0.40},
 
         # Automation path ("two_hump" recommended; "linear" available as fallback)
         "automation_disabled": False,
@@ -382,14 +389,14 @@ config = {
     },
     "nodes": {
         # Firms: deposit accounts used as transactional hubs
-        "FA":   {"stocks": {"shares_outstanding": 10000.0, "deposits": 0.0, "K": 0.0, "capex_reserve": 0.0}},
-        "FH":   {"stocks": {"shares_outstanding": 10000.0, "deposits": 0.0, "K": 0.0, "capex_reserve": 0.0}},
+        "IS":   {"stocks": {"shares_outstanding": 10000.0, "deposits": 0.0, "K": 0.0, "capex_reserve": 0.0}},
+        "PS":   {"stocks": {"shares_outstanding": 10000.0, "deposits": 0.0, "K": 0.0, "capex_reserve": 0.0}},
 
         # Bank: deposit issuer + equity issuer
         "BANK": {"stocks": {"shares_outstanding": 10000.0, "deposits": 0.0, "deposit_liab": 0.0, "loan_assets": 0.0, "reserves": 0.0, "equity": 0.0}},
 
         # Trust
-        "FUND": {"stocks": {"deposits": 0.0, "loans": 0.0, "shares_FA": 0.0, "shares_FH": 0.0, "shares_BANK": 0.0}},
+        "FUND": {"stocks": {"deposits": 0.0, "loans": 0.0, "shares_IS": 0.0, "shares_PS": 0.0, "shares_BANK": 0.0}},
 
         # Government sink / spender
         "GOV":  {"stocks": {"deposits": 0.0}},
@@ -401,8 +408,8 @@ config = {
         "HH": {"stocks": {
             "deposits": 0.0,
             "loans": 0.0,
-            "shares_FA": 10000.0,
-            "shares_FH": 10000.0,
+            "shares_IS": 10000.0,
+            "shares_PS": 10000.0,
             "shares_BANK": 10000.0,
         }},
     },
@@ -428,9 +435,43 @@ def resolve_tax_policy_mode(params: Dict[str, Any]) -> str:
     return "old_loop" if regime == "OldLoop" else "current"
 
 
+def _normalize_legacy_sector_names(cfg: Dict[str, Any]) -> None:
+    """Normalize legacy FA/FH sector node and share keys in-place."""
+    nodes = cfg.setdefault("nodes", {})
+    if isinstance(nodes, dict):
+        for legacy_id, canonical_id in SECTOR_ALIASES.items():
+            if legacy_id in nodes:
+                legacy_node = nodes.pop(legacy_id)
+                nodes.setdefault(canonical_id, legacy_node)
+
+        for node in nodes.values():
+            if not isinstance(node, dict):
+                continue
+            stocks = node.get("stocks", {})
+            if not isinstance(stocks, dict):
+                continue
+            for old_key, new_key in SHARE_ALIASES.items():
+                if old_key in stocks:
+                    old_value = stocks.pop(old_key)
+                    stocks.setdefault(new_key, old_value)
+
+    params = cfg.setdefault("parameters", {})
+    wage_share = params.get("wage_share_of_revenue", {})
+    if isinstance(wage_share, dict):
+        for legacy_id, canonical_id in SECTOR_ALIASES.items():
+            if legacy_id in wage_share:
+                old_value = wage_share.pop(legacy_id)
+                wage_share.setdefault(canonical_id, old_value)
+        if INFO_SECTOR not in wage_share and "info" in wage_share:
+            wage_share[INFO_SECTOR] = wage_share["info"]
+        if PHYSICAL_SECTOR not in wage_share and "physical" in wage_share:
+            wage_share[PHYSICAL_SECTOR] = wage_share["physical"]
+
+
 def apply_economic_regime_overrides(cfg: Dict[str, Any]) -> Dict[str, Any]:
     """Return a deep-copied config with any regime-level overrides applied."""
     effective_cfg = copy.deepcopy(cfg)
+    _normalize_legacy_sector_names(effective_cfg)
     params = effective_cfg.setdefault("parameters", {})
     regime = normalize_economic_regime_name(params.get("economic_regime", "NewLoop"))
     params["economic_regime"] = regime

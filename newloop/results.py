@@ -186,18 +186,18 @@ def _household_wealth_snapshot(sim: NewLoop, *, comprehensive: bool = COMPREHENS
             frac = float(sim.nodes[holder].get(key, 0.0)) / shares_out
             return max(0.0, min(1.0, frac))
 
-        fa_equity_proxy = sim._firm_balance_sheet_equity_proxy("FA", price_level)
-        fh_equity_proxy = sim._firm_balance_sheet_equity_proxy("FH", price_level)
+        fa_equity_proxy = sim._firm_balance_sheet_equity_proxy("IS", price_level)
+        fh_equity_proxy = sim._firm_balance_sheet_equity_proxy("PS", price_level)
         bank_equity_proxy = sim._firm_balance_sheet_equity_proxy("BANK", price_level)
 
         hh_equity_total = (
-            node_share_frac("HH", "FA", "shares_FA") * fa_equity_proxy
-            + node_share_frac("HH", "FH", "shares_FH") * fh_equity_proxy
+            node_share_frac("HH", "IS", "shares_IS") * fa_equity_proxy
+            + node_share_frac("HH", "PS", "shares_PS") * fh_equity_proxy
             + node_share_frac("HH", "BANK", "shares_BANK") * bank_equity_proxy
         )
         trust_equity_total = (
-            node_share_frac("FUND", "FA", "shares_FA") * fa_equity_proxy
-            + node_share_frac("FUND", "FH", "shares_FH") * fh_equity_proxy
+            node_share_frac("FUND", "IS", "shares_IS") * fa_equity_proxy
+            + node_share_frac("FUND", "PS", "shares_PS") * fh_equity_proxy
             + node_share_frac("FUND", "BANK", "shares_BANK") * bank_equity_proxy
         )
         trust_value_total = (
@@ -1331,8 +1331,8 @@ def _reseed_visible_start_capacity(sim: NewLoop) -> Dict[str, Any] | None:
         ums_fa_real=ums_fa_real,
         ums_fh_real=ums_fh_real,
     )
-    sim.state["sector_capacity_info_real_prev"] = float(sim._sector_capacity_real("FA"))
-    sim.state["sector_capacity_phys_real_prev"] = float(sim._sector_capacity_real("FH"))
+    sim.state["sector_capacity_info_real_prev"] = float(sim._sector_capacity_real("IS"))
+    sim.state["sector_capacity_phys_real_prev"] = float(sim._sector_capacity_real("PS"))
     return {
         "hh_demand_fa_real": float(hh_demand_fa_real),
         "hh_demand_fh_real": float(hh_demand_fh_real),
@@ -1340,8 +1340,8 @@ def _reseed_visible_start_capacity(sim: NewLoop) -> Dict[str, Any] | None:
         "supplier_fh_real": float(supplier_fh_real),
         "ums_fa_real": float(ums_fa_real),
         "ums_fh_real": float(ums_fh_real),
-        "capacity_info_real": float(sim._sector_capacity_real("FA")),
-        "capacity_phys_real": float(sim._sector_capacity_real("FH")),
+        "capacity_info_real": float(sim._sector_capacity_real("IS")),
+        "capacity_phys_real": float(sim._sector_capacity_real("PS")),
     }
 
 
@@ -1359,8 +1359,8 @@ def _seed_old_loop_startup_retained_cash(sim: NewLoop) -> Dict[str, Any] | None:
     total_added = 0.0
     out: Dict[str, Any] = {"quarters": float(quarters)}
     for firm_id, free_cash_key in (
-        ("FA", "sector_free_cash_info_prev"),
-        ("FH", "sector_free_cash_phys_prev"),
+        ("IS", "sector_free_cash_info_prev"),
+        ("PS", "sector_free_cash_phys_prev"),
     ):
         maintenance_nom = quarters * max(0.0, float(sim._sector_maintenance_capex_nom(firm_id, p_now)))
         existing_cash = max(0.0, float(sim._firm_discretionary_deposits_nom(firm_id)))
@@ -1373,7 +1373,7 @@ def _seed_old_loop_startup_retained_cash(sim: NewLoop) -> Dict[str, Any] | None:
             max(0.0, float(sim.state.get(free_cash_key, 0.0))),
             existing_cash,
         )
-        suffix = "info" if firm_id == "FA" else "phys"
+        suffix = "info" if firm_id == "IS" else "phys"
         out[f"{suffix}_maintenance_target_nom"] = float(maintenance_nom)
         out[f"{suffix}_retained_cash_added_nom"] = float(add_cash)
         out[f"{suffix}_free_cash_prev_nom"] = float(sim.state[free_cash_key])

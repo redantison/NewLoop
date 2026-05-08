@@ -35,7 +35,7 @@ class NewLoop:
     Single-bank SFC model for experimenting with policies that could
     facilitate the AI/automation transition, with:
     - Households: synthetic population aggregated as HH; optional vectorized HouseholdState for distributional dynamics.
-    - Firms: FA, FH
+    - Firms: IS, PS
     - Bank: BANK (monetary issuer of deposits + equity issuer)
     - Trust: FUND
     - Government sink: GOV (optional)
@@ -169,7 +169,7 @@ class NewLoop:
         }
 
         # Ensure required nodes exist (population-mode core only)
-        for required in ["BANK", "FUND", "FA", "FH", "GOV", "UMS", "HH", "HOUSING"]:
+        for required in ["BANK", "FUND", "IS", "PS", "GOV", "UMS", "HH", "HOUSING"]:
             if required not in self.nodes:
                 self.nodes[required] = Node(required, stocks={})
 
@@ -418,11 +418,11 @@ class NewLoop:
 
         explicit_revenue = any(
             abs(float(self.nodes[node_id].memo.get("revenue_prev", 0.0))) > 1e-12
-            for node_id in ("FA", "FH")
+            for node_id in ("IS", "PS")
         )
         if not explicit_revenue:
-            self.nodes["FA"].memo["revenue_prev"] = max(0.0, float(seed_sol.get("rev_fa", 0.0)))
-            self.nodes["FH"].memo["revenue_prev"] = max(0.0, float(seed_sol.get("rev_fh", 0.0)))
+            self.nodes["IS"].memo["revenue_prev"] = max(0.0, float(seed_sol.get("rev_fa", 0.0)))
+            self.nodes["PS"].memo["revenue_prev"] = max(0.0, float(seed_sol.get("rev_fh", 0.0)))
             seed_sol = self.solve_within_tick_population(allow_income_support_trigger=False)
             if seed_sol is None:
                 raise RuntimeError("Startup lagged-retained bootstrap expected a population solution after revenue seed.")
@@ -441,11 +441,11 @@ class NewLoop:
 
         explicit_retained = any(
             abs(float(self.nodes[node_id].memo.get("retained_prev", 0.0))) > 1e-12
-            for node_id in ("FA", "FH", "BANK")
+            for node_id in ("IS", "PS", "BANK")
         )
         if not explicit_retained:
-            self.nodes["FA"].memo["retained_prev"] = scale * max(0.0, float(seed_sol.get("retained_fa", 0.0)))
-            self.nodes["FH"].memo["retained_prev"] = scale * max(0.0, float(seed_sol.get("retained_fh", 0.0)))
+            self.nodes["IS"].memo["retained_prev"] = scale * max(0.0, float(seed_sol.get("retained_fa", 0.0)))
+            self.nodes["PS"].memo["retained_prev"] = scale * max(0.0, float(seed_sol.get("retained_fh", 0.0)))
             self.nodes["BANK"].memo["retained_prev"] = scale * max(0.0, float(seed_sol.get("retained_bk", 0.0)))
 
         self.state["startup_bootstrap_done"] = True
@@ -465,8 +465,8 @@ class NewLoop:
             return
 
         p_now = max(1e-9, float(self.state.get("price_level", self.params.get("price_level_initial", 1.0))))
-        fa_broad_eq = self._firm_broad_equity_proxy("FA", p_now)
-        fh_broad_eq = self._firm_broad_equity_proxy("FH", p_now)
+        fa_broad_eq = self._firm_broad_equity_proxy("IS", p_now)
+        fh_broad_eq = self._firm_broad_equity_proxy("PS", p_now)
         bank_eq = self._firm_balance_sheet_equity_proxy("BANK", p_now)
 
         self.state["corporate_info_equity_prev_total"] = float(fa_broad_eq)
@@ -487,7 +487,7 @@ class NewLoop:
             return
 
         # Respect explicit scenario-provided capital stocks.
-        if any(abs(float(self.nodes[node_id].get("K", 0.0))) > 1e-12 for node_id in ("FA", "FH")):
+        if any(abs(float(self.nodes[node_id].get("K", 0.0))) > 1e-12 for node_id in ("IS", "PS")):
             return
 
         p_now = max(1e-9, float(self.state.get("price_level", self.params.get("price_level_initial", 1.0))))
@@ -497,8 +497,8 @@ class NewLoop:
             return
 
         for firm_id, retained_key, base_key in (
-            ("FA", "retained_fa", "sector_base_capacity_info_real"),
-            ("FH", "retained_fh", "sector_base_capacity_phys_real"),
+            ("IS", "retained_fa", "sector_base_capacity_info_real"),
+            ("PS", "retained_fh", "sector_base_capacity_phys_real"),
         ):
             depr_q = self._sector_depr_rate_q(firm_id)
             if depr_q <= 1e-12:
@@ -542,7 +542,7 @@ class NewLoop:
         ))
 
     def _firm_legacy_capacity_equity_proxy(self, firm_id: str, price_level: float | None = None) -> float:
-        if firm_id not in ("FA", "FH"):
+        if firm_id not in ("IS", "PS"):
             return 0.0
         capacity_per_k = self._sector_capacity_per_k(firm_id)
         if capacity_per_k <= 1e-12:
@@ -550,7 +550,7 @@ class NewLoop:
         p_now = float(self.state.get("price_level", 1.0) if price_level is None else price_level)
         if p_now <= 0.0:
             p_now = 1e-9
-        base_key = "sector_base_capacity_info_real" if firm_id == "FA" else "sector_base_capacity_phys_real"
+        base_key = "sector_base_capacity_info_real" if firm_id == "IS" else "sector_base_capacity_phys_real"
         base_capacity = max(0.0, float(self.state.get(base_key, 0.0)))
         return float(base_capacity * (p_now / capacity_per_k))
 
@@ -1356,29 +1356,29 @@ class NewLoop:
         self.state["housing_value_price_deflator"] = float(price_index)
 
     def _sector_supplier_share_info(self, investor_id: str) -> float:
-        if investor_id == "FA":
+        if investor_id == "IS":
             key = "sector_supplier_share_info_for_info_capex"
         else:
             key = "sector_supplier_share_info_for_phys_capex"
         return max(0.0, min(1.0, float(self.params.get(key, 0.5))))
 
     def _sector_capacity_per_k(self, firm_id: str) -> float:
-        key = "sector_capacity_per_k_info" if firm_id == "FA" else "sector_capacity_per_k_phys"
+        key = "sector_capacity_per_k_info" if firm_id == "IS" else "sector_capacity_per_k_phys"
         return max(0.0, float(self.params.get(key, 0.0)))
 
     def _sector_tfp_alpha(self, firm_id: str) -> float:
-        key = "sector_tfp_alpha_info" if firm_id == "FA" else "sector_tfp_alpha_phys"
+        key = "sector_tfp_alpha_info" if firm_id == "IS" else "sector_tfp_alpha_phys"
         return max(0.0, float(self.params.get(key, 0.0)))
 
     def _sector_tfp_multiplier(self, firm_id: str) -> float:
-        if firm_id == "FA":
+        if firm_id == "IS":
             auto = max(0.0, float(self.state.get("automation_info", self.state.get("automation", 0.0))))
         else:
             auto = max(0.0, float(self.state.get("automation_phys", self.state.get("automation", 0.0))))
         return max(1.0, 1.0 + (self._sector_tfp_alpha(firm_id) * auto))
 
     def _sector_capacity_multiplier(self, firm_id: str) -> float:
-        if firm_id == "FA":
+        if firm_id == "IS":
             auto = max(0.0, float(self.state.get("automation_info", self.state.get("automation", 0.0))))
             bonus = max(0.0, float(self.params.get("sector_automation_capacity_bonus_info", 0.0)))
         else:
@@ -1411,17 +1411,17 @@ class NewLoop:
         target_fa *= (1.0 + buffer)
         target_fh *= (1.0 + buffer)
 
-        mult_fa = max(1e-9, self._sector_capacity_multiplier("FA"))
-        mult_fh = max(1e-9, self._sector_capacity_multiplier("FH"))
-        k_fa = max(0.0, float(self.nodes["FA"].get("K", 0.0)))
-        k_fh = max(0.0, float(self.nodes["FH"].get("K", 0.0)))
-        base_fa = max(0.0, (target_fa / mult_fa) - (self._sector_capacity_per_k("FA") * k_fa))
-        base_fh = max(0.0, (target_fh / mult_fh) - (self._sector_capacity_per_k("FH") * k_fh))
+        mult_fa = max(1e-9, self._sector_capacity_multiplier("IS"))
+        mult_fh = max(1e-9, self._sector_capacity_multiplier("PS"))
+        k_fa = max(0.0, float(self.nodes["IS"].get("K", 0.0)))
+        k_fh = max(0.0, float(self.nodes["PS"].get("K", 0.0)))
+        base_fa = max(0.0, (target_fa / mult_fa) - (self._sector_capacity_per_k("IS") * k_fa))
+        base_fh = max(0.0, (target_fh / mult_fh) - (self._sector_capacity_per_k("PS") * k_fh))
         self.state["sector_base_capacity_info_real"] = float(base_fa)
         self.state["sector_base_capacity_phys_real"] = float(base_fh)
 
     def _sector_capacity_real(self, firm_id: str) -> float:
-        if firm_id == "FA":
+        if firm_id == "IS":
             base_key = "sector_base_capacity_info_real"
         else:
             base_key = "sector_base_capacity_phys_real"
@@ -1432,7 +1432,7 @@ class NewLoop:
         )
 
     def _sector_overhead_nom(self, firm_id: str) -> float:
-        if firm_id == "FA":
+        if firm_id == "IS":
             rate = max(0.0, float(self.params.get("firm_overhead_rate_info", 0.0)))
         else:
             rate = max(0.0, float(self.params.get("firm_overhead_rate_phys", 0.0)))
@@ -1440,7 +1440,7 @@ class NewLoop:
         return rate * revenue_prev
 
     def _sector_input_cost_rate(self, firm_id: str) -> float:
-        if firm_id == "FA":
+        if firm_id == "IS":
             return max(0.0, float(self.params.get("sector_input_cost_rate_info", 0.0)))
         return max(0.0, float(self.params.get("sector_input_cost_rate_phys", 0.0)))
 
@@ -1450,9 +1450,9 @@ class NewLoop:
             return commit
         if issuer == "BANK":
             payout_rate = max(0.0, min(1.0, float(self.params.get("dividend_payout_rate_bank", 1.0))))
-        elif issuer == "FA":
+        elif issuer == "IS":
             payout_rate = max(0.0, min(1.0, float(self.state.get("sector_payout_rate_info_prev", self.params.get("dividend_payout_rate_firms", 1.0)))))
-        elif issuer == "FH":
+        elif issuer == "PS":
             payout_rate = max(0.0, min(1.0, float(self.state.get("sector_payout_rate_phys_prev", self.params.get("dividend_payout_rate_firms", 1.0)))))
         else:
             payout_rate = max(0.0, min(1.0, float(self.params.get("dividend_payout_rate_firms", 1.0))))
@@ -1466,7 +1466,7 @@ class NewLoop:
         depr_q = self._sector_depr_rate_q(firm_id)
         capacity_per_k = self._sector_capacity_per_k(firm_id)
         capital = max(0.0, float(self.nodes[firm_id].get("K", 0.0)))
-        if firm_id == "FA":
+        if firm_id == "IS":
             base_capacity = max(0.0, float(self.state.get("sector_base_capacity_info_real", 0.0)))
         else:
             base_capacity = max(0.0, float(self.state.get("sector_base_capacity_phys_real", 0.0)))
@@ -1479,9 +1479,9 @@ class NewLoop:
     def _sector_depr_rate_q(self, firm_id: str) -> float:
         """Return the sector-specific quarterly capital depreciation rate."""
         fallback = float(self.params.get("capital_depr_rate_per_quarter", 0.0))
-        if firm_id == "FA":
+        if firm_id == "IS":
             rate = float(self.params.get("capital_depr_rate_info_per_quarter", fallback))
-        elif firm_id == "FH":
+        elif firm_id == "PS":
             rate = float(self.params.get("capital_depr_rate_phys_per_quarter", fallback))
         else:
             rate = fallback
@@ -1489,7 +1489,7 @@ class NewLoop:
 
     def _sector_maturity_signal(self, firm_id: str) -> float:
         half_sat = max(1e-9, float(self.params.get("sector_dividend_maturity_gap_half_sat", 0.02)))
-        if firm_id == "FA":
+        if firm_id == "IS":
             prev_capacity = max(0.0, float(self.state.get("sector_capacity_info_real_prev", 0.0)))
             prev_unmet = max(0.0, float(self.state.get("sector_unmet_info_real_prev", 0.0)))
         else:
@@ -1507,7 +1507,7 @@ class NewLoop:
     def _update_sector_payout_rate(self, firm_id: str) -> float:
         adjust_speed = max(0.0, min(1.0, float(self.params.get("sector_dividend_adjust_speed", 0.50))))
         target_rate = self._sector_target_payout_rate(firm_id)
-        if firm_id == "FA":
+        if firm_id == "IS":
             key = "sector_payout_rate_info_prev"
         else:
             key = "sector_payout_rate_phys_prev"
@@ -1552,7 +1552,7 @@ class NewLoop:
     def _hh_equity_issue_price(self, firm_id: str, price_level: float) -> float:
         shares_out = max(1e-9, float(self.nodes[firm_id].get("shares_outstanding", 0.0)))
         raw_price = max(0.0, self._firm_broad_equity_proxy(firm_id, price_level)) / shares_out
-        if firm_id == "FA":
+        if firm_id == "IS":
             key = "hh_equity_issue_price_fa_prev"
         else:
             key = "hh_equity_issue_price_fh_prev"
@@ -1573,7 +1573,7 @@ class NewLoop:
             return 0.0
         issue_price = self._hh_equity_issue_price(firm_id, price_level)
         new_shares = amount / max(1e-9, issue_price)
-        share_key = "shares_FA" if firm_id == "FA" else "shares_FH"
+        share_key = "shares_IS" if firm_id == "IS" else "shares_PS"
         self.nodes[firm_id].add("deposits", amount)
         self.nodes[firm_id].add("capex_reserve", amount)
         self.nodes[firm_id].add("shares_outstanding", new_shares)
@@ -1620,8 +1620,8 @@ class NewLoop:
         info_investment = total_investment * info_share
         phys_investment = total_investment - info_investment
         deposits[:] = deposits - investment_i
-        self._issue_hh_equity_for_capex_reserve("FA", info_investment, price_level)
-        self._issue_hh_equity_for_capex_reserve("FH", phys_investment, price_level)
+        self._issue_hh_equity_for_capex_reserve("IS", info_investment, price_level)
+        self._issue_hh_equity_for_capex_reserve("PS", phys_investment, price_level)
         self.state["hh_equity_investment_total"] = float(total_investment)
         self.state["hh_equity_investment_info_total"] = float(info_investment)
         self.state["hh_equity_investment_phys_total"] = float(phys_investment)
@@ -1637,7 +1637,7 @@ class NewLoop:
         growth_cap_rate = max(0.0, float(self.params.get("sector_capex_growth_cap_rate_q", 0.08)))
         capacity_per_k = self._sector_capacity_per_k(firm_id)
 
-        if firm_id == "FA":
+        if firm_id == "IS":
             prev_capacity = max(0.0, float(self.state.get("sector_capacity_info_real_prev", 0.0)))
             prev_unmet = max(
                 0.0,
@@ -1722,8 +1722,8 @@ class NewLoop:
         gov_sales_fh_real = gov_spend_phys_nom / p_now
         ums_recycle_rate = max(0.0, min(1.0, float(self.params.get("ums_recycle_rate_q", 0.0))))
         ums_recycle_total_nom = max(0.0, float(self.nodes["UMS"].get("deposits", 0.0))) * ums_recycle_rate
-        rev_prev_fa = max(0.0, float(self.nodes["FA"].memo.get("revenue_prev", 0.0)))
-        rev_prev_fh = max(0.0, float(self.nodes["FH"].memo.get("revenue_prev", 0.0)))
+        rev_prev_fa = max(0.0, float(self.nodes["IS"].memo.get("revenue_prev", 0.0)))
+        rev_prev_fh = max(0.0, float(self.nodes["PS"].memo.get("revenue_prev", 0.0)))
         rev_prev_total = rev_prev_fa + rev_prev_fh
         if rev_prev_total > 1e-12:
             ums_share_fa = rev_prev_fa / rev_prev_total
@@ -1736,10 +1736,10 @@ class NewLoop:
         ums_recycle_fh_real = ums_recycle_fh_nom / p_now
 
         capex_disabled = self._capex_and_depreciation_disabled()
-        capex_fa_request_nom = 0.0 if capex_disabled else self._sector_capex_plan_nom("FA", p_now)
-        capex_fh_request_nom = 0.0 if capex_disabled else self._sector_capex_plan_nom("FH", p_now)
-        supplier_share_info_for_info = self._sector_supplier_share_info("FA")
-        supplier_share_info_for_phys = self._sector_supplier_share_info("FH")
+        capex_fa_request_nom = 0.0 if capex_disabled else self._sector_capex_plan_nom("IS", p_now)
+        capex_fh_request_nom = 0.0 if capex_disabled else self._sector_capex_plan_nom("PS", p_now)
+        supplier_share_info_for_info = self._sector_supplier_share_info("IS")
+        supplier_share_info_for_phys = self._sector_supplier_share_info("PS")
         supplier_fa_seed_nom = (
             (supplier_share_info_for_info * capex_fa_request_nom)
             + (supplier_share_info_for_phys * capex_fh_request_nom)
@@ -1757,14 +1757,14 @@ class NewLoop:
             ums_fa_real=ums_recycle_fa_real,
             ums_fh_real=ums_recycle_fh_real,
         )
-        capacity_fa_real = self._sector_capacity_real("FA")
-        capacity_fh_real = self._sector_capacity_real("FH")
+        capacity_fa_real = self._sector_capacity_real("IS")
+        capacity_fh_real = self._sector_capacity_real("PS")
 
         capex_queue_info_prev = 0.0 if capex_disabled else max(0.0, float(self.state.get("sector_capex_queue_info_nom", 0.0)))
         capex_queue_phys_prev = 0.0 if capex_disabled else max(0.0, float(self.state.get("sector_capex_queue_phys_nom", 0.0)))
 
-        install_limit_fa_nom = self._sector_installation_limit_nom("FA", p_now, capacity_fa_real)
-        install_limit_fh_nom = self._sector_installation_limit_nom("FH", p_now, capacity_fh_real)
+        install_limit_fa_nom = self._sector_installation_limit_nom("IS", p_now, capacity_fa_real)
+        install_limit_fh_nom = self._sector_installation_limit_nom("PS", p_now, capacity_fh_real)
         capex_fa_nom = 0.0 if capex_disabled else min(capex_queue_info_prev + capex_fa_request_nom, install_limit_fa_nom)
         capex_fh_nom = 0.0 if capex_disabled else min(capex_queue_phys_prev + capex_fh_request_nom, install_limit_fh_nom)
 
@@ -2350,7 +2350,7 @@ class NewLoop:
 
         Launch sequence:
         - BANK makes a loan to FUND (creates FUND deposits).
-        - FUND uses those deposits to buy 10% of FA/FH/BANK shares from HH.
+        - FUND uses those deposits to buy 10% of IS/PS/BANK shares from HH.
         """
         if self._trust_disabled():
             self.state["trust_active"] = False
@@ -2396,7 +2396,7 @@ class NewLoop:
         # the FUND borrows the additional cash needed so the visible launch block matches the target.
         if launch_loan > 0:
             seller = "HH"
-            issuers = [("FA", "shares_FA"), ("FH", "shares_FH"), ("BANK", "shares_BANK")]
+            issuers = [("IS", "shares_IS"), ("PS", "shares_PS"), ("BANK", "shares_BANK")]
             launch_target_pct = float(self.params.get("trust_launch_target_pct", 0.10))
             launch_target_pct = max(0.0, min(1.0, launch_target_pct))
             purchasable: List[tuple[str, str, float, float, float, float]] = []
@@ -2458,7 +2458,7 @@ class NewLoop:
         own_cap = float(self.params.get("trust_equity_cap", 0.25))
         own_cap = max(0.0, min(1.0, own_cap))
 
-        for issuer, key in [("FA", "shares_FA"), ("FH", "shares_FH"), ("BANK", "shares_BANK")]:
+        for issuer, key in [("IS", "shares_IS"), ("PS", "shares_PS"), ("BANK", "shares_BANK")]:
             shares_out = self.nodes[issuer].get("shares_outstanding", 0.0)
             if shares_out <= 0:
                 continue
@@ -2503,8 +2503,8 @@ class NewLoop:
         auto_phys = float(self.state.get("automation_phys", auto_eff))
         rL = float(self.state.get("policy_rate_q", self.params["loan_rate_per_quarter"]))
 
-        ws_fh_base = float(self.params["wage_share_of_revenue"]["FH"])
-        ws_fa_base = float(self.params["wage_share_of_revenue"]["FA"])
+        ws_fh_base = float(self.params["wage_share_of_revenue"]["PS"])
+        ws_fa_base = float(self.params["wage_share_of_revenue"]["IS"])
         if regime_name == "OldLoop":
             ws_fa_base = float(self.params.get("old_loop_wage_share_info", ws_fa_base))
             ws_fh_base = float(self.params.get("old_loop_wage_share_phys", ws_fh_base))
@@ -2596,16 +2596,16 @@ class NewLoop:
         f_bk = max(0.0, min(1.0, float(self.state.get("fund_dividend_ownership_bk_prev", 0.0))))
 
         fund_loan = float(self.nodes["FUND"].get("loans", 0.0))
-        fa_loan = float(self.nodes["FA"].get("loans", 0.0))
-        fh_loan = float(self.nodes["FH"].get("loans", 0.0))
+        fa_loan = float(self.nodes["IS"].get("loans", 0.0))
+        fh_loan = float(self.nodes["PS"].get("loans", 0.0))
 
         fa_interest = fa_loan * rL
         fh_interest = fh_loan * rL
 
-        overhead_target_fa = self._sector_overhead_nom("FA")
-        overhead_target_fh = self._sector_overhead_nom("FH")
-        div_commit_fa = self._lagged_dividend_commit_nom("FA")
-        div_commit_fh = self._lagged_dividend_commit_nom("FH")
+        overhead_target_fa = self._sector_overhead_nom("IS")
+        overhead_target_fh = self._sector_overhead_nom("PS")
+        div_commit_fa = self._lagged_dividend_commit_nom("IS")
+        div_commit_fh = self._lagged_dividend_commit_nom("PS")
         div_commit_bk = self._lagged_dividend_commit_nom("BANK")
         div_cash_buffer_share = max(0.0, min(1.0, float(self.params.get("sector_dividend_cash_buffer_q", 0.0))))
         div_house_total_est = 0.0
@@ -2686,8 +2686,8 @@ class NewLoop:
 
             rev_fa = float(sector_step["rev_fa"])
             rev_fh = float(sector_step["rev_fh"])
-            input_cost_fa = rev_fa * self._sector_input_cost_rate("FA")
-            input_cost_fh = rev_fh * self._sector_input_cost_rate("FH")
+            input_cost_fa = rev_fa * self._sector_input_cost_rate("IS")
+            input_cost_fh = rev_fh * self._sector_input_cost_rate("PS")
 
             w_fa = rev_fa * ws_fa
             w_fh = rev_fh * ws_fh
@@ -2713,7 +2713,7 @@ class NewLoop:
             # after production inputs, wages, and planned CAPEX are covered.
             overhead_cash_room_fa = max(
                 0.0,
-                self._firm_discretionary_deposits_nom("FA")
+                self._firm_discretionary_deposits_nom("IS")
                 + rev_fa
                 - capex_fa_nom
                 - w_fa
@@ -2722,7 +2722,7 @@ class NewLoop:
             )
             overhead_cash_room_fh = max(
                 0.0,
-                self._firm_discretionary_deposits_nom("FH")
+                self._firm_discretionary_deposits_nom("PS")
                 + rev_fh
                 - capex_fh_nom
                 - w_fh
@@ -2793,8 +2793,8 @@ class NewLoop:
                 price_level=float(P),
                 wages_total=float(w_total),
                 state=self.state,
-                fa_capital_real=float(self.nodes["FA"].get("K", 0.0)),
-                fh_capital_real=float(self.nodes["FH"].get("K", 0.0)),
+                fa_capital_real=float(self.nodes["IS"].get("K", 0.0)),
+                fh_capital_real=float(self.nodes["PS"].get("K", 0.0)),
             )
             corp_tax_rate = float(corporate_tax.corp_tax_rate)
             corp_tax_depr_rate_q = float(corporate_tax.corp_tax_depr_rate_q)
@@ -2816,7 +2816,7 @@ class NewLoop:
                 div_commit_fa,
                 max(
                     0.0,
-                    self._firm_discretionary_deposits_nom("FA")
+                    self._firm_discretionary_deposits_nom("IS")
                     + rev_fa
                     - capex_fa_nom
                     - w_fa
@@ -2831,7 +2831,7 @@ class NewLoop:
                 div_commit_fh,
                 max(
                     0.0,
-                    self._firm_discretionary_deposits_nom("FH")
+                    self._firm_discretionary_deposits_nom("PS")
                     + rev_fh
                     - capex_fh_nom
                     - w_fh
@@ -3157,13 +3157,13 @@ class NewLoop:
 
         # Firms receive only the household sales actually fulfilled this quarter.
         p_now = float(self.state.get("price_level", 1.0))
-        self.nodes["FA"].add("deposits", p_now * hh_sales_fa_real)
-        self.nodes["FH"].add("deposits", p_now * hh_sales_fh_real)
+        self.nodes["IS"].add("deposits", p_now * hh_sales_fa_real)
+        self.nodes["PS"].add("deposits", p_now * hh_sales_fh_real)
         gov_sector_spend_nom = p_now * max(0.0, gov_sales_fa_real + gov_sales_fh_real)
         if gov_sector_spend_nom > 0.0:
             self.nodes["GOV"].add("deposits", -gov_sector_spend_nom)
-            self.nodes["FA"].add("deposits", p_now * max(0.0, gov_sales_fa_real))
-            self.nodes["FH"].add("deposits", p_now * max(0.0, gov_sales_fh_real))
+            self.nodes["IS"].add("deposits", p_now * max(0.0, gov_sales_fa_real))
+            self.nodes["PS"].add("deposits", p_now * max(0.0, gov_sales_fh_real))
         self.state["gov_sector_spend_total"] = float(max(0.0, gov_sector_spend_nom))
 
         # GOV receives VAT receipts
@@ -3180,8 +3180,8 @@ class NewLoop:
         capex_fh_nom = float(sol.get("capex_fh_nom", 0.0))
         capex_total_nom = float(sol.get("capex_total_nom", capex_fa_nom + capex_fh_nom))
         p_capex_diag = max(1e-9, float(self.state.get("price_level", 1.0)))
-        capex_maintenance_need_fa = self._sector_maintenance_capex_nom("FA", p_capex_diag)
-        capex_maintenance_need_fh = self._sector_maintenance_capex_nom("FH", p_capex_diag)
+        capex_maintenance_need_fa = self._sector_maintenance_capex_nom("IS", p_capex_diag)
+        capex_maintenance_need_fh = self._sector_maintenance_capex_nom("PS", p_capex_diag)
         capex_maintenance_need_total = capex_maintenance_need_fa + capex_maintenance_need_fh
         capex_maintenance_gap_total = (
             max(0.0, capex_maintenance_need_fa - capex_fa_nom)
@@ -3191,12 +3191,12 @@ class NewLoop:
         self.state["capex_maintenance_gap_total"] = float(capex_maintenance_gap_total)
 
         # Depreciate existing capital (real units, non-cash)
-        for firm in ["FA", "FH"]:
+        for firm in ["IS", "PS"]:
             depr_q = 0.0 if self._capex_and_depreciation_disabled() else self._sector_depr_rate_q(firm)
             k0 = float(self.nodes[firm].get("K", 0.0))
             if k0 > 0 and depr_q > 0:
                 self.nodes[firm].set("K", max(0.0, k0 * (1.0 - depr_q)))
-            if firm == "FA":
+            if firm == "IS":
                 base_key = "sector_base_capacity_info_real"
             else:
                 base_key = "sector_base_capacity_phys_real"
@@ -3211,25 +3211,25 @@ class NewLoop:
             capex_to_fh = supplier_sales_fh_nom
 
             # Pay from investors (cash outflow)
-            self.nodes["FA"].add("deposits", -capex_fa_nom)
-            self.nodes["FH"].add("deposits", -capex_fh_nom)
-            capex_reserve_used_fa = min(max(0.0, self.nodes["FA"].get("capex_reserve", 0.0)), max(0.0, capex_fa_nom))
-            capex_reserve_used_fh = min(max(0.0, self.nodes["FH"].get("capex_reserve", 0.0)), max(0.0, capex_fh_nom))
+            self.nodes["IS"].add("deposits", -capex_fa_nom)
+            self.nodes["PS"].add("deposits", -capex_fh_nom)
+            capex_reserve_used_fa = min(max(0.0, self.nodes["IS"].get("capex_reserve", 0.0)), max(0.0, capex_fa_nom))
+            capex_reserve_used_fh = min(max(0.0, self.nodes["PS"].get("capex_reserve", 0.0)), max(0.0, capex_fh_nom))
             if capex_reserve_used_fa > 0.0:
-                self.nodes["FA"].add("capex_reserve", -capex_reserve_used_fa)
+                self.nodes["IS"].add("capex_reserve", -capex_reserve_used_fa)
             if capex_reserve_used_fh > 0.0:
-                self.nodes["FH"].add("capex_reserve", -capex_reserve_used_fh)
+                self.nodes["PS"].add("capex_reserve", -capex_reserve_used_fh)
 
             # Receive by suppliers (cash inflow; net across firms = 0)
-            self.nodes["FA"].add("deposits", +capex_to_fa)
-            self.nodes["FH"].add("deposits", +capex_to_fh)
+            self.nodes["IS"].add("deposits", +capex_to_fa)
+            self.nodes["PS"].add("deposits", +capex_to_fh)
 
             # Capital formation (store K in REAL units)
             P_cap = float(self.state.get("price_level", 1.0))
             if P_cap <= 0:
                 P_cap = 1e-9
-            self.nodes["FA"].add("K", capex_fa_nom / P_cap)
-            self.nodes["FH"].add("K", capex_fh_nom / P_cap)
+            self.nodes["IS"].add("K", capex_fa_nom / P_cap)
+            self.nodes["PS"].add("K", capex_fh_nom / P_cap)
 
         # Diagnostics (nominal flow)
         self.state["capex_total"] = float(max(0.0, capex_total_nom))
@@ -3239,16 +3239,16 @@ class NewLoop:
 
         if ums_recycle_total_nom > 0.0:
             self.nodes["UMS"].add("deposits", -ums_recycle_total_nom)
-            self.nodes["FA"].add("deposits", +ums_recycle_fa_nom)
-            self.nodes["FH"].add("deposits", +ums_recycle_fh_nom)
+            self.nodes["IS"].add("deposits", +ums_recycle_fa_nom)
+            self.nodes["PS"].add("deposits", +ums_recycle_fh_nom)
 
         # -------------------------------------------------
         # 2) Wages: firms -> households
         # -------------------------------------------------
         w_fa = float(sol.get("w_fa", 0.0))
         w_fh = float(sol.get("w_fh", 0.0))
-        self.nodes["FA"].add("deposits", -w_fa)
-        self.nodes["FH"].add("deposits", -w_fh)
+        self.nodes["IS"].add("deposits", -w_fa)
+        self.nodes["PS"].add("deposits", -w_fh)
         if not old_loop_precredited_income:
             deposits[:] = deposits + wages_i
 
@@ -3259,10 +3259,10 @@ class NewLoop:
         overhead_fh = float(sol.get("overhead_fh", 0.0))
         overhead_total = 0.0
         if overhead_fa > 0.0:
-            self.nodes["FA"].add("deposits", -overhead_fa)
+            self.nodes["IS"].add("deposits", -overhead_fa)
             overhead_total += overhead_fa
         if overhead_fh > 0.0:
-            self.nodes["FH"].add("deposits", -overhead_fh)
+            self.nodes["PS"].add("deposits", -overhead_fh)
             overhead_total += overhead_fh
         if overhead_total > 0.0:
             self.nodes["GOV"].add("deposits", overhead_total)
@@ -3274,10 +3274,10 @@ class NewLoop:
         input_cost_fh = float(sol.get("input_cost_fh", 0.0))
         input_cost_total = 0.0
         if input_cost_fa > 0.0:
-            self.nodes["FA"].add("deposits", -input_cost_fa)
+            self.nodes["IS"].add("deposits", -input_cost_fa)
             input_cost_total += input_cost_fa
         if input_cost_fh > 0.0:
-            self.nodes["FH"].add("deposits", -input_cost_fh)
+            self.nodes["PS"].add("deposits", -input_cost_fh)
             input_cost_total += input_cost_fh
         if input_cost_total > 0.0:
             self.nodes["UMS"].add("deposits", input_cost_total)
@@ -3292,13 +3292,13 @@ class NewLoop:
         fh_interest = float(sol.get("fh_interest", 0.0))
 
         if fa_interest > 0:
-            self.nodes["FA"].add("deposits", -fa_interest)
+            self.nodes["IS"].add("deposits", -fa_interest)
             bank = self.nodes["BANK"]
             bank.add("deposit_liab", -fa_interest)
             bank.add("equity", +fa_interest)
 
         if fh_interest > 0:
-            self.nodes["FH"].add("deposits", -fh_interest)
+            self.nodes["PS"].add("deposits", -fh_interest)
             bank = self.nodes["BANK"]
             bank.add("deposit_liab", -fh_interest)
             bank.add("equity", +fh_interest)
@@ -3314,9 +3314,9 @@ class NewLoop:
         if corp_tax_total > 0:
             # Transfer cash from corporate deposits to GOV deposits.
             if corp_tax_fa > 0:
-                self.nodes["FA"].add("deposits", -corp_tax_fa)
+                self.nodes["IS"].add("deposits", -corp_tax_fa)
             if corp_tax_fh > 0:
-                self.nodes["FH"].add("deposits", -corp_tax_fh)
+                self.nodes["PS"].add("deposits", -corp_tax_fh)
             if corp_tax_bk > 0:
                 bank = self.nodes["BANK"]
                 bank.add("equity", -corp_tax_bk)
@@ -3344,13 +3344,13 @@ class NewLoop:
         div_bk_total = float(sol.get("div_bk_total", bank_profit))
 
         # Cash to FUND
-        self.nodes["FA"].add("deposits", -(div_fa_total * f_fa))
-        self.nodes["FH"].add("deposits", -(div_fh_total * f_fh))
+        self.nodes["IS"].add("deposits", -(div_fa_total * f_fa))
+        self.nodes["PS"].add("deposits", -(div_fh_total * f_fh))
         self.nodes["FUND"].add("deposits", (div_fa_total * f_fa) + (div_fh_total * f_fh) + (div_bk_total * f_bk))
 
         # Cash to households (distributed via solver weights)
-        self.nodes["FA"].add("deposits", -(div_fa_total * (1.0 - f_fa)))
-        self.nodes["FH"].add("deposits", -(div_fh_total * (1.0 - f_fh)))
+        self.nodes["IS"].add("deposits", -(div_fa_total * (1.0 - f_fa)))
+        self.nodes["PS"].add("deposits", -(div_fh_total * (1.0 - f_fh)))
         if not old_loop_precredited_income:
             deposits[:] = deposits + div_i
 
@@ -3598,8 +3598,8 @@ class NewLoop:
             deposits[:] = deposits - renter_rent_q
             rent_to_fa = rent_total * self._sector_hh_demand_share_fa()
             rent_to_fh = rent_total - rent_to_fa
-            self.nodes["FA"].add("deposits", rent_to_fa)
-            self.nodes["FH"].add("deposits", rent_to_fh)
+            self.nodes["IS"].add("deposits", rent_to_fa)
+            self.nodes["PS"].add("deposits", rent_to_fh)
             self.state["renter_rent_to_info_total"] = float(max(0.0, rent_to_fa))
             self.state["renter_rent_to_phys_total"] = float(max(0.0, rent_to_fh))
         self.state["renter_rent_total"] = float(max(0.0, rent_total))
@@ -3681,8 +3681,8 @@ class NewLoop:
             gov_spend_mode = str(self.params.get("old_loop_gov_sector_spend_mode", "FixedSplit")).strip()
             gov_spend_info_share = max(0.0, min(1.0, float(self.params.get("old_loop_gov_sector_spend_info_share", 0.5))))
             if gov_spend_mode == "RevenueShare":
-                rev_prev_fa = max(0.0, float(self.nodes["FA"].memo.get("revenue_prev", 0.0)))
-                rev_prev_fh = max(0.0, float(self.nodes["FH"].memo.get("revenue_prev", 0.0)))
+                rev_prev_fa = max(0.0, float(self.nodes["IS"].memo.get("revenue_prev", 0.0)))
+                rev_prev_fh = max(0.0, float(self.nodes["PS"].memo.get("revenue_prev", 0.0)))
                 rev_prev_total = rev_prev_fa + rev_prev_fh
                 if rev_prev_total > 1e-12:
                     gov_spend_info_share = rev_prev_fa / rev_prev_total
@@ -4240,36 +4240,36 @@ class NewLoop:
         hh.prev_wages_total = float(sol.get("w_total", 0.0))
 
         # 8b) Store lagged firm/bank earnings, installation queues, and next-quarter dividend commitments.
-        self.nodes["FA"].memo["retained_prev"] = float(sol.get("retained_fa", 0.0))
-        self.nodes["FH"].memo["retained_prev"] = float(sol.get("retained_fh", 0.0))
+        self.nodes["IS"].memo["retained_prev"] = float(sol.get("retained_fa", 0.0))
+        self.nodes["PS"].memo["retained_prev"] = float(sol.get("retained_fh", 0.0))
         bank_neutralize_interest_inflow = float(max(0.0, self.state.get("bank_mort_neutralize_interest_inflow", 0.0)))
         bank_retained_total = float(sol.get("retained_bk", 0.0)) + bank_neutralize_interest_inflow
         self.nodes["BANK"].memo["retained_prev"] = float(bank_retained_total)
         self.state["sector_capex_queue_info_nom"] = float(sol.get("capex_queue_info_next", 0.0))
         self.state["sector_capex_queue_phys_nom"] = float(sol.get("capex_queue_phys_next", 0.0))
         p_now = max(1e-9, float(self.state.get("price_level", 1.0)))
-        payout_firms_info = self._update_sector_payout_rate("FA")
-        payout_firms_phys = self._update_sector_payout_rate("FH")
+        payout_firms_info = self._update_sector_payout_rate("IS")
+        payout_firms_phys = self._update_sector_payout_rate("PS")
         payout_bank = max(0.0, min(1.0, float(self.params.get("dividend_payout_rate_bank", 1.0))))
         service_floor = max(1e-9, float(self.params.get("sector_dividend_service_floor", 0.95)))
         service_ratio_info = min(1.0, float(sol.get("hh_sales_fa_real", 0.0)) / max(1e-9, float(sol.get("hh_demand_fa_real", 0.0)))) if float(sol.get("hh_demand_fa_real", 0.0)) > 1e-12 else 1.0
         service_ratio_phys = min(1.0, float(sol.get("hh_sales_fh_real", 0.0)) / max(1e-9, float(sol.get("hh_demand_fh_real", 0.0)))) if float(sol.get("hh_demand_fh_real", 0.0)) > 1e-12 else 1.0
         stress_scale_info = max(0.0, min(1.0, service_ratio_info / service_floor))
         stress_scale_phys = max(0.0, min(1.0, service_ratio_phys / service_floor))
-        profit_dividend_base_info = self._sector_profit_distributable_nom("FA", float(sol.get("p_fa", 0.0)), p_now)
-        profit_dividend_base_phys = self._sector_profit_distributable_nom("FH", float(sol.get("p_fh", 0.0)), p_now)
-        surplus_dist_info = self._sector_surplus_distribution_nom("FA", p_now)
-        surplus_dist_phys = self._sector_surplus_distribution_nom("FH", p_now)
-        self.nodes["FA"].memo["dividend_commit_prev"] = (payout_firms_info * profit_dividend_base_info * stress_scale_info) + surplus_dist_info
-        self.nodes["FH"].memo["dividend_commit_prev"] = (payout_firms_phys * profit_dividend_base_phys * stress_scale_phys) + surplus_dist_phys
+        profit_dividend_base_info = self._sector_profit_distributable_nom("IS", float(sol.get("p_fa", 0.0)), p_now)
+        profit_dividend_base_phys = self._sector_profit_distributable_nom("PS", float(sol.get("p_fh", 0.0)), p_now)
+        surplus_dist_info = self._sector_surplus_distribution_nom("IS", p_now)
+        surplus_dist_phys = self._sector_surplus_distribution_nom("PS", p_now)
+        self.nodes["IS"].memo["dividend_commit_prev"] = (payout_firms_info * profit_dividend_base_info * stress_scale_info) + surplus_dist_info
+        self.nodes["PS"].memo["dividend_commit_prev"] = (payout_firms_phys * profit_dividend_base_phys * stress_scale_phys) + surplus_dist_phys
         self.nodes["BANK"].memo["dividend_commit_prev"] = payout_bank * float(sol.get("bank_profit", 0.0))
-        self.nodes["FA"].memo["revenue_prev"] = float(sol.get("rev_fa", 0.0))
-        self.nodes["FH"].memo["revenue_prev"] = float(sol.get("rev_fh", 0.0))
+        self.nodes["IS"].memo["revenue_prev"] = float(sol.get("rev_fa", 0.0))
+        self.nodes["PS"].memo["revenue_prev"] = float(sol.get("rev_fh", 0.0))
 
         self.state["sector_capacity_info_real_prev"] = float(capacity_fa_real)
         self.state["sector_capacity_phys_real_prev"] = float(capacity_fh_real)
-        self.state["fund_dividend_ownership_fa_prev"] = float(max(0.0, min(1.0, self.nodes["FUND"].get("shares_FA", 0.0) / max(1e-9, self.nodes["FA"].get("shares_outstanding", 0.0)))))
-        self.state["fund_dividend_ownership_fh_prev"] = float(max(0.0, min(1.0, self.nodes["FUND"].get("shares_FH", 0.0) / max(1e-9, self.nodes["FH"].get("shares_outstanding", 0.0)))))
+        self.state["fund_dividend_ownership_fa_prev"] = float(max(0.0, min(1.0, self.nodes["FUND"].get("shares_IS", 0.0) / max(1e-9, self.nodes["IS"].get("shares_outstanding", 0.0)))))
+        self.state["fund_dividend_ownership_fh_prev"] = float(max(0.0, min(1.0, self.nodes["FUND"].get("shares_PS", 0.0) / max(1e-9, self.nodes["PS"].get("shares_outstanding", 0.0)))))
         self.state["fund_dividend_ownership_bk_prev"] = float(max(0.0, min(1.0, self.nodes["FUND"].get("shares_BANK", 0.0) / max(1e-9, self.nodes["BANK"].get("shares_outstanding", 0.0)))))
         unmet_info_real = float(max(0.0, hh_demand_fa_real - hh_sales_fa_real))
         unmet_phys_real = float(max(0.0, hh_demand_fh_real - hh_sales_fh_real))
@@ -4312,13 +4312,13 @@ class NewLoop:
         self.state["sector_load_gap_phys_real_sm_prev"] = float(max(0.0, next_load_gap_phys_sm))
         self.state["sector_service_ratio_info_prev"] = float(service_ratio_info)
         self.state["sector_service_ratio_phys_prev"] = float(service_ratio_phys)
-        self.state["sector_free_cash_info_prev"] = self._firm_discretionary_deposits_nom("FA")
-        self.state["sector_free_cash_phys_prev"] = self._firm_discretionary_deposits_nom("FH")
-        self.state["sector_capex_reserve_info_prev"] = float(max(0.0, self.nodes["FA"].get("capex_reserve", 0.0)))
-        self.state["sector_capex_reserve_phys_prev"] = float(max(0.0, self.nodes["FH"].get("capex_reserve", 0.0)))
+        self.state["sector_free_cash_info_prev"] = self._firm_discretionary_deposits_nom("IS")
+        self.state["sector_free_cash_phys_prev"] = self._firm_discretionary_deposits_nom("PS")
+        self.state["sector_capex_reserve_info_prev"] = float(max(0.0, self.nodes["IS"].get("capex_reserve", 0.0)))
+        self.state["sector_capex_reserve_phys_prev"] = float(max(0.0, self.nodes["PS"].get("capex_reserve", 0.0)))
 
         deposit_tol = 1e-6
-        for firm_id in ("FA", "FH"):
+        for firm_id in ("IS", "PS"):
             dep = float(self.nodes[firm_id].get("deposits", 0.0))
             capex_reserve = float(self.nodes[firm_id].get("capex_reserve", 0.0))
             if abs(dep) < deposit_tol:
@@ -4393,8 +4393,8 @@ class NewLoop:
             self.state["automation_info_flow"] = float(res["info_flow"])
             self.state["automation_phys"] = float(res["phys_level"])
             self.state["automation_phys_flow"] = float(res["phys_flow"])
-        self.state["sector_tfp_mult_info"] = float(self._sector_tfp_multiplier("FA"))
-        self.state["sector_tfp_mult_phys"] = float(self._sector_tfp_multiplier("FH"))
+        self.state["sector_tfp_mult_info"] = float(self._sector_tfp_multiplier("IS"))
+        self.state["sector_tfp_mult_phys"] = float(self._sector_tfp_multiplier("PS"))
 
         # Price level
         # Competitive pass-through: P_comp = P0 / (1 + beta*A)
@@ -4417,7 +4417,7 @@ class NewLoop:
         # Capital accumulation should raise productivity (lower prices / raise real output) but
         # should NOT push the automation *share* beyond those caps.
         denom = float(self.hh.n) if (self.hh is not None and bool(self.params.get("use_population", False))) else 1.0
-        K_total = float(self.nodes["FA"].get("K", 0.0)) + float(self.nodes["FH"].get("K", 0.0))
+        K_total = float(self.nodes["IS"].get("K", 0.0)) + float(self.nodes["PS"].get("K", 0.0))
         K_per_h = (K_total / denom) if denom > 0 else 0.0
 
         kappa = float(self.params.get("capital_productivity_k", 0.0))
@@ -4567,18 +4567,18 @@ class NewLoop:
                     frac = float(self.nodes[holder].get(key, 0.0)) / so
                     return max(0.0, min(1.0, frac))
 
-                fa_equity_proxy = self._firm_balance_sheet_equity_proxy("FA", P_wealth)
-                fh_equity_proxy = self._firm_balance_sheet_equity_proxy("FH", P_wealth)
+                fa_equity_proxy = self._firm_balance_sheet_equity_proxy("IS", P_wealth)
+                fh_equity_proxy = self._firm_balance_sheet_equity_proxy("PS", P_wealth)
                 bank_equity_proxy = self._firm_balance_sheet_equity_proxy("BANK", P_wealth)
 
                 hh_equity_total = (
-                    node_share_frac("HH", "FA", "shares_FA") * fa_equity_proxy
-                    + node_share_frac("HH", "FH", "shares_FH") * fh_equity_proxy
+                    node_share_frac("HH", "IS", "shares_IS") * fa_equity_proxy
+                    + node_share_frac("HH", "PS", "shares_PS") * fh_equity_proxy
                     + node_share_frac("HH", "BANK", "shares_BANK") * bank_equity_proxy
                 )
                 trust_equity_total = (
-                    node_share_frac("FUND", "FA", "shares_FA") * fa_equity_proxy
-                    + node_share_frac("FUND", "FH", "shares_FH") * fh_equity_proxy
+                    node_share_frac("FUND", "IS", "shares_IS") * fa_equity_proxy
+                    + node_share_frac("FUND", "PS", "shares_PS") * fh_equity_proxy
                     + node_share_frac("FUND", "BANK", "shares_BANK") * bank_equity_proxy
                 )
                 trust_value_total = (
@@ -4624,7 +4624,7 @@ class NewLoop:
                 so = self.nodes[issuer].get("shares_outstanding", 1.0)
                 return self.nodes["FUND"].get(key, 0.0) / so if so > 0 else 0.0
 
-            own_avg = (frac("FA", "shares_FA") + frac("FH", "shares_FH") + frac("BANK", "shares_BANK")) / 3.0
+            own_avg = (frac("IS", "shares_IS") + frac("PS", "shares_PS") + frac("BANK", "shares_BANK")) / 3.0
 
             # Population mortgage-burden percentiles directly from solver components (vectorized)
             uis = float(solp.get("uis", 0.0))
@@ -4690,22 +4690,22 @@ class NewLoop:
                 P_now = 1e-9
 
             # Trust value proxy (nominal): FUND deposits + FUND equity claims - FUND debt.
-            fa_equity_proxy_hist = self._firm_balance_sheet_equity_proxy("FA", P_now)
-            fh_equity_proxy_hist = self._firm_balance_sheet_equity_proxy("FH", P_now)
+            fa_equity_proxy_hist = self._firm_balance_sheet_equity_proxy("IS", P_now)
+            fh_equity_proxy_hist = self._firm_balance_sheet_equity_proxy("PS", P_now)
             bank_equity_proxy_hist = self._firm_balance_sheet_equity_proxy("BANK", P_now)
-            fa_broad_equity_proxy_hist = self._firm_broad_equity_proxy("FA", P_now)
-            fh_broad_equity_proxy_hist = self._firm_broad_equity_proxy("FH", P_now)
+            fa_broad_equity_proxy_hist = self._firm_broad_equity_proxy("IS", P_now)
+            fh_broad_equity_proxy_hist = self._firm_broad_equity_proxy("PS", P_now)
             nonbank_capex_reserve_total = (
-                max(0.0, float(self.nodes["FA"].get("capex_reserve", 0.0)))
-                + max(0.0, float(self.nodes["FH"].get("capex_reserve", 0.0)))
+                max(0.0, float(self.nodes["IS"].get("capex_reserve", 0.0)))
+                + max(0.0, float(self.nodes["PS"].get("capex_reserve", 0.0)))
             )
             nonbank_deployed_equity_total = max(
                 0.0,
                 fa_broad_equity_proxy_hist + fh_broad_equity_proxy_hist - nonbank_capex_reserve_total,
             )
             trust_equity_value_total = (
-                frac("FA", "shares_FA") * fa_equity_proxy_hist
-                + frac("FH", "shares_FH") * fh_equity_proxy_hist
+                frac("IS", "shares_IS") * fa_equity_proxy_hist
+                + frac("PS", "shares_PS") * fh_equity_proxy_hist
                 + frac("BANK", "shares_BANK") * bank_equity_proxy_hist
             )
             trust_value_total = (
@@ -4923,8 +4923,8 @@ class NewLoop:
                 capex_maintenance_need_per_h=float(self.state.get("capex_maintenance_need_total", 0.0)) / float(self.hh.n),
                 capex_maintenance_gap_per_h=float(self.state.get("capex_maintenance_gap_total", 0.0)) / float(self.hh.n),
                 hh_equity_investment_per_h=float(self.state.get("hh_equity_investment_total", 0.0)) / float(self.hh.n),
-                sector_capex_reserve_info_per_h=float(self.nodes["FA"].get("capex_reserve", 0.0)) / float(self.hh.n),
-                sector_capex_reserve_physical_per_h=float(self.nodes["FH"].get("capex_reserve", 0.0)) / float(self.hh.n),
+                sector_capex_reserve_info_per_h=float(self.nodes["IS"].get("capex_reserve", 0.0)) / float(self.hh.n),
+                sector_capex_reserve_physical_per_h=float(self.nodes["PS"].get("capex_reserve", 0.0)) / float(self.hh.n),
                 sector_capacity_info_per_h=float(solp.get("capacity_fa_real", 0.0)) / float(self.hh.n),
                 sector_capacity_physical_per_h=float(solp.get("capacity_fh_real", 0.0)) / float(self.hh.n),
                 sector_hh_util_info=(

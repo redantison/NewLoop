@@ -8,7 +8,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from newloop.config import get_default_config
+from newloop.config import apply_economic_regime_overrides, get_default_config
 from newloop.engine import NewLoop
 from newloop.plotting import _title_with_mode
 from newloop.results import (
@@ -64,6 +64,30 @@ class PolicyAlignmentTests(unittest.TestCase):
     def test_default_support_mode_is_ubi(self):
         cfg = make_cfg()
         self.assertEqual(str(cfg["parameters"].get("income_support_mode", "")).upper(), "UBI")
+
+    def test_legacy_sector_node_names_normalize_to_is_ps(self):
+        cfg = make_cfg()
+        cfg["parameters"]["wage_share_of_revenue"] = {"FA": 0.41, "FH": 0.52}
+        cfg["nodes"]["FA"] = cfg["nodes"].pop("IS")
+        cfg["nodes"]["FH"] = cfg["nodes"].pop("PS")
+        cfg["nodes"]["HH"]["stocks"]["shares_FA"] = cfg["nodes"]["HH"]["stocks"].pop("shares_IS")
+        cfg["nodes"]["HH"]["stocks"]["shares_FH"] = cfg["nodes"]["HH"]["stocks"].pop("shares_PS")
+        cfg["nodes"]["FUND"]["stocks"]["shares_FA"] = cfg["nodes"]["FUND"]["stocks"].pop("shares_IS")
+        cfg["nodes"]["FUND"]["stocks"]["shares_FH"] = cfg["nodes"]["FUND"]["stocks"].pop("shares_PS")
+
+        effective = apply_economic_regime_overrides(cfg)
+        sim = NewLoop(cfg)
+
+        self.assertIn("IS", effective["nodes"])
+        self.assertIn("PS", effective["nodes"])
+        self.assertNotIn("FA", effective["nodes"])
+        self.assertNotIn("FH", effective["nodes"])
+        self.assertAlmostEqual(float(effective["parameters"]["wage_share_of_revenue"]["IS"]), 0.41, places=9)
+        self.assertAlmostEqual(float(effective["parameters"]["wage_share_of_revenue"]["PS"]), 0.52, places=9)
+        self.assertIn("shares_IS", sim.nodes["HH"].stocks)
+        self.assertIn("shares_PS", sim.nodes["FUND"].stocks)
+        self.assertNotIn("shares_FA", sim.nodes["HH"].stocks)
+        self.assertNotIn("shares_FH", sim.nodes["FUND"].stocks)
 
     def test_old_loop_regime_forces_expected_policy_overrides(self):
         cfg = make_cfg()
@@ -443,10 +467,10 @@ class PolicyAlignmentTests(unittest.TestCase):
         )
 
         self.assertAlmostEqual(float(np.sum(deposits)), float(n) * 150.0 - expected_total, places=6)
-        self.assertAlmostEqual(float(sim.nodes["FA"].get("capex_reserve", 0.0)), expected_total * 0.25, places=6)
-        self.assertAlmostEqual(float(sim.nodes["FH"].get("capex_reserve", 0.0)), expected_total * 0.75, places=6)
-        self.assertGreater(float(sim.nodes["HH"].get("shares_FA", 0.0)), 10000.0)
-        self.assertGreater(float(sim.nodes["HH"].get("shares_FH", 0.0)), 10000.0)
+        self.assertAlmostEqual(float(sim.nodes["IS"].get("capex_reserve", 0.0)), expected_total * 0.25, places=6)
+        self.assertAlmostEqual(float(sim.nodes["PS"].get("capex_reserve", 0.0)), expected_total * 0.75, places=6)
+        self.assertGreater(float(sim.nodes["HH"].get("shares_IS", 0.0)), 10000.0)
+        self.assertGreater(float(sim.nodes["HH"].get("shares_PS", 0.0)), 10000.0)
 
     def test_household_equity_weights_concentrate_private_equity_wealth(self):
         cfg = make_cfg()
@@ -573,8 +597,8 @@ class PolicyAlignmentTests(unittest.TestCase):
             params["trust_trigger_dti"] = 1.0
             params["gov_tax_rebate_rate"] = 0.0
             params["corporate_tax_depr_rate_q"] = depr_rate
-            cfg["nodes"]["FA"]["stocks"]["K"] = 2000.0
-            cfg["nodes"]["FH"]["stocks"]["K"] = 2000.0
+            cfg["nodes"]["IS"]["stocks"]["K"] = 2000.0
+            cfg["nodes"]["PS"]["stocks"]["K"] = 2000.0
 
         sim_no_depr = NewLoop(cfg_no_depr)
         sim_with_depr = NewLoop(cfg_with_depr)
@@ -755,11 +779,11 @@ class PolicyAlignmentTests(unittest.TestCase):
         sim.state["sector_load_gap_info_real_prev"] = 0.0
         sim.state["sector_load_gap_info_real_sm_prev"] = 0.0
 
-        capex_without_load_gap = sim._sector_capex_plan_nom("FA", 1.0)
+        capex_without_load_gap = sim._sector_capex_plan_nom("IS", 1.0)
 
         sim.state["sector_load_gap_info_real_prev"] = 400.0
         sim.state["sector_load_gap_info_real_sm_prev"] = 400.0
-        capex_with_load_gap = sim._sector_capex_plan_nom("FA", 1.0)
+        capex_with_load_gap = sim._sector_capex_plan_nom("IS", 1.0)
 
         self.assertAlmostEqual(capex_with_load_gap, capex_without_load_gap, places=9)
 
@@ -768,10 +792,10 @@ class PolicyAlignmentTests(unittest.TestCase):
         sim = NewLoop(cfg)
 
         sim.state["price_level"] = 1.0
-        sim.nodes["FH"].set("K", 1000.0)
+        sim.nodes["PS"].set("K", 1000.0)
         sim.state["sector_base_capacity_phys_real"] = 1000.0
-        sim.state["sector_capacity_phys_real_prev"] = sim._sector_capacity_real("FH")
-        maintenance_nom = sim._sector_maintenance_capex_nom("FH", 1.0)
+        sim.state["sector_capacity_phys_real_prev"] = sim._sector_capacity_real("PS")
+        maintenance_nom = sim._sector_maintenance_capex_nom("PS", 1.0)
         reserve_share = float(cfg["parameters"].get("sector_maintenance_reserve_share", 1.0))
         sim.state["sector_free_cash_phys_prev"] = maintenance_nom + 100.0
         sim.state["sector_unmet_phys_real_prev"] = 0.0
@@ -779,7 +803,7 @@ class PolicyAlignmentTests(unittest.TestCase):
         sim.state["sector_load_gap_phys_real_prev"] = 0.0
         sim.state["sector_load_gap_phys_real_sm_prev"] = 0.0
 
-        capex_plan_nom = sim._sector_capex_plan_nom("FH", 1.0)
+        capex_plan_nom = sim._sector_capex_plan_nom("PS", 1.0)
 
         self.assertGreaterEqual(capex_plan_nom, (reserve_share * maintenance_nom) - 1e-9)
 
@@ -788,12 +812,12 @@ class PolicyAlignmentTests(unittest.TestCase):
         sim = NewLoop(cfg)
 
         sim.state["price_level"] = 1.0
-        sim.nodes["FH"].set("K", 1000.0)
+        sim.nodes["PS"].set("K", 1000.0)
         sim.state["sector_base_capacity_phys_real"] = 1000.0
 
-        maintenance_nom = sim._sector_maintenance_capex_nom("FH", 1.0)
+        maintenance_nom = sim._sector_maintenance_capex_nom("PS", 1.0)
         reserve_share = float(cfg["parameters"].get("sector_maintenance_reserve_share", 1.0))
-        distributable = sim._sector_profit_distributable_nom("FH", maintenance_nom + 50.0, 1.0)
+        distributable = sim._sector_profit_distributable_nom("PS", maintenance_nom + 50.0, 1.0)
 
         self.assertAlmostEqual(distributable, ((1.0 - reserve_share) * maintenance_nom) + 50.0, places=6)
 
@@ -803,17 +827,17 @@ class PolicyAlignmentTests(unittest.TestCase):
         sim = NewLoop(cfg)
 
         sim.state["price_level"] = 1.0
-        sim.nodes["FH"].set("K", 1000.0)
+        sim.nodes["PS"].set("K", 1000.0)
         sim.state["sector_base_capacity_phys_real"] = 1000.0
-        sim.state["sector_capacity_phys_real_prev"] = sim._sector_capacity_real("FH")
-        maintenance_nom = sim._sector_maintenance_capex_nom("FH", 1.0)
+        sim.state["sector_capacity_phys_real_prev"] = sim._sector_capacity_real("PS")
+        maintenance_nom = sim._sector_maintenance_capex_nom("PS", 1.0)
         sim.state["sector_free_cash_phys_prev"] = 0.50 * maintenance_nom
         sim.state["sector_capex_reserve_phys_prev"] = 2.0 * maintenance_nom
         sim.params["hh_capex_reserve_spend_rate_q"] = 0.25
         sim.state["sector_unmet_phys_real_prev"] = sim.state["sector_capacity_phys_real_prev"]
         sim.state["sector_unmet_phys_real_sm_prev"] = sim.state["sector_capacity_phys_real_prev"]
 
-        capex_plan_nom = sim._sector_capex_plan_nom("FH", 1.0)
+        capex_plan_nom = sim._sector_capex_plan_nom("PS", 1.0)
 
         self.assertAlmostEqual(capex_plan_nom, maintenance_nom, places=6)
 
@@ -826,14 +850,14 @@ class PolicyAlignmentTests(unittest.TestCase):
         sim = NewLoop(cfg)
 
         sim.state["price_level"] = 1.0
-        sim.nodes["FH"].set("K", 1000.0)
+        sim.nodes["PS"].set("K", 1000.0)
         sim.state["sector_base_capacity_phys_real"] = 1000.0
-        sim.state["sector_capacity_phys_real_prev"] = sim._sector_capacity_real("FH")
-        maintenance_nom = sim._sector_maintenance_capex_nom("FH", 1.0)
+        sim.state["sector_capacity_phys_real_prev"] = sim._sector_capacity_real("PS")
+        maintenance_nom = sim._sector_maintenance_capex_nom("PS", 1.0)
         normal_growth_nom = (
             0.01
             * float(sim.state["sector_capacity_phys_real_prev"])
-            / sim._sector_capacity_per_k("FH")
+            / sim._sector_capacity_per_k("PS")
         )
         sim.state["sector_free_cash_phys_prev"] = maintenance_nom + normal_growth_nom + 100.0
         sim.state["sector_unmet_phys_real_prev"] = 0.0
@@ -841,7 +865,7 @@ class PolicyAlignmentTests(unittest.TestCase):
         sim.state["sector_load_gap_phys_real_prev"] = 0.0
         sim.state["sector_load_gap_phys_real_sm_prev"] = 0.0
 
-        capex_plan_nom = sim._sector_capex_plan_nom("FH", 1.0)
+        capex_plan_nom = sim._sector_capex_plan_nom("PS", 1.0)
 
         self.assertGreater(capex_plan_nom, maintenance_nom)
         self.assertAlmostEqual(capex_plan_nom, maintenance_nom + normal_growth_nom, places=6)
@@ -852,11 +876,11 @@ class PolicyAlignmentTests(unittest.TestCase):
         sim = NewLoop(cfg)
 
         sim.state["price_level"] = 1.0
-        sim.nodes["FH"].set("K", 1000.0)
+        sim.nodes["PS"].set("K", 1000.0)
         sim.state["sector_base_capacity_phys_real"] = 1000.0
 
-        maintenance_nom = sim._sector_maintenance_capex_nom("FH", 1.0)
-        distributable = sim._sector_profit_distributable_nom("FH", maintenance_nom + 50.0, 1.0)
+        maintenance_nom = sim._sector_maintenance_capex_nom("PS", 1.0)
+        distributable = sim._sector_profit_distributable_nom("PS", maintenance_nom + 50.0, 1.0)
 
         self.assertAlmostEqual(distributable, 50.0, places=6)
 
@@ -867,12 +891,12 @@ class PolicyAlignmentTests(unittest.TestCase):
         sim = NewLoop(cfg)
 
         sim.state["price_level"] = 1.0
-        sim.nodes["FA"].set("K", 1000.0)
-        sim.nodes["FH"].set("K", 1000.0)
+        sim.nodes["IS"].set("K", 1000.0)
+        sim.nodes["PS"].set("K", 1000.0)
         sim.state["sector_base_capacity_info_real"] = 1000.0
         sim.state["sector_base_capacity_phys_real"] = 1000.0
-        sim.nodes["FA"].set("deposits", 0.0)
-        sim.nodes["FH"].set("deposits", 0.0)
+        sim.nodes["IS"].set("deposits", 0.0)
+        sim.nodes["PS"].set("deposits", 0.0)
         sim.state["sector_free_cash_info_prev"] = 0.0
         sim.state["sector_free_cash_phys_prev"] = 0.0
 
@@ -880,13 +904,13 @@ class PolicyAlignmentTests(unittest.TestCase):
 
         self.assertIsNotNone(seed)
         assert seed is not None
-        info_need = sim._sector_maintenance_capex_nom("FA", 1.0)
-        phys_need = sim._sector_maintenance_capex_nom("FH", 1.0)
+        info_need = sim._sector_maintenance_capex_nom("IS", 1.0)
+        phys_need = sim._sector_maintenance_capex_nom("PS", 1.0)
         self.assertGreater(float(seed.get("total_retained_cash_added_nom", 0.0)), 0.0)
         self.assertGreaterEqual(float(sim.state.get("sector_free_cash_info_prev", 0.0)), info_need - 1e-9)
         self.assertGreaterEqual(float(sim.state.get("sector_free_cash_phys_prev", 0.0)), phys_need - 1e-9)
-        self.assertAlmostEqual(float(sim.nodes["FA"].get("deposits", 0.0)), info_need, places=6)
-        self.assertAlmostEqual(float(sim.nodes["FH"].get("deposits", 0.0)), phys_need, places=6)
+        self.assertAlmostEqual(float(sim.nodes["IS"].get("deposits", 0.0)), info_need, places=6)
+        self.assertAlmostEqual(float(sim.nodes["PS"].get("deposits", 0.0)), phys_need, places=6)
 
     def test_old_loop_uses_longer_capital_depreciation(self):
         cfg_old = make_cfg()
@@ -897,10 +921,10 @@ class PolicyAlignmentTests(unittest.TestCase):
         cfg_new["parameters"]["economic_regime"] = "NewLoop"
         sim_new = NewLoop(cfg_new)
 
-        self.assertAlmostEqual(sim_old._sector_depr_rate_q("FA"), 0.0125, places=9)
-        self.assertAlmostEqual(sim_old._sector_depr_rate_q("FH"), 0.0125, places=9)
-        self.assertAlmostEqual(sim_new._sector_depr_rate_q("FA"), 0.02, places=9)
-        self.assertAlmostEqual(sim_new._sector_depr_rate_q("FH"), 0.02, places=9)
+        self.assertAlmostEqual(sim_old._sector_depr_rate_q("IS"), 0.0125, places=9)
+        self.assertAlmostEqual(sim_old._sector_depr_rate_q("PS"), 0.0125, places=9)
+        self.assertAlmostEqual(sim_new._sector_depr_rate_q("IS"), 0.02, places=9)
+        self.assertAlmostEqual(sim_new._sector_depr_rate_q("PS"), 0.02, places=9)
 
     def test_old_to_new_transition_restores_shorter_newloop_depreciation(self):
         cfg = make_cfg()
@@ -912,16 +936,16 @@ class PolicyAlignmentTests(unittest.TestCase):
 
         self.assertTrue(bool(run.sim.state.get("old_to_new_transition_applied", False)))
         self.assertEqual(str(run.sim.params.get("economic_regime", "")), "NewLoop")
-        self.assertAlmostEqual(run.sim._sector_depr_rate_q("FA"), 0.02, places=9)
-        self.assertAlmostEqual(run.sim._sector_depr_rate_q("FH"), 0.02, places=9)
+        self.assertAlmostEqual(run.sim._sector_depr_rate_q("IS"), 0.02, places=9)
+        self.assertAlmostEqual(run.sim._sector_depr_rate_q("PS"), 0.02, places=9)
 
     def test_sector_depreciation_rates_drive_maintenance_and_capital_decay(self):
         cfg = make_cfg()
         cfg["parameters"]["automation_disabled"] = True
         cfg["parameters"]["capital_depr_rate_info_per_quarter"] = 0.02
         cfg["parameters"]["capital_depr_rate_phys_per_quarter"] = 0.0125
-        cfg["nodes"]["FA"]["stocks"]["K"] = 1000.0
-        cfg["nodes"]["FH"]["stocks"]["K"] = 1000.0
+        cfg["nodes"]["IS"]["stocks"]["K"] = 1000.0
+        cfg["nodes"]["PS"]["stocks"]["K"] = 1000.0
         sim = NewLoop(cfg)
 
         sim.state["price_level"] = 1.0
@@ -932,13 +956,13 @@ class PolicyAlignmentTests(unittest.TestCase):
         sim.state["sector_capex_reserve_info_prev"] = 0.0
         sim.state["sector_capex_reserve_phys_prev"] = 0.0
 
-        self.assertAlmostEqual(sim._sector_maintenance_capex_nom("FA", 1.0), 20.0, places=9)
-        self.assertAlmostEqual(sim._sector_maintenance_capex_nom("FH", 1.0), 12.5, places=9)
+        self.assertAlmostEqual(sim._sector_maintenance_capex_nom("IS", 1.0), 20.0, places=9)
+        self.assertAlmostEqual(sim._sector_maintenance_capex_nom("PS", 1.0), 12.5, places=9)
 
         sim.step()
 
-        self.assertAlmostEqual(float(sim.nodes["FA"].get("K", 0.0)), 980.0, places=6)
-        self.assertAlmostEqual(float(sim.nodes["FH"].get("K", 0.0)), 987.5, places=6)
+        self.assertAlmostEqual(float(sim.nodes["IS"].get("K", 0.0)), 980.0, places=6)
+        self.assertAlmostEqual(float(sim.nodes["PS"].get("K", 0.0)), 987.5, places=6)
 
     def test_mortgage_gap_neutralization_funds_bank_when_gap_exists(self):
         cfg = make_cfg()
@@ -1003,8 +1027,8 @@ class PolicyAlignmentTests(unittest.TestCase):
         sim.step()
         p_prev = float(sim.state.get("price_level", 1.0))
         bank_eq_prev = float(sim._firm_balance_sheet_equity_proxy("BANK", p_prev))
-        fa_eq_prev = float(sim._firm_broad_equity_proxy("FA", p_prev))
-        fh_eq_prev = float(sim._firm_broad_equity_proxy("FH", p_prev))
+        fa_eq_prev = float(sim._firm_broad_equity_proxy("IS", p_prev))
+        fh_eq_prev = float(sim._firm_broad_equity_proxy("PS", p_prev))
 
         sim.step()
         row = sim.history[-1]
@@ -1038,12 +1062,12 @@ class PolicyAlignmentTests(unittest.TestCase):
             sim.step()
 
         p_prev = float(sim.state.get("price_level", 1.0))
-        fa_eq_prev = float(sim._firm_broad_equity_proxy("FA", p_prev))
-        fh_eq_prev = float(sim._firm_broad_equity_proxy("FH", p_prev))
+        fa_eq_prev = float(sim._firm_broad_equity_proxy("IS", p_prev))
+        fh_eq_prev = float(sim._firm_broad_equity_proxy("PS", p_prev))
         nonbank_eq_prev = fa_eq_prev + fh_eq_prev
         capex_reserve_prev = (
-            max(0.0, float(sim.nodes["FA"].get("capex_reserve", 0.0)))
-            + max(0.0, float(sim.nodes["FH"].get("capex_reserve", 0.0)))
+            max(0.0, float(sim.nodes["IS"].get("capex_reserve", 0.0)))
+            + max(0.0, float(sim.nodes["PS"].get("capex_reserve", 0.0)))
         )
         deployed_eq_prev = max(0.0, nonbank_eq_prev - capex_reserve_prev)
 
@@ -1064,19 +1088,19 @@ class PolicyAlignmentTests(unittest.TestCase):
 
         self.assertGreater(float(sim.state.get("corporate_info_equity_prev_total", 0.0)), 0.0)
         self.assertGreater(float(sim.state.get("corporate_physical_equity_prev_total", 0.0)), 0.0)
-        self.assertAlmostEqual(float(sim.nodes["FA"].get("K", 0.0)), 0.0, places=9)
-        self.assertAlmostEqual(float(sim.nodes["FH"].get("K", 0.0)), 0.0, places=9)
+        self.assertAlmostEqual(float(sim.nodes["IS"].get("K", 0.0)), 0.0, places=9)
+        self.assertAlmostEqual(float(sim.nodes["PS"].get("K", 0.0)), 0.0, places=9)
 
     def test_startup_bootstrap_respects_explicit_initial_firm_capital(self):
         cfg = make_cfg()
-        cfg["nodes"]["FA"]["stocks"]["K"] = 123.0
-        cfg["nodes"]["FH"]["stocks"]["K"] = 456.0
+        cfg["nodes"]["IS"]["stocks"]["K"] = 123.0
+        cfg["nodes"]["PS"]["stocks"]["K"] = 456.0
         sim = NewLoop(cfg)
 
         sim._bootstrap_startup_lagged_retained()
 
-        self.assertAlmostEqual(float(sim.nodes["FA"].get("K", 0.0)), 123.0, places=9)
-        self.assertAlmostEqual(float(sim.nodes["FH"].get("K", 0.0)), 456.0, places=9)
+        self.assertAlmostEqual(float(sim.nodes["IS"].get("K", 0.0)), 123.0, places=9)
+        self.assertAlmostEqual(float(sim.nodes["PS"].get("K", 0.0)), 456.0, places=9)
 
     def test_startup_bootstrap_can_opt_in_to_firm_capital_seed(self):
         cfg = make_cfg()
@@ -1085,16 +1109,16 @@ class PolicyAlignmentTests(unittest.TestCase):
 
         sim._bootstrap_startup_lagged_retained()
 
-        self.assertGreater(float(sim.nodes["FA"].get("K", 0.0)), 0.0)
-        self.assertGreater(float(sim.nodes["FH"].get("K", 0.0)), 0.0)
+        self.assertGreater(float(sim.nodes["IS"].get("K", 0.0)), 0.0)
+        self.assertGreater(float(sim.nodes["PS"].get("K", 0.0)), 0.0)
 
     def test_disable_capex_and_depreciation_freezes_capital_path(self):
         cfg = make_cfg()
         cfg["parameters"]["disable_capex_and_depreciation"] = True
         cfg["parameters"]["automation_disabled"] = True
         cfg["parameters"]["capital_depr_rate_per_quarter"] = 0.25
-        cfg["nodes"]["FA"]["stocks"]["K"] = 123.0
-        cfg["nodes"]["FH"]["stocks"]["K"] = 456.0
+        cfg["nodes"]["IS"]["stocks"]["K"] = 123.0
+        cfg["nodes"]["PS"]["stocks"]["K"] = 456.0
 
         sim = NewLoop(cfg)
         sim.state["sector_capacity_info_real_prev"] = 100.0
@@ -1108,14 +1132,14 @@ class PolicyAlignmentTests(unittest.TestCase):
         sim.state["sector_capex_queue_info_nom"] = 500.0
         sim.state["sector_capex_queue_phys_nom"] = 500.0
 
-        self.assertAlmostEqual(sim._sector_maintenance_capex_nom("FA", 1.0), 0.0, places=9)
-        self.assertAlmostEqual(sim._sector_capex_plan_nom("FA", 1.0), 0.0, places=9)
-        self.assertAlmostEqual(sim._sector_installation_limit_nom("FA", 1.0, 100.0), 0.0, places=9)
+        self.assertAlmostEqual(sim._sector_maintenance_capex_nom("IS", 1.0), 0.0, places=9)
+        self.assertAlmostEqual(sim._sector_capex_plan_nom("IS", 1.0), 0.0, places=9)
+        self.assertAlmostEqual(sim._sector_installation_limit_nom("IS", 1.0, 100.0), 0.0, places=9)
 
         sim.step()
 
-        self.assertAlmostEqual(float(sim.nodes["FA"].get("K", 0.0)), 123.0, places=9)
-        self.assertAlmostEqual(float(sim.nodes["FH"].get("K", 0.0)), 456.0, places=9)
+        self.assertAlmostEqual(float(sim.nodes["IS"].get("K", 0.0)), 123.0, places=9)
+        self.assertAlmostEqual(float(sim.nodes["PS"].get("K", 0.0)), 456.0, places=9)
         self.assertAlmostEqual(float(sim.state.get("capex_total", -1.0)), 0.0, places=9)
         self.assertAlmostEqual(float(sim.state.get("sector_capex_queue_info_nom", -1.0)), 0.0, places=9)
         self.assertAlmostEqual(float(sim.state.get("sector_capex_queue_phys_nom", -1.0)), 0.0, places=9)
@@ -1149,10 +1173,10 @@ class PolicyAlignmentTests(unittest.TestCase):
 
         sim.state["sector_capacity_info_real_prev"] = 100.0
         sim.state["sector_unmet_info_real_prev"] = 0.0
-        low_gap_rate = sim._sector_target_payout_rate("FA")
+        low_gap_rate = sim._sector_target_payout_rate("IS")
 
         sim.state["sector_unmet_info_real_prev"] = 10.0
-        high_gap_rate = sim._sector_target_payout_rate("FA")
+        high_gap_rate = sim._sector_target_payout_rate("IS")
 
         self.assertGreater(low_gap_rate, high_gap_rate)
         self.assertAlmostEqual(
@@ -1168,17 +1192,17 @@ class PolicyAlignmentTests(unittest.TestCase):
         sim.state["sector_capacity_info_real_prev"] = 100.0
         sim.state["sector_unmet_info_real_prev"] = 0.0
         sim.state["sector_base_capacity_info_real"] = 50.0
-        sim.nodes["FA"].memo["revenue_prev"] = 200.0
-        sim.nodes["FA"].set("deposits", 300.0)
+        sim.nodes["IS"].memo["revenue_prev"] = 200.0
+        sim.nodes["IS"].set("deposits", 300.0)
 
-        dist_nom = sim._sector_surplus_distribution_nom("FA", 1.0)
-        reserve_nom = sim._sector_maintenance_capex_nom("FA", 1.0) + (0.10 * 200.0)
+        dist_nom = sim._sector_surplus_distribution_nom("IS", 1.0)
+        reserve_nom = sim._sector_maintenance_capex_nom("IS", 1.0) + (0.10 * 200.0)
         expected = 0.50 * max(0.0, 300.0 - reserve_nom)
 
         self.assertAlmostEqual(dist_nom, expected, places=6)
 
-        sim.nodes["FA"].set("deposits", reserve_nom - 1.0)
-        self.assertAlmostEqual(sim._sector_surplus_distribution_nom("FA", 1.0), 0.0, places=9)
+        sim.nodes["IS"].set("deposits", reserve_nom - 1.0)
+        self.assertAlmostEqual(sim._sector_surplus_distribution_nom("IS", 1.0), 0.0, places=9)
 
     def test_startup_diagnostics_report_target_like_sector_operating_margins(self):
         cfg = make_cfg()
@@ -1618,8 +1642,8 @@ class PolicyAlignmentTests(unittest.TestCase):
         sim.state["automation_info"] = 0.60
         sim.state["automation_phys"] = 0.40
 
-        self.assertAlmostEqual(sim._sector_tfp_multiplier("FA"), 1.30, places=9)
-        self.assertAlmostEqual(sim._sector_tfp_multiplier("FH"), 1.10, places=9)
+        self.assertAlmostEqual(sim._sector_tfp_multiplier("IS"), 1.30, places=9)
+        self.assertAlmostEqual(sim._sector_tfp_multiplier("PS"), 1.10, places=9)
 
     def test_linear_automation_whole_economy_is_sector_weighted(self):
         cfg = make_cfg()
@@ -1766,8 +1790,8 @@ class PolicyAlignmentTests(unittest.TestCase):
         sim.nodes["UMS"].set("deposits", 100.0)
         sim.nodes["BANK"].add("deposit_liab", 100.0)
         sim.nodes["BANK"].add("reserves", 100.0)
-        sim.nodes["FA"].memo["revenue_prev"] = 60.0
-        sim.nodes["FH"].memo["revenue_prev"] = 40.0
+        sim.nodes["IS"].memo["revenue_prev"] = 60.0
+        sim.nodes["PS"].memo["revenue_prev"] = 40.0
 
         sim.step()
 
