@@ -17,6 +17,7 @@ from .housing_affordability import (
 )
 from .mathutils import _as_np, _pct, _pct_np, automation_two_hump, calculate_gini_np
 from .mortgage import (
+    DEFAULT_MORTGAGE_TERM_QUARTERS,
     FixedRateMortgageSchedule,
     get_fixed_rate_mortgage_schedule,
     orig_principal_from_balance,
@@ -59,7 +60,7 @@ class NewLoop:
         base_rate_q = max(0.0, float(self.params.get("loan_rate_per_quarter", 0.0)))
         self._default_mortgage_schedule: FixedRateMortgageSchedule = get_fixed_rate_mortgage_schedule(
             max(0.0, float(self.params.get("mortgage_fixed_rate_q", base_rate_q))),
-            max(1, int(self.params.get("mortgage_term_quarters", 120))),
+            max(1, int(self.params.get("mortgage_term_quarters", DEFAULT_MORTGAGE_TERM_QUARTERS))),
         )
         self._mortgage_contract_state_dirty = True
         self._mortgage_contract_cache: Dict[str, np.ndarray] | None = None
@@ -215,6 +216,7 @@ class NewLoop:
                 "old_loop_disable_mortgages",
                 "old_loop_zero_startup_household_debt",
                 "old_loop_zero_startup_rent",
+                "mortgage_term_quarters",
             ):
                 if key in self.params:
                     overrides[key] = self.params.get(key)
@@ -710,7 +712,7 @@ class NewLoop:
         return max(0.0, float(self.params.get("mortgage_fixed_rate_q", self.params.get("loan_rate_per_quarter", 0.0))))
 
     def _mortgage_term_quarters(self) -> int:
-        return max(1, int(self.params.get("mortgage_term_quarters", 120)))
+        return max(1, int(self.params.get("mortgage_term_quarters", DEFAULT_MORTGAGE_TERM_QUARTERS)))
 
     def _invalidate_mortgage_contract_state(self) -> None:
         self._mortgage_contract_state_dirty = True

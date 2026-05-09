@@ -6,6 +6,7 @@ from __future__ import annotations
 import copy
 from typing import Any, Dict
 
+from .mortgage import DEFAULT_MORTGAGE_TERM_QUARTERS
 from .sectors import (
     INFO_SECTOR,
     PHYSICAL_SECTOR,
@@ -176,7 +177,7 @@ config = {
         "revolving_principal_pay_rate_q": 0.0,   # revolving principal may persist unless a later rule retires it
         "revolving_rollover_share": 0.0,        # share of revolving principal repayment immediately re-lent to the same household
         "mortgage_fixed_rate_q": 0.01125,       # 4.5% annual fixed coupon for new mortgages
-        "mortgage_term_quarters": 120,          # 30-year fixed mortgage
+        "mortgage_term_quarters": DEFAULT_MORTGAGE_TERM_QUARTERS,  # 30-year fixed mortgage
         "mortgage_principal_pay_rate_q": 0.01,   # 1%/q max paydown if cash available
         "mortgage_turnover_enabled": True,      # turn over a share of housed households and issue fresh mortgages on those housing-finance events
         "mortgage_maturity_roll_enabled": True, # refinance end-of-term mortgages into fresh contracts when they still qualify

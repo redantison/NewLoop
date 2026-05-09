@@ -8,6 +8,8 @@ from functools import lru_cache
 
 import numpy as np
 
+DEFAULT_MORTGAGE_TERM_QUARTERS = 120
+
 
 def _as_array(value: np.ndarray | float | int) -> np.ndarray:
     return np.asarray(value, dtype=float)

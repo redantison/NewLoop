@@ -35,7 +35,13 @@ from .housing_affordability import (
     compute_affordable_housing_profile,
     compute_old_loop_mortgage_underwriting_profile,
 )
-from .mortgage import annuity_factor, balance_from_orig_principal, payment_from_orig_principal, remaining_term
+from .mortgage import (
+    DEFAULT_MORTGAGE_TERM_QUARTERS,
+    annuity_factor,
+    balance_from_orig_principal,
+    payment_from_orig_principal,
+    remaining_term,
+)
 
 # ----------------------------
 # Utilities
@@ -275,7 +281,7 @@ class PopulationConfig:
     # Interest rates (effective rates on outstanding balances; baseline calibration)
     mortgage_rate_effective: float = 0.045
     revolving_rate_effective: float = 0.20
-    mortgage_term_quarters: int = 60
+    mortgage_term_quarters: int = DEFAULT_MORTGAGE_TERM_QUARTERS
 
     # MPC schedule by deposits percentile (piecewise)
     # (pct_upper_bound, mpc)
@@ -730,7 +736,7 @@ def generate_population(cfg: PopulationConfig) -> Population:
     rev_p = _rescale_probabilities_to_target(rev_p, has_wage, float(cfg.revolving_share))
 
     revolving_loans = np.zeros(n, dtype=float)
-    term_q = float(max(1, int(getattr(cfg, "mortgage_term_quarters", 60))))
+    term_q = float(max(1, int(getattr(cfg, "mortgage_term_quarters", DEFAULT_MORTGAGE_TERM_QUARTERS))))
     rate_q = float(max(0.0, float(cfg.mortgage_rate_effective) / 4.0))
     rev_rate_q = float(max(0.0, float(cfg.revolving_rate_effective) / 4.0))
     rev_mask = has_wage & (rng.random(n) < rev_p)

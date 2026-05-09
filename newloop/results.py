@@ -15,6 +15,7 @@ from .engine import NewLoop
 from .housing_affordability import compute_affordable_housing_profile
 from .income_support import make_income_support_policy
 from .mortgage import (
+    DEFAULT_MORTGAGE_TERM_QUARTERS,
     annuity_factor,
     balance_from_orig_principal,
     payment_from_orig_principal,
@@ -1252,7 +1253,7 @@ def _reunderwrite_old_loop_startup_housing(sim: NewLoop) -> Dict[str, Any] | Non
         active_rate_q = np.where(active_rate_q > 1e-12, active_rate_q, default_rate_q)
 
         active_term_q = np.maximum(1.0, mort_term_q.copy())
-        default_term_q = float(sim.params.get("mortgage_term_quarters", 60.0))
+        default_term_q = float(sim.params.get("mortgage_term_quarters", DEFAULT_MORTGAGE_TERM_QUARTERS))
         active_term_q = np.where(active_term_q > 1e-12, active_term_q, default_term_q)
         supportable_orig_principal = np.zeros(n, dtype=float)
         supportable_orig_principal[active_mort] = (

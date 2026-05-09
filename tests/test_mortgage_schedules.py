@@ -13,6 +13,7 @@ from newloop.config import get_default_config
 from newloop.engine import NewLoop
 from newloop.housing_affordability import compute_affordable_housing_profile
 from newloop.mortgage import (
+    DEFAULT_MORTGAGE_TERM_QUARTERS,
     balance_from_orig_principal,
     get_fixed_rate_mortgage_schedule,
     payment_from_balance,
@@ -39,7 +40,7 @@ class MortgageScheduleTests(unittest.TestCase):
     def test_fixed_rate_schedule_object_matches_legacy_helpers(self):
         principal = 1200.0
         rate_q = 0.01
-        term_q = 60
+        term_q = DEFAULT_MORTGAGE_TERM_QUARTERS
         ages = np.arange(term_q, dtype=float)
         schedule = get_fixed_rate_mortgage_schedule(rate_q, term_q)
 
@@ -89,7 +90,7 @@ class MortgageScheduleTests(unittest.TestCase):
     def test_fixed_rate_amortization_components_match_balance_and_payment(self):
         principal = np.asarray([1200.0], dtype=float)
         rate_q = np.asarray([0.01], dtype=float)
-        term_q = np.asarray([60.0], dtype=float)
+        term_q = np.asarray([float(DEFAULT_MORTGAGE_TERM_QUARTERS)], dtype=float)
         age_q = np.asarray([0.0], dtype=float)
 
         payment_q = payment_from_orig_principal(principal, rate_q, term_q)
@@ -107,11 +108,11 @@ class MortgageScheduleTests(unittest.TestCase):
     def test_fixed_rate_amortization_clears_balance_by_term(self):
         balance = np.asarray([1200.0], dtype=float)
         rate_q = np.asarray([0.01], dtype=float)
-        term_q = np.asarray([60.0], dtype=float)
+        term_q = np.asarray([float(DEFAULT_MORTGAGE_TERM_QUARTERS)], dtype=float)
         payment_q = payment_from_orig_principal(balance, rate_q, term_q)
 
-        for step in range(60):
-            rem_q = np.asarray([60.0 - float(step)], dtype=float)
+        for step in range(DEFAULT_MORTGAGE_TERM_QUARTERS):
+            rem_q = np.asarray([float(DEFAULT_MORTGAGE_TERM_QUARTERS - step)], dtype=float)
             due_q, interest_q, principal_q = scheduled_payment_components(
                 balance,
                 rate_q,
@@ -153,7 +154,12 @@ class MortgageScheduleTests(unittest.TestCase):
         )
         self.assertAlmostEqual(float(sim.nodes["HOUSING"].get("deposits", 0.0)), 0.0, places=9)
         self.assertTrue(np.all(np.asarray(hh.mort_rate_q, dtype=float)[active] > 0.0))
-        self.assertTrue(np.all(np.asarray(hh.mort_term_q, dtype=float)[active] == 60.0))
+        self.assertTrue(
+            np.all(
+                np.asarray(hh.mort_term_q, dtype=float)[active]
+                == float(sim.params["mortgage_term_quarters"])
+            )
+        )
         self.assertTrue(np.all(np.asarray(hh.mort_payment_sched_q, dtype=float)[active] > 0.0))
         self.assertTrue(
             np.allclose(
@@ -180,6 +186,19 @@ class MortgageScheduleTests(unittest.TestCase):
                 atol=1e-9,
             )
         )
+
+    def test_top_level_mortgage_term_config_controls_population_startup_terms(self):
+        cfg = make_cfg()
+        cfg["parameters"]["mortgage_term_quarters"] = 96
+
+        sim = NewLoop(cfg)
+        hh = sim.hh
+        self.assertIsNotNone(hh)
+        assert hh is not None
+
+        active = np.asarray(hh.mortgage_loans, dtype=float) > 1e-12
+        self.assertTrue(bool(np.any(active)))
+        self.assertTrue(np.all(np.asarray(hh.mort_term_q, dtype=float)[active] == 96.0))
 
     def test_startup_base_consumption_matches_affordability_core_nonhousing(self):
         sim = NewLoop(make_cfg())
@@ -362,6 +381,7 @@ class MortgageScheduleTests(unittest.TestCase):
         sim.step()
         sim.step()
 
+        term_q = float(cfg["parameters"]["mortgage_term_quarters"])
         new_mask = (
             (np.asarray(hh.mort_age_q, dtype=float) == 0.0)
             & (np.asarray(hh.mortgage_loans, dtype=float) > 1e-9)
@@ -369,7 +389,7 @@ class MortgageScheduleTests(unittest.TestCase):
         self.assertGreater(float(sim.state.get("mort_turnover_total", 0.0)), 0.0)
         self.assertTrue(bool(np.any(new_mask)))
         self.assertTrue(np.all(np.asarray(hh.mort_age_q, dtype=float)[new_mask] <= 1.0))
-        self.assertTrue(np.all(np.asarray(hh.mort_term_q, dtype=float)[new_mask] == 60.0))
+        self.assertTrue(np.all(np.asarray(hh.mort_term_q, dtype=float)[new_mask] == term_q))
         self.assertTrue(
             np.allclose(
                 np.asarray(hh.mort_rate_q, dtype=float)[new_mask],
@@ -383,7 +403,7 @@ class MortgageScheduleTests(unittest.TestCase):
                 payment_from_orig_principal(
                     np.asarray(hh.mort_orig_principal, dtype=float)[new_mask],
                     float(cfg["parameters"]["mortgage_fixed_rate_q"]),
-                    60.0,
+                    term_q,
                 ),
                 rtol=1e-7,
                 atol=1e-9,
@@ -625,9 +645,10 @@ class MortgageScheduleTests(unittest.TestCase):
         assert hh is not None
 
         idx = int(np.argmax(np.asarray(hh.mortgage_loans, dtype=float)))
+        term_q = float(sim.params["mortgage_term_quarters"])
         hh.mortgage_loans[idx] = 25.0
-        hh.mort_term_q[idx] = 60.0
-        hh.mort_age_q[idx] = 60.0
+        hh.mort_term_q[idx] = term_q
+        hh.mort_age_q[idx] = term_q
         hh.mort_rate_q[idx] = 0.01
         hh.mort_payment_sched_q[idx] = 25.25
         hh.mort_orig_principal[idx] = 1000.0
