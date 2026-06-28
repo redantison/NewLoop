@@ -7,6 +7,17 @@ from typing import Any, Dict, Iterable, List, Mapping, Sequence
 
 import numpy as np
 
+LINE_COLOR_CYCLE: tuple[str, ...] = (
+    "#1f77b4",
+    "#ff7f0e",
+    "#2ca02c",
+    "#d62728",
+    "#9467bd",
+    "#8c564b",
+    "#17becf",
+    "#7f7f7f",
+)
+
 METRIC_LABELS: Dict[str, str] = {
     "automation": "Automation (Whole Economy)",
     "automation_flow": "Automation Flow (Whole Economy, Δ/q)",
@@ -283,7 +294,11 @@ def _line_style(metric: str, *, secondary: bool) -> Dict[str, Any]:
     style: Dict[str, Any] = {"linewidth": 2.0}
     if secondary:
         style["linestyle"] = "--"
-    if metric == "capex_per_h":
+    if metric == "inflation":
+        style["color"] = "#d62728"
+    elif metric == "price_level_deflated":
+        style["color"] = "#9467bd"
+    elif metric == "capex_per_h":
         style["color"] = "tab:green"
     elif metric in {
         "sector_op_margin_info",
@@ -375,6 +390,38 @@ def _apply_compact_y_ticks(ax: Any) -> None:
     ax.yaxis.set_major_formatter(FuncFormatter(lambda val, _: _compact_tick_label(val)))
 
 
+def _soften_near_flat_y_axis(ax: Any, *, min_rel_span: float = 0.05) -> None:
+    """Avoid autoscale exaggeration when plotted lines barely move."""
+    values: List[float] = []
+    for line in ax.get_lines():
+        y_data = np.asarray(line.get_ydata(), dtype=float)
+        if y_data.size:
+            finite = y_data[np.isfinite(y_data)]
+            values.extend(float(v) for v in finite)
+    if not values:
+        return
+    y_min = min(values)
+    y_max = max(values)
+    span = y_max - y_min
+    center = 0.5 * (y_min + y_max)
+    scale = max(abs(center), abs(y_min), abs(y_max), 1.0)
+    target_span = max(1e-9, float(min_rel_span) * scale)
+    if span >= target_span:
+        return
+    lo = center - 0.5 * target_span
+    hi = center + 0.5 * target_span
+    if y_min >= 0.0 and y_max > 0.0 and lo < 0.0:
+        lo = 0.0
+        hi = target_span
+    ax.set_ylim(lo, hi)
+
+
+def _suppress_near_zero(values: np.ndarray, *, atol: float = 0.005) -> np.ndarray:
+    """Treat per-household monetary dust below half a cent as exactly zero."""
+    clean = np.nan_to_num(np.asarray(values, dtype=float), nan=0.0)
+    return np.where(np.abs(clean) < float(atol), 0.0, clean)
+
+
 def _normalized_mode(support_mode: str | None) -> str | None:
     if support_mode is None:
         return None
@@ -457,9 +504,11 @@ def plot_metric_lines(
         fig = ax.figure
 
     primary_lines = []
-    for metric in primary_list:
+    for idx, metric in enumerate(primary_list):
         x_plot, y_plot = _plot_points(rows, x, metric)
-        (line,) = ax.plot(x_plot, y_plot, label=metric_label(metric), **_line_style(metric, secondary=False))
+        style = _line_style(metric, secondary=False)
+        style.setdefault("color", LINE_COLOR_CYCLE[idx % len(LINE_COLOR_CYCLE)])
+        (line,) = ax.plot(x_plot, y_plot, label=metric_label(metric), **style)
         primary_lines.append(line)
         if metric == "trust_equity_pct":
             _annotate_trust_launch(ax, rows, x, _series(rows, metric))
@@ -475,17 +524,22 @@ def plot_metric_lines(
     secondary_lines = []
     if secondary_list:
         ax2 = ax.twinx()
-        for metric in secondary_list:
+        setattr(ax, "_newloop_secondary_axis", ax2)
+        for offset, metric in enumerate(secondary_list, start=len(primary_list)):
             x_plot, y_plot = _plot_points(rows, x, metric)
-            (line,) = ax2.plot(x_plot, y_plot, label=metric_label(metric), **_line_style(metric, secondary=True))
+            style = _line_style(metric, secondary=True)
+            style.setdefault("color", LINE_COLOR_CYCLE[offset % len(LINE_COLOR_CYCLE)])
+            (line,) = ax2.plot(x_plot, y_plot, label=metric_label(metric), **style)
             secondary_lines.append(line)
         ax2.set_ylabel(secondary_ylabel)
         _apply_compact_y_ticks(ax2)
         ax2.grid(False)
+        _soften_near_flat_y_axis(ax2)
 
     ax.set_title(_title_with_mode(title, support_mode))
     ax.set_xlabel("Quarter")
     ax.grid(alpha=0.25)
+    _soften_near_flat_y_axis(ax)
 
     all_lines = primary_lines + secondary_lines
     if all_lines:
@@ -609,10 +663,18 @@ def plot_household_shortfall_sources(rows: Sequence[Mapping[str, Any]], axes: Se
     ax_left.grid(True, alpha=0.25)
     ax_left.legend(loc="upper left", fontsize=9)
 
-    mort_bridge = np.asarray([float(r.get("hh_mortgage_bridge_to_revolving_per_h", 0.0)) for r in rows], dtype=float)
-    overdraft = np.asarray([float(r.get("hh_overdraft_to_revolving_per_h", 0.0)) for r in rows], dtype=float)
-    unpaid_mort = np.asarray([float(r.get("hh_mortgage_unpaid_shortfall_per_h", 0.0)) for r in rows], dtype=float)
-    deposit_drawdown = np.maximum(0.0, (realized_cons + mort_actual + rev_interest + rent + tax) - inflow - mort_bridge - overdraft)
+    mort_bridge = _suppress_near_zero(
+        np.asarray([float(r.get("hh_mortgage_bridge_to_revolving_per_h", 0.0)) for r in rows], dtype=float)
+    )
+    overdraft = _suppress_near_zero(
+        np.asarray([float(r.get("hh_overdraft_to_revolving_per_h", 0.0)) for r in rows], dtype=float)
+    )
+    unpaid_mort = _suppress_near_zero(
+        np.asarray([float(r.get("hh_mortgage_unpaid_shortfall_per_h", 0.0)) for r in rows], dtype=float)
+    )
+    deposit_drawdown = _suppress_near_zero(
+        np.maximum(0.0, (realized_cons + mort_actual + rev_interest + rent + tax) - inflow - mort_bridge - overdraft)
+    )
 
     right_layers = [deposit_drawdown, mort_bridge, overdraft, unpaid_mort]
     right_labels = [
@@ -622,12 +684,31 @@ def plot_household_shortfall_sources(rows: Sequence[Mapping[str, Any]], axes: Se
         "Unpaid Mortgage Shortfall",
     ]
     right_colors = ["#4daf4a", "#377eb8", "#a65628", "#e41a1c"]
-    ax_right.stackplot(t, *right_layers, labels=right_labels, colors=right_colors, alpha=0.80)
     ax_right.set_title("Household Funding Gap Response")
     ax_right.set_xlabel("Quarter")
     ax_right.set_ylabel("Nominal / Household")
+    has_material_response = max(float(np.max(layer)) for layer in right_layers) > 0.0
+    if not has_material_response:
+        ax_right.axhline(0.0, color="0.35", linewidth=1.0)
+        if t:
+            ax_right.set_xlim(min(t), max(t))
+        ax_right.set_ylim(-0.01, 0.01)
+        ax_right.text(
+            0.5,
+            0.58,
+            "No material funding gap response",
+            transform=ax_right.transAxes,
+            ha="center",
+            va="center",
+            fontsize=11,
+            color="0.25",
+            bbox={"boxstyle": "round,pad=0.25", "fc": "white", "ec": "0.8", "alpha": 0.9},
+        )
+    else:
+        ax_right.stackplot(t, *right_layers, labels=right_labels, colors=right_colors, alpha=0.80)
     ax_right.grid(True, alpha=0.25)
-    ax_right.legend(loc="upper left", fontsize=9)
+    if has_material_response:
+        ax_right.legend(loc="upper left", fontsize=9)
 
     return fig
 
@@ -854,8 +935,8 @@ def plot_distribution_compare(
     a_sorted = np.sort(a)
     y_b = np.arange(1, b_sorted.size + 1, dtype=float) / float(b_sorted.size)
     y_a = np.arange(1, a_sorted.size + 1, dtype=float) / float(a_sorted.size)
-    ax.step(b_sorted, y_b, where="post", linewidth=2.0, label="Before")
-    ax.step(a_sorted, y_a, where="post", linewidth=2.0, label="After")
+    ax.step(b_sorted, y_b, where="post", color="#1f77b4", linewidth=2.0, linestyle="-", label="Before")
+    ax.step(a_sorted, y_a, where="post", color="#ff7f0e", linewidth=2.2, linestyle="--", label="After")
 
     med_b = float(np.median(b))
     med_a = float(np.median(a))
@@ -1018,8 +1099,26 @@ def plot_distribution_share(
 
     w_b = np.full(b.size, 1.0 / float(b.size), dtype=float)
     w_a = np.full(a.size, 1.0 / float(a.size), dtype=float)
-    before_hist = ax.hist(b, bins=edges_arr, weights=w_b, histtype="step", linewidth=2.0, label="Before")
-    after_hist = ax.hist(a, bins=after_edges_arr, weights=w_a, histtype="step", linewidth=2.0, label="After")
+    before_hist = ax.hist(
+        b,
+        bins=edges_arr,
+        weights=w_b,
+        histtype="step",
+        color="#1f77b4",
+        linewidth=2.0,
+        linestyle="-",
+        label="Before",
+    )
+    after_hist = ax.hist(
+        a,
+        bins=after_edges_arr,
+        weights=w_a,
+        histtype="step",
+        color="#ff7f0e",
+        linewidth=2.2,
+        linestyle="--",
+        label="After",
+    )
     before_color = before_hist[2][0].get_edgecolor()
     after_color = after_hist[2][0].get_edgecolor()
 
@@ -1118,8 +1217,8 @@ def plot_income_distribution_dual(
         x_limits=x_limits,
         ax=axs[0],
     )
-    axs[1].step(edges[:-1], before_share, where="post", color="#1f77b4", linewidth=2.0, label="Before")
-    axs[1].step(edges[:-1], after_share, where="post", color="#ff7f0e", linewidth=2.0, label="After")
+    axs[1].step(edges[:-1], before_share, where="post", color="#1f77b4", linewidth=2.0, linestyle="-", label="Before")
+    axs[1].step(edges[:-1], after_share, where="post", color="#ff7f0e", linewidth=2.2, linestyle="--", label="After")
     axs[1].axvline(med_b, color="#1f77b4", linestyle=":", linewidth=1.8, alpha=0.9)
     axs[1].axvline(med_a, color="#ff7f0e", linestyle=":", linewidth=1.8, alpha=0.9)
     axs[1].set_title(_title_with_mode("Disposable Income Distribution (% per Bin, Median +/- 3 Robust Sigma)", support_mode))
@@ -1326,8 +1425,8 @@ def plot_wealth_distributions_full_zoom(
     before_share = before_counts.astype(float) / max(1.0, float(w_b.size))
     after_share = after_counts.astype(float) / max(1.0, float(w_a.size))
 
-    ax_right.step(edges[:-1], before_share, where="post", color="#1f77b4", linewidth=2.0, label="Before")
-    ax_right.step(edges[:-1], after_share, where="post", color="#ff7f0e", linewidth=2.0, label="After")
+    ax_right.step(edges[:-1], before_share, where="post", color="#1f77b4", linewidth=2.0, linestyle="-", label="Before")
+    ax_right.step(edges[:-1], after_share, where="post", color="#ff7f0e", linewidth=2.2, linestyle="--", label="After")
     ax_right.axvline(float(np.median(w_b)), color="#1f77b4", linestyle=":", linewidth=1.8, alpha=0.9)
     ax_right.axvline(float(np.median(w_a)), color="#ff7f0e", linestyle=":", linewidth=1.8, alpha=0.9)
     ax_right.set_title(_title_with_mode("Wealth Distribution (Bucketed Lines, Median +/- 3 Robust Sigma)", support_mode))

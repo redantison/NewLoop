@@ -1504,23 +1504,123 @@ def _activate_old_to_new_transition(sim: NewLoop, cfg: Dict[str, Any], visible_q
     }
 
 
-def _build_old_to_new_startup_sim(cfg: Dict[str, Any]) -> tuple[NewLoop, int, Dict[str, Any]]:
-    """Create the visible-start sim for OldToNew without hidden NewLoop warm-start quarters."""
+def _old_loop_steady_state_sample(sim: NewLoop) -> Dict[str, float]:
+    """Return OldLoop stock/flow metrics used to decide visible-start readiness."""
+    n = float(sim.hh.n) if sim.hh is not None and sim.hh.n > 0 else 1.0
+    last = sim.history[-1] if sim.history else None
+    return {
+        "wages_total": float(getattr(last, "wages_total", 0.0) if last is not None else 0.0),
+        "total_consumption": float(getattr(last, "total_consumption", 0.0) if last is not None else 0.0),
+        "hh_deposits_per_h": float(
+            getattr(last, "hh_deposits_per_h", 0.0) if last is not None else 0.0
+        ),
+        "gov_dep_per_h": float(sim.nodes["GOV"].get("deposits", 0.0)) / n,
+        "ums_dep_per_h": float(sim.nodes["UMS"].get("deposits", 0.0)) / n,
+        "firm_dep_per_h": (
+            float(sim.nodes["IS"].get("deposits", 0.0)) + float(sim.nodes["PS"].get("deposits", 0.0))
+        ) / n,
+    }
+
+
+def _old_loop_steady_state_error(now: Dict[str, float], then: Dict[str, float]) -> float:
+    """Return the largest relative drift between two OldLoop warmup samples."""
+    max_err = 0.0
+    for key, now_val in now.items():
+        then_val = float(then.get(key, 0.0))
+        denom = max(abs(float(now_val)), abs(then_val), 1e-9)
+        max_err = max(max_err, abs(float(now_val) - then_val) / denom)
+    return float(max_err)
+
+
+def _run_old_loop_steady_state_warmup(
+    sim: NewLoop,
+    progress_callback: Callable[[str, int, int], None] | None = None,
+) -> Dict[str, Any]:
+    """Run hidden OldLoop quarters until the main money reservoirs are nearly steady."""
+    params = sim.params
+    if not bool(params.get("old_loop_steady_state_warmup_enabled", False)):
+        return {
+            "old_loop_steady_state_warmup_enabled": False,
+            "old_loop_steady_state_warmup_requested": 0,
+            "old_loop_steady_state_warmup_completed": 0,
+            "old_loop_steady_state_warmup_converged": True,
+            "old_loop_steady_state_warmup_error": 0.0,
+            "old_loop_steady_state_warmup_exception": "",
+        }
+
+    min_quarters = max(0, int(params.get("old_loop_steady_state_warmup_min_quarters", 0)))
+    max_quarters = max(min_quarters, int(params.get("old_loop_steady_state_warmup_max_quarters", min_quarters)))
+    window = max(1, int(params.get("old_loop_steady_state_warmup_window", 1)))
+    tol = max(0.0, float(params.get("old_loop_steady_state_warmup_tol", 0.001)))
+    samples: List[Dict[str, float]] = []
+    report: Dict[str, Any] = {
+        "old_loop_steady_state_warmup_enabled": True,
+        "old_loop_steady_state_warmup_min_quarters": int(min_quarters),
+        "old_loop_steady_state_warmup_requested": int(max_quarters),
+        "old_loop_steady_state_warmup_window": int(window),
+        "old_loop_steady_state_warmup_tol": float(tol),
+        "old_loop_steady_state_warmup_completed": 0,
+        "old_loop_steady_state_warmup_converged": False,
+        "old_loop_steady_state_warmup_error": 0.0,
+        "old_loop_steady_state_warmup_exception": "",
+    }
+
+    if progress_callback is not None:
+        progress_callback("Preparing Old Loop steady state...", 0, int(max_quarters))
+    for idx in range(max_quarters):
+        try:
+            sim.step()
+        except Exception as exc:
+            report["old_loop_steady_state_warmup_exception"] = f"{type(exc).__name__}: {exc}"
+            break
+
+        samples.append(_old_loop_steady_state_sample(sim))
+        completed = idx + 1
+        report["old_loop_steady_state_warmup_completed"] = int(completed)
+        if progress_callback is not None and (completed == 1 or completed % 10 == 0):
+            progress_callback("Preparing Old Loop steady state...", int(completed), int(max_quarters))
+        if completed < max(min_quarters, window + 1):
+            continue
+
+        err = _old_loop_steady_state_error(samples[-1], samples[-1 - window])
+        report["old_loop_steady_state_warmup_error"] = float(err)
+        if err <= tol:
+            report["old_loop_steady_state_warmup_converged"] = True
+            if progress_callback is not None:
+                progress_callback("Old Loop steady state ready.", int(completed), int(completed))
+            break
+
+    if samples:
+        report["old_loop_steady_state_warmup_final_sample"] = dict(samples[-1])
+        if len(samples) > window:
+            report["old_loop_steady_state_warmup_error"] = float(
+                _old_loop_steady_state_error(samples[-1], samples[-1 - window])
+            )
+    return report
+
+
+def _build_old_to_new_startup_sim(
+    cfg: Dict[str, Any],
+    progress_callback: Callable[[str, int, int], None] | None = None,
+) -> tuple[NewLoop, int, Dict[str, Any]]:
+    """Create the visible-start sim for OldToNew after an optional hidden OldLoop settling period."""
     old_phase_cfg = _old_to_new_old_phase_cfg(cfg)
     sim = NewLoop(old_phase_cfg)
     _prepare_startup_sim(sim)
     mortgage_money_seed = _distribute_startup_mortgage_money_seed(sim)
     retained_cash_seed = _seed_old_loop_startup_retained_cash(sim)
+    steady_state_report = _run_old_loop_steady_state_warmup(sim, progress_callback=progress_callback)
     report = {
         "requested_quarters": 0,
         "completed_quarters": 0,
-        "completed_fully": True,
-        "error": "",
+        "completed_fully": bool(steady_state_report.get("old_loop_steady_state_warmup_exception", "") == ""),
+        "error": str(steady_state_report.get("old_loop_steady_state_warmup_exception", "")),
         "old_to_new_transition_quarters": _old_to_new_transition_quarters(cfg),
         "old_to_new_transition_mode": _old_to_new_transition_mode(cfg),
         "old_to_new_launch_newloop_policies": _old_to_new_launch_newloop_policies(cfg),
         "startup_mode": "old_to_new_visible_old_loop",
     }
+    report.update(steady_state_report)
     if mortgage_money_seed is not None:
         report["visible_start_mortgage_money_seed"] = dict(mortgage_money_seed)
     if retained_cash_seed is not None:
@@ -1528,11 +1628,14 @@ def _build_old_to_new_startup_sim(cfg: Dict[str, Any]) -> tuple[NewLoop, int, Di
     return sim, len(sim.history), report
 
 
-def _build_startup_sim(cfg: Dict[str, Any]) -> tuple[NewLoop, int, Dict[str, Any]]:
+def _build_startup_sim(
+    cfg: Dict[str, Any],
+    progress_callback: Callable[[str, int, int], None] | None = None,
+) -> tuple[NewLoop, int, Dict[str, Any]]:
     """Create a startup sim, optionally run hidden neutral warm-up quarters, and return the visible start index plus warm-up diagnostics."""
     effective_cfg = apply_economic_regime_overrides(cfg)
     if normalize_economic_regime_name(effective_cfg.get("parameters", {}).get("economic_regime", "NewLoop")) == "OldToNew":
-        return _build_old_to_new_startup_sim(effective_cfg)
+        return _build_old_to_new_startup_sim(effective_cfg, progress_callback=progress_callback)
     warmup_quarters = max(0, int(effective_cfg.get("parameters", {}).get("neutral_warmup_quarters", 0)))
     startup_cfg = _neutral_warmup_regime_cfg(effective_cfg) if warmup_quarters > 0 else copy.deepcopy(effective_cfg)
     sim = NewLoop(startup_cfg)
@@ -1613,11 +1716,13 @@ def run_simulation(
     )
 
     _notify_progress("Preparing startup...", 0)
-    startup_diag_sim, _, warmup_report = _build_startup_sim(effective_cfg)
-    startup_snapshot = _startup_solver_snapshot(startup_diag_sim)
-    startup_diag = _startup_diagnostics(startup_diag_sim, snapshot=startup_snapshot)
-
-    sim, visible_history_start, _ = _build_startup_sim(effective_cfg)
+    sim, visible_history_start, warmup_report = _build_startup_sim(
+        effective_cfg,
+        progress_callback=progress_callback,
+    )
+    startup_snapshot = _startup_solver_snapshot(sim)
+    startup_diag = _startup_diagnostics(sim, snapshot=startup_snapshot)
+    mortgage_money_seed_estimate = _startup_mortgage_money_seed_estimate(sim)
     before_sol = sim.solve_within_tick_population(allow_income_support_trigger=False)
     before = _population_distribution_snapshot(sim, sol=before_sol) if before_sol is not None else None
     quarter_diag_q0: Dict[str, Any] | None = None
@@ -1650,7 +1755,9 @@ def run_simulation(
     startup_diag_out["neutral_warmup_quarters_completed"] = int(warmup_report.get("completed_quarters", 0))
     startup_diag_out["neutral_warmup_completed_fully"] = bool(warmup_report.get("completed_fully", True))
     startup_diag_out["neutral_warmup_error"] = str(warmup_report.get("error", ""))
-    mortgage_money_seed_estimate = _startup_mortgage_money_seed_estimate(startup_diag_sim)
+    for key, value in warmup_report.items():
+        if str(key).startswith("old_loop_steady_state_warmup_"):
+            startup_diag_out[str(key)] = value
     if mortgage_money_seed_estimate is not None:
         startup_diag_out["startup_mortgage_money_seed_estimate"] = mortgage_money_seed_estimate
     if "visible_start_mortgage_money_seed" in warmup_report:

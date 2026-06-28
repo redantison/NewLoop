@@ -120,7 +120,12 @@ config = {
         "old_loop_startup_retained_cash_quarters": 1.50,
         "old_loop_profit_markup_sensitivity": 0.00,
         "old_loop_profit_markup_max": 0.25,
-        "old_loop_autonomous_growth_capex_rate_q": 0.005,
+        "old_loop_autonomous_growth_capex_rate_q": 0.0,
+        "old_loop_steady_state_warmup_enabled": True,
+        "old_loop_steady_state_warmup_min_quarters": 80,
+        "old_loop_steady_state_warmup_max_quarters": 720,
+        "old_loop_steady_state_warmup_window": 40,
+        "old_loop_steady_state_warmup_tol": 0.001,
         "old_loop_margin_floor_info": 0.20,
         "old_loop_margin_floor_phys": 0.12,
         # Capital -> productivity feedback (A_eff = clamp(A + kappa*(K_per_h/K_scale)))

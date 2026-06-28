@@ -355,6 +355,22 @@ def _render_startup_diagnostics(startup_diag: Dict[str, Any], baseline_calibrati
     if not startup_diag:
         return
 
+    if bool(startup_diag.get("old_loop_steady_state_warmup_enabled", False)):
+        prerun_quarters = int(startup_diag.get("old_loop_steady_state_warmup_completed", 0) or 0)
+        requested_quarters = int(startup_diag.get("old_loop_steady_state_warmup_requested", 0) or 0)
+        window = int(startup_diag.get("old_loop_steady_state_warmup_window", 0) or 0)
+        tol = float(startup_diag.get("old_loop_steady_state_warmup_tol", 0.0) or 0.0)
+        err = float(startup_diag.get("old_loop_steady_state_warmup_error", 0.0) or 0.0)
+        converged = bool(startup_diag.get("old_loop_steady_state_warmup_converged", False))
+        c0a, c0b, c0c = st.columns(3)
+        c0a.metric("Old Loop Prerun", f"{prerun_quarters} q")
+        c0b.metric("Prerun Status", "Converged" if converged else "Maxed / Incomplete")
+        c0c.metric("Max Drift", f"{100.0 * err:.3f}%", delta=f"limit {100.0 * tol:.3f}%")
+        st.caption(
+            f"Visible Q0 starts after hidden Old Loop prerun. Stabilization compares the tracked money reservoirs "
+            f"to {window} quarter(s) earlier and stops by {prerun_quarters}/{requested_quarters} quarters when max drift is within the threshold."
+        )
+
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("HH Below Buffer", f"{100.0 * float(startup_diag.get('share_below_runtime_buffer', 0.0)):.1f}%")
     c2.metric("Deposit / Target", f"{float(startup_diag.get('mean_deposit_to_target_ratio', 0.0)):.2f}x")
@@ -988,13 +1004,17 @@ def main() -> None:
             )
     should_run = run_clicked and has_selected_regime
     if should_run:
-        def _update_run_progress(_stage: str, completed: int, total: int) -> None:
+        def _update_run_progress(stage: str, completed: int, total: int) -> None:
             total_q = max(0, int(total))
             done_q = min(max(0, int(completed)), total_q)
             if total_q > 0:
-                progress_bar.progress(done_q / total_q)
+                fraction = done_q / total_q
             else:
-                progress_bar.progress(1.0 if done_q > 0 else 0.0)
+                fraction = 1.0 if done_q > 0 else 0.0
+            try:
+                progress_bar.progress(fraction, text=str(stage))
+            except TypeError:
+                progress_bar.progress(fraction)
 
         payload = _cached_run_payload(
             quarters,
@@ -1183,6 +1203,9 @@ def main() -> None:
         support_mode=plot_mode,
         ax=ax_capacity,
     )
+    capacity_util_ax = getattr(ax_capacity, "_newloop_secondary_axis", None)
+    if capacity_util_ax is not None:
+        capacity_util_ax.set_ylim(0.0, 1.0)
     plot_metric_lines(
         rows,
         [
@@ -1191,11 +1214,10 @@ def main() -> None:
         ],
         title="Sector Total Utilization",
         primary_ylabel="Total Utilization",
-        secondary_metrics=["sector_util_info", "sector_util_physical"],
-        secondary_ylabel="Total Utilization",
         support_mode=plot_mode,
         ax=ax_total_util,
     )
+    ax_total_util.set_ylim(0.0, 1.0)
     plot_metric_lines(
         rows,
         [
