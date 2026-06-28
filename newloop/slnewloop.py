@@ -953,9 +953,9 @@ def main() -> None:
     import matplotlib.pyplot as plt
     import streamlit as st
 
-    st.set_page_config(page_title="NewLoop 3.0", layout="wide")
+    st.set_page_config(page_title="NewLoop 3.1", layout="wide")
     _inject_selectbox_chevron_fallback(st)
-    st.title("NewLoop 3.0")
+    st.title("NewLoop 3.1")
     st.caption("Interactive simulation with parameterized runs and reusable plotting.")
 
     base_cfg = get_default_config()
