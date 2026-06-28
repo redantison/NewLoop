@@ -1205,6 +1205,7 @@ class NewLoop:
         rev_balance_nom: np.ndarray,
         mort_payment_nom: np.ndarray,
         renter_rent_q: np.ndarray,
+        owner_housing_payment_q: np.ndarray | None = None,
     ) -> Dict[str, np.ndarray]:
         regime = normalize_economic_regime_name(self.params.get("economic_regime", "NewLoop"))
         spend_excess_rate = max(0.0, min(1.0, float(self.params.get("hh_buffer_spend_excess_rate_q", 0.10))))
@@ -1219,6 +1220,11 @@ class NewLoop:
         rev_balance_arr = np.maximum(0.0, np.asarray(rev_balance_nom, dtype=float))
         mort_payment_arr = np.maximum(0.0, np.asarray(mort_payment_nom, dtype=float))
         renter_rent_arr = np.maximum(0.0, np.asarray(renter_rent_q, dtype=float))
+        owner_housing_arr = np.zeros_like(y_guess_arr, dtype=float)
+        if owner_housing_payment_q is not None:
+            raw_owner_housing = np.maximum(0.0, np.asarray(owner_housing_payment_q, dtype=float))
+            if raw_owner_housing.shape[0] == y_guess_arr.shape[0]:
+                owner_housing_arr = raw_owner_housing
 
         if regime == "OldLoop":
             hh = self.hh
@@ -1256,6 +1262,7 @@ class NewLoop:
                 core_nom
                 + debt_service_nom
                 + renter_rent_arr
+                + owner_housing_arr
             )
         else:
             y_real = y_guess_arr / max(p_cons, 1e-9)
@@ -1311,6 +1318,7 @@ class NewLoop:
         rev_interest_nom: np.ndarray,
         mort_payment_nom: np.ndarray,
         renter_rent_q: np.ndarray,
+        owner_housing_payment_q: np.ndarray | None = None,
         planned_equity_investment_nom: Optional[np.ndarray] = None,
     ) -> np.ndarray:
         y_guess_arr = np.asarray(y_guess, dtype=float)
@@ -1336,7 +1344,41 @@ class NewLoop:
             + np.maximum(0.0, np.asarray(mort_payment_nom, dtype=float))
             + np.maximum(0.0, np.asarray(renter_rent_q, dtype=float))
         )
+        if owner_housing_payment_q is not None:
+            owner_housing_arr = np.maximum(0.0, np.asarray(owner_housing_payment_q, dtype=float))
+            if owner_housing_arr.shape[0] == fixed_obligation_nom.shape[0]:
+                fixed_obligation_nom = fixed_obligation_nom + owner_housing_arr
         return np.maximum(0.0, avail_nom - (reserve_share * fixed_obligation_nom))
+
+    def _old_loop_owner_housing_payment_i(self, gross_income_q: np.ndarray) -> np.ndarray:
+        """Return OldLoop owner-housing carrying-cost payments for non-mortgagor owners."""
+        if self.hh is None or self.hh.n <= 0:
+            return np.asarray([], dtype=float)
+        n = int(self.hh.n)
+        if normalize_economic_regime_name(self.params.get("economic_regime", "NewLoop")) != "OldLoop":
+            return np.zeros(n, dtype=float)
+        if not bool(self.params.get("old_loop_owner_housing_payment_enabled", False)):
+            return np.zeros(n, dtype=float)
+
+        housing = np.maximum(0.0, _as_np(self.hh.housing_escrow, dtype=float))
+        mortgage = np.maximum(0.0, _as_np(self.hh.mortgage_loans, dtype=float))
+        rent = np.maximum(0.0, _as_np(self.hh.renter_rent_q, dtype=float))
+        if housing.shape[0] != n:
+            housing = np.zeros(n, dtype=float)
+        if mortgage.shape[0] != n:
+            mortgage = np.zeros(n, dtype=float)
+        if rent.shape[0] != n:
+            rent = np.zeros(n, dtype=float)
+
+        owner_mask = (housing > 1e-9) & (mortgage <= 1e-9) & (rent <= 1e-9)
+        annual_rate = max(0.0, float(self.params.get("old_loop_owner_housing_carry_rate_annual", 0.0)))
+        carry_payment = housing * (annual_rate / 4.0)
+        income = np.maximum(0.0, np.asarray(gross_income_q, dtype=float))
+        if income.shape[0] != n:
+            income = np.zeros(n, dtype=float)
+        income_cap = max(0.0, float(self.params.get("old_loop_owner_housing_payment_income_cap", 0.0)))
+        capped_payment = np.minimum(carry_payment, income_cap * income) if income_cap > 0.0 else carry_payment
+        return np.where(owner_mask, np.maximum(0.0, capped_payment), 0.0).astype(float, copy=False)
 
     def _apply_housing_value_price_deflator(self) -> None:
         if self.hh is None or self.hh.n <= 0:
@@ -2628,6 +2670,7 @@ class NewLoop:
                 rev_balance_nom=rev,
                 mort_payment_nom=mort_payment_sched_q,
                 renter_rent_q=renter_rent_q,
+                owner_housing_payment_q=self._old_loop_owner_housing_payment_i(y_guess),
             )
             c_real_core = _as_np(consumption_targets["c_real_core"], dtype=float)
             c_hh_nom_core = _as_np(consumption_targets["c_hh_nom_income"], dtype=float)
@@ -2646,6 +2689,7 @@ class NewLoop:
                 rev_interest_nom=rev_interest_pre,
                 mort_payment_nom=mort_payment_sched_q,
                 renter_rent_q=renter_rent_q,
+                owner_housing_payment_q=self._old_loop_owner_housing_payment_i(y_guess),
                 planned_equity_investment_nom=planned_equity_investment_nom,
             )
             c_hh_nom_budgeted = np.minimum(c_hh_nom_des, avail_nom)
@@ -2870,6 +2914,7 @@ class NewLoop:
             wage_scale = w_total / w0_sum
             wages_i = w0 * wage_scale
             div_i = equity_weights * float(div_house_total)
+            owner_housing_payment_i = self._old_loop_owner_housing_payment_i(wages_i + float(uis) + div_i)
 
             # Poverty-line consumption in real units is anchored to baseline average real consumption per household.
             # If baseline is not yet stored, initialize it from the current iteration (baseline quarter t==0).
@@ -2903,7 +2948,17 @@ class NewLoop:
             # Households service the full required mortgage payment plus revolving interest
             # in both indexed and non-indexed mortgage regimes so solver income matches
             # the actual cash-settlement path.
-            y_new = wages_i + float(uis) + div_i + vat_credit_i - rev_interest - mort_pay_req_i - renter_rent_q - income_tax_i
+            y_new = (
+                wages_i
+                + float(uis)
+                + div_i
+                + vat_credit_i
+                - rev_interest
+                - mort_pay_req_i
+                - renter_rent_q
+                - owner_housing_payment_i
+                - income_tax_i
+            )
             max_delta = float(np.max(np.abs(y_new - y_guess)))
 
             if max_delta < tol:
@@ -2996,6 +3051,7 @@ class NewLoop:
                     "mort_index_enable": bool(mort_index_enable),
                     "mort_pay_req_i": mort_pay_req_i,
                     "renter_rent_q": renter_rent_q,
+                    "owner_housing_payment_i": owner_housing_payment_i,
                     "mort_pay_ctr_i": mort_pay_ctr_i,
                     "mort_interest_due_i": mort_interest_due_i,
                     "mort_interest_paid_i": mort_interest_paid_i,
@@ -3065,6 +3121,7 @@ class NewLoop:
         rev_interest_i = _as_np(sol.get("rev_interest_i", []), dtype=float)
         mort_pay_req_i = _as_np(sol.get("mort_pay_req_i", []), dtype=float)
         renter_rent_q = _as_np(sol.get("renter_rent_q", []), dtype=float)
+        owner_housing_payment_i = _as_np(sol.get("owner_housing_payment_i", []), dtype=float)
         mort_pay_ctr_i = _as_np(sol.get("mort_pay_ctr_i", []), dtype=float)
         mort_interest_due_i = _as_np(sol.get("mort_interest_due_i", []), dtype=float)
         mort_interest_paid_i = _as_np(sol.get("mort_interest_paid_i", []), dtype=float)
@@ -3103,6 +3160,8 @@ class NewLoop:
             mort_pay_req_i = np.zeros(n, dtype=float)
         if renter_rent_q.shape[0] != n:
             renter_rent_q = np.zeros(n, dtype=float)
+        if owner_housing_payment_i.shape[0] != n:
+            owner_housing_payment_i = np.zeros(n, dtype=float)
         if mort_pay_ctr_i.shape[0] != n:
             mort_pay_ctr_i = np.zeros(n, dtype=float)
         if mort_interest_due_i.shape[0] != n:
@@ -3593,7 +3652,7 @@ class NewLoop:
             bank.add("equity", +trust_interest)
 
         # -------------------------------------------------
-        # 4a) Rent: renter households -> HOUSING reservoir
+        # 4a) Housing service payments: renter rent and OldLoop owner carrying costs -> sectors
         # -------------------------------------------------
         rent_total = float(np.sum(np.maximum(0.0, renter_rent_q)))
         if rent_total > 0.0:
@@ -3604,7 +3663,24 @@ class NewLoop:
             self.nodes["PS"].add("deposits", rent_to_fh)
             self.state["renter_rent_to_info_total"] = float(max(0.0, rent_to_fa))
             self.state["renter_rent_to_phys_total"] = float(max(0.0, rent_to_fh))
+        else:
+            self.state["renter_rent_to_info_total"] = 0.0
+            self.state["renter_rent_to_phys_total"] = 0.0
         self.state["renter_rent_total"] = float(max(0.0, rent_total))
+
+        owner_housing_payment_total = float(np.sum(np.maximum(0.0, owner_housing_payment_i)))
+        if owner_housing_payment_total > 0.0:
+            deposits[:] = deposits - owner_housing_payment_i
+            owner_pay_to_fa = owner_housing_payment_total * self._sector_hh_demand_share_fa()
+            owner_pay_to_fh = owner_housing_payment_total - owner_pay_to_fa
+            self.nodes["IS"].add("deposits", owner_pay_to_fa)
+            self.nodes["PS"].add("deposits", owner_pay_to_fh)
+            self.state["owner_housing_payment_to_info_total"] = float(max(0.0, owner_pay_to_fa))
+            self.state["owner_housing_payment_to_phys_total"] = float(max(0.0, owner_pay_to_fh))
+        else:
+            self.state["owner_housing_payment_to_info_total"] = 0.0
+            self.state["owner_housing_payment_to_phys_total"] = 0.0
+        self.state["owner_housing_payment_total"] = float(max(0.0, owner_housing_payment_total))
 
         # -------------------------------------------------
         # 5) Income tax
@@ -4569,8 +4645,8 @@ class NewLoop:
                     frac = float(self.nodes[holder].get(key, 0.0)) / so
                     return max(0.0, min(1.0, frac))
 
-                fa_equity_proxy = self._firm_balance_sheet_equity_proxy("IS", P_wealth)
-                fh_equity_proxy = self._firm_balance_sheet_equity_proxy("PS", P_wealth)
+                fa_equity_proxy = self._firm_broad_equity_proxy("IS", P_wealth)
+                fh_equity_proxy = self._firm_broad_equity_proxy("PS", P_wealth)
                 bank_equity_proxy = self._firm_balance_sheet_equity_proxy("BANK", P_wealth)
 
                 hh_equity_total = (
@@ -4692,8 +4768,8 @@ class NewLoop:
                 P_now = 1e-9
 
             # Trust value proxy (nominal): FUND deposits + FUND equity claims - FUND debt.
-            fa_equity_proxy_hist = self._firm_balance_sheet_equity_proxy("IS", P_now)
-            fh_equity_proxy_hist = self._firm_balance_sheet_equity_proxy("PS", P_now)
+            fa_equity_proxy_hist = self._firm_broad_equity_proxy("IS", P_now)
+            fh_equity_proxy_hist = self._firm_broad_equity_proxy("PS", P_now)
             bank_equity_proxy_hist = self._firm_balance_sheet_equity_proxy("BANK", P_now)
             fa_broad_equity_proxy_hist = self._firm_broad_equity_proxy("IS", P_now)
             fh_broad_equity_proxy_hist = self._firm_broad_equity_proxy("PS", P_now)
@@ -4804,6 +4880,9 @@ class NewLoop:
             hh_mortgage_req_total = float(np.sum(np.maximum(0.0, _as_np(solp.get("mort_pay_req_i", []), dtype=float))))
             hh_rev_interest_total = float(np.sum(np.maximum(0.0, _as_np(solp.get("rev_interest_i", []), dtype=float))))
             hh_rent_total = float(np.sum(np.maximum(0.0, _as_np(solp.get("renter_rent_q", []), dtype=float))))
+            hh_owner_housing_payment_total = float(
+                np.sum(np.maximum(0.0, _as_np(solp.get("owner_housing_payment_i", []), dtype=float)))
+            )
             hh_income_tax_cash_total = float(np.sum(np.maximum(0.0, _as_np(solp.get("income_tax_i", []), dtype=float))))
             mort_req_i_row = np.maximum(0.0, _as_np(solp.get("mort_pay_req_i", []), dtype=float))
             mort_interest_due_i_row = np.maximum(0.0, _as_np(solp.get("mort_interest_due_i", []), dtype=float))
@@ -4980,6 +5059,7 @@ class NewLoop:
                 hh_actual_mortgage_payment_per_h=mort_actual_payment_total / float(self.hh.n),
                 hh_rev_interest_per_h=hh_rev_interest_total / float(self.hh.n),
                 hh_rent_per_h=hh_rent_total / float(self.hh.n),
+                hh_owner_housing_payment_per_h=hh_owner_housing_payment_total / float(self.hh.n),
                 hh_income_tax_cash_per_h=hh_income_tax_cash_total / float(self.hh.n),
                 hh_mortgage_bridge_to_revolving_per_h=float(self.state.get("mort_revolving_bridge_total", 0.0)) / float(self.hh.n),
                 hh_overdraft_to_revolving_per_h=float(self.state.get("hh_overdraft_total", 0.0)) / float(self.hh.n),

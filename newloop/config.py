@@ -232,6 +232,9 @@ config = {
         "old_loop_housing_headroom_share": 0.12,
         "old_loop_housing_headroom_floor_q": 25.0,
         "old_loop_core_nonhousing_floor_q": 150.0,
+        "old_loop_owner_housing_payment_enabled": True,
+        "old_loop_owner_housing_carry_rate_annual": 0.04,
+        "old_loop_owner_housing_payment_income_cap": 0.20,
         "old_loop_household_money_issuance_rate_annual": 0.0,
         "old_loop_core_nonhousing_kappa_by_income_pct": (
             (20.0, 0.72),

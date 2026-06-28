@@ -112,6 +112,7 @@ METRIC_LABELS: Dict[str, str] = {
     "hh_actual_mortgage_payment_per_h": "Actual Mortgage Payment / Household",
     "hh_rev_interest_per_h": "Revolving Interest / Household",
     "hh_rent_per_h": "Rent / Household",
+    "hh_owner_housing_payment_per_h": "Owner Housing Payment / Household",
     "hh_income_tax_cash_per_h": "Income Tax Cash / Household",
     "hh_mortgage_bridge_to_revolving_per_h": "Mortgage Bridge To Revolving / Household",
     "hh_overdraft_to_revolving_per_h": "Overdraft To Revolving / Household",
@@ -643,17 +644,19 @@ def plot_household_shortfall_sources(rows: Sequence[Mapping[str, Any]], axes: Se
     mort_actual = np.asarray([float(r.get("hh_actual_mortgage_payment_per_h", 0.0)) for r in rows], dtype=float)
     rev_interest = np.asarray([float(r.get("hh_rev_interest_per_h", 0.0)) for r in rows], dtype=float)
     rent = np.asarray([float(r.get("hh_rent_per_h", 0.0)) for r in rows], dtype=float)
+    owner_housing = np.asarray([float(r.get("hh_owner_housing_payment_per_h", 0.0)) for r in rows], dtype=float)
     tax = np.asarray([float(r.get("hh_income_tax_cash_per_h", 0.0)) for r in rows], dtype=float)
 
-    left_layers = [realized_cons, mort_actual, rev_interest, rent, tax]
+    left_layers = [realized_cons, mort_actual, rev_interest, rent, owner_housing, tax]
     left_labels = [
         "Realized Consumption",
         "Actual Mortgage Payment",
         "Revolving Interest",
         "Rent",
+        "Owner Housing Payment",
         "Income Tax",
     ]
-    left_colors = ["#4daf4a", "#377eb8", "#984ea3", "#ff7f00", "#e41a1c"]
+    left_colors = ["#4daf4a", "#377eb8", "#984ea3", "#ff7f00", "#a65628", "#e41a1c"]
     ax_left.stackplot(t, *left_layers, labels=left_labels, colors=left_colors, alpha=0.72)
     ax_left.plot(t, inflow, color="black", linewidth=2.2, label="Cash Inflow")
     ax_left.plot(t, mort_req, color="#08519c", linewidth=1.8, linestyle="--", label="Required Mortgage Payment")
@@ -673,7 +676,13 @@ def plot_household_shortfall_sources(rows: Sequence[Mapping[str, Any]], axes: Se
         np.asarray([float(r.get("hh_mortgage_unpaid_shortfall_per_h", 0.0)) for r in rows], dtype=float)
     )
     deposit_drawdown = _suppress_near_zero(
-        np.maximum(0.0, (realized_cons + mort_actual + rev_interest + rent + tax) - inflow - mort_bridge - overdraft)
+        np.maximum(
+            0.0,
+            (realized_cons + mort_actual + rev_interest + rent + owner_housing + tax)
+            - inflow
+            - mort_bridge
+            - overdraft,
+        )
     )
 
     right_layers = [deposit_drawdown, mort_bridge, overdraft, unpaid_mort]

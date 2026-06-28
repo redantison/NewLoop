@@ -187,8 +187,8 @@ def _household_wealth_snapshot(sim: NewLoop, *, comprehensive: bool = COMPREHENS
             frac = float(sim.nodes[holder].get(key, 0.0)) / shares_out
             return max(0.0, min(1.0, frac))
 
-        fa_equity_proxy = sim._firm_balance_sheet_equity_proxy("IS", price_level)
-        fh_equity_proxy = sim._firm_balance_sheet_equity_proxy("PS", price_level)
+        fa_equity_proxy = sim._firm_broad_equity_proxy("IS", price_level)
+        fh_equity_proxy = sim._firm_broad_equity_proxy("PS", price_level)
         bank_equity_proxy = sim._firm_balance_sheet_equity_proxy("BANK", price_level)
 
         hh_equity_total = (

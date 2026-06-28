@@ -223,6 +223,7 @@ class TickResult:
     hh_actual_mortgage_payment_per_h: float
     hh_rev_interest_per_h: float
     hh_rent_per_h: float
+    hh_owner_housing_payment_per_h: float
     hh_income_tax_cash_per_h: float
     hh_mortgage_bridge_to_revolving_per_h: float
     hh_overdraft_to_revolving_per_h: float
