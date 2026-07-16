@@ -1,0 +1,15 @@
+name: perpetual
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - python=3.12
+  - numpy=2.1
+  - pandas=2.2
+  - matplotlib=3.9
+  - scipy=1.14
+  - python-dateutil=2.9
+  - requests=2.32
+  - conda-forge::streamlit=1.52
+  - conda-forge::plotly=6.5
+  - pip
