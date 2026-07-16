@@ -14,8 +14,8 @@ streamlit run app.py
 When running Python checks in the `perpetual` environment, prefer the repo-local wrapper so bytecode goes to `/tmp` instead of `__pycache__` directories in the source tree:
 
 ```bash
-bash /Users/rogerison/Bridge/Code/NewLoop/scripts/perpetual-python -B -m unittest
-bash /Users/rogerison/Bridge/Code/NewLoop/scripts/perpetual-python -B -m py_compile newloop/engine.py
+bash scripts/perpetual-python -B -m unittest
+bash scripts/perpetual-python -B -m py_compile newloop/engine.py
 ```
 
 ## Deploy on Streamlit Community Cloud
