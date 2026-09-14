@@ -41,6 +41,7 @@ class AccountingRegressions(unittest.TestCase):
     def test_equity_buyer_receives_new_claim_and_issuer_ownership(self):
         cfg = config()
         cfg['parameters']['hh_equity_issue_price_smoothing_q'] = 1.0
+        cfg['parameters']['equity_issuance_needs_only'] = False
         sim = NewLoop(cfg)
         sim.solve_within_tick_population(allow_income_support_trigger=False)
         i = int(np.flatnonzero(sim.hh.equity_weight_i == 0)[0])

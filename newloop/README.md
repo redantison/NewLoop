@@ -20,6 +20,54 @@ bash scripts/perpetual-python -B -m py_compile newloop/engine.py
 
 ## Accounting conventions
 
+### Equity issuance policy
+
+Under **Price & Capital**, **Limit Equity Issuance to Financing Needs** defaults
+to on and applies during both the OldLoop pre-run and the visible experiment.
+Turn it off to reproduce unrestricted household subscriptions and the previous
+dividend policy.
+
+With the limit on, each nonbank sector offers equity only for a one-quarter
+capital funding gap. Its capital target is maintenance plus expansion under the
+existing demand rule, including queued investment and capped by installation
+capacity. Existing corporate deposits, including cash labelled as a CAPEX
+reserve, cover that target first. The configured operating cash buffer is
+protected; subscriptions cannot exceed the capital target. Dividends may only
+use cash left after current CAPEX and this capital target, so payouts cannot
+create a gap to be filled by replacement equity.
+
+Targets use opening capital stocks and lagged demand. Household offers retain
+the configured sector split (30% IS / 70% PS by default); each issuer rations
+buyers proportionally, without redirecting rejected offers to the other sector.
+Only accepted offers reserve household cash before consumption. Settlement
+rechecks the gap after operating cash flows and may accept less. Rejected cash
+is never debited; cash released at settlement becomes available next quarter.
+Subscriptions arrive at quarter end and fund subsequent investment. Shares
+continue to use the existing issue-price and ownership rules. This is a capital
+financing rule, without a new profitability test or share-trading mechanism.
+The separate social-share issuance to FUND remains part of NewLoopPolicies;
+the toggle governs cash-financed subscriptions by households.
+
+**Selected Metrics** and quarterly data include the household equity purchase
+budget, unfilled purchase budget, accepted investment, and equity funding gap.
+The gap is measured just before subscriptions and capped by the opening offer.
+An unfilled purchase budget is a flow diagnostic, not an additional cash stock:
+money rejected during planning can already support consumption. Monetary
+diagnostics follow the Real/Nominal display setting.
+
+Compare both policies with independent accounting checks:
+
+```bash
+bash scripts/perpetual-python -B scripts/audit_accounting.py --limit-equity-issuance --output /tmp/newloop-equity-limited
+bash scripts/perpetual-python -B scripts/audit_accounting.py --no-limit-equity-issuance --output /tmp/newloop-equity-unrestricted
+```
+
+The audit saves the full warmup history and the original convergence result.
+When the policies produce different pre-run durations, their visible runs also
+start from different household distributions.
+
+### Cash, earnings, and ownership
+
 Household ownership is recorded separately for IS, PS, and BANK. New equity
 purchases credit the paying households, and trust purchases pay the actual
 sellers. Dividends use the previous quarter's ownership; new shares participate
@@ -69,6 +117,15 @@ startup settings. It checks cash movements, earnings, changes in equity, bank
 balance sheets, and interest claims, and saves raw rows and diagnostics. Inspect
 the startup convergence flags separately: accounting consistency does not imply
 that the economy has reached a steady state.
+
+### Deferred issue: mortgage pre-run convergence
+
+The 2026-09-14 default MortgagePolicy audits reached the 720-quarter pre-run cap
+with the equity financing limit both on and off. Maximum drift over 40 quarters
+was 5.10% with the limit and 4.92% without it, against a 0.1% threshold. Accounting
+checks passed in both cases. The cause of this continued drift remains unresolved
+and mortgage-case dynamics are deferred for a separate investigation. Reproduce
+with the two audit commands above; inspect the MortgagePolicy startup diagnostics.
 
 ## Deploy on Streamlit Community Cloud
 

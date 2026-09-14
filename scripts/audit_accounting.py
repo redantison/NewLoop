@@ -4,6 +4,7 @@ Usage: python scripts/audit_accounting.py --output /path/to/results --quarters 1
 The output includes raw nominal rows, invariant histories, and a summary.
 """
 import argparse
+from dataclasses import asdict
 import json
 import sys
 from pathlib import Path
@@ -21,6 +22,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--quarters', type=int, default=120)
+    parser.add_argument('--limit-equity-issuance', action=argparse.BooleanOptionalAction,
+                        default=None, help='Override the financing-needs issuance toggle.')
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     original_post = NewLoop.post_tick_population
@@ -31,6 +34,7 @@ def main():
         before_cash = {issuer: sim.nodes[issuer].get('deposits') for issuer in ('IS', 'PS')}
         before_equity = {issuer: sim._firm_broad_equity_proxy(issuer, price) for issuer in ('IS', 'PS')}
         before_bank = sim.nodes['BANK'].get('equity')
+        buffers = {issuer: sim._equity_operating_buffer_nom(issuer) for issuer in ('IS', 'PS')}
         result = original_post(sim, sol)
         record = dict(internal_t=sim.state['t'])
         for issuer, suffix, investment in [('IS', 'fa', 'info'), ('PS', 'fh', 'phys')]:
@@ -41,6 +45,14 @@ def main():
                 operating_cash - sol['div_' + suffix + '_total'] - sol['capex_' + suffix + '_nom'] + investment_cash)
             record[issuer + '_profit_gap'] = sol['p_' + suffix] - (operating_cash - sol['depreciation_' + suffix])
             record[issuer + '_equity_gap'] = sim._firm_broad_equity_proxy(issuer, price) - before_equity[issuer] - (sol['retained_' + suffix] + investment_cash)
+            if sim.params.get('equity_issuance_needs_only', False):
+                target = sol['equity_funding_targets_nom'][issuer]
+                before_dividend = before_cash[issuer] + operating_cash - sol['capex_' + suffix + '_nom']
+                needed = max(0.0, target - max(0.0, before_dividend - buffers[issuer]))
+                # Capital cannot be distributed and then replaced by subscriptions.
+                record[issuer + '_issuance_cap_gap'] = max(0.0, investment_cash - needed)
+                record[issuer + '_dividend_cap_gap'] = max(0.0, sol['div_' + suffix + '_total']
+                    - max(0.0, before_dividend - target - buffers[issuer]))
         record['bank_earnings_gap'] = sim.nodes['BANK'].get('equity') - before_bank - sol['retained_bk']
         record['housing_revenue_gap'] = (sol['housing_revenue_fa'] + sol['housing_revenue_fh']
             - sim.state['renter_rent_total'] - sim.state['owner_housing_payment_total'])
@@ -60,12 +72,19 @@ def main():
             print('START', mode, flush=True)
             records = []
             cfg = get_default_config()
+            if args.limit_equity_issuance is not None:
+                cfg['parameters']['equity_issuance_needs_only'] = args.limit_equity_issuance
             cfg['parameters'].update(economic_regime='OldToNew', hard_assert_sfc=True,
                 old_to_new_transition_mode={'OldLoop': 'StayOldLoop', 'MortgagePolicy': 'StayOldLoop'}.get(mode, mode))
             _apply_loop_mode_mortgage_defaults(cfg['parameters'], mode != 'MortgagePolicy')
             run = run_simulation(args.quarters, cfg)
             invariants = run.sim.inv_history
             summary[mode] = {
+                'equity_issuance_needs_only': cfg['parameters']['equity_issuance_needs_only'],
+                'households': run.sim.hh.n,
+                'prerun_quarters': run.startup_diagnostics['old_loop_steady_state_warmup_completed'],
+                'prerun_converged': run.startup_diagnostics['old_loop_steady_state_warmup_converged'],
+                'prerun_max_drift': run.startup_diagnostics['old_loop_steady_state_warmup_error'],
                 'visible_quarters': len(run.rows),
                 'settlements_including_warmup': len(records),
                 'max_gaps': {key: max(abs(row[key]) for row in records) for key in records[0] if key.endswith('_gap')},
@@ -76,8 +95,12 @@ def main():
                 'final_corporate_equity_nominal_per_h': run.rows[-1]['corporate_eq_total_per_h'],
                 'final_corporate_equity_real_per_h': run.rows[-1]['corporate_eq_total_per_h'] / run.rows[-1]['price_level'],
                 'max_unpaid_interest_per_h': max(row['hh_interest_arrears_per_h'] for row in run.rows),
+                'visible_equity_subscriptions_nominal_per_h': sum(row['hh_equity_investment_per_h'] for row in run.rows),
+                'all_equity_subscriptions_nominal_per_h': sum(row.hh_equity_investment_per_h for row in run.sim.history),
+                'final_shares_outstanding': {issuer: run.sim.nodes[issuer].get('shares_outstanding') for issuer in ('IS', 'PS')},
             }
             (args.output / (mode + '.json')).write_text(json.dumps(dict(rows=run.rows,
+                history=[asdict(row) for row in run.sim.history],
                 startup=run.startup_diagnostics, settlements=records, invariants=invariants,
                 population_distributions=run.population_distributions), indent=2, default=lambda x: x.tolist() if isinstance(x, np.ndarray) else str(x)))
             (args.output / 'summary.json').write_text(json.dumps(summary, indent=2))

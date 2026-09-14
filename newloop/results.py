@@ -1538,6 +1538,13 @@ def _run_old_loop_steady_state_warmup(
     progress_callback: Callable[[str, int, int], None] | None = None,
 ) -> Dict[str, Any]:
     """Run hidden OldLoop quarters until the main money reservoirs are nearly steady."""
+    # TODO (mortgage convergence, 2026-09-14): Default MortgagePolicy runs still
+    # reach the 720-quarter cap with equity_issuance_needs_only either on or off.
+    # Maximum 40-quarter drift was 5.10% / 4.92%, above the 0.1% threshold, even
+    # though accounting checks passed. The ordinary baseline converged at Q525
+    # with the limit on. Mortgage-case dynamics need a separate investigation;
+    # the cause remains unresolved. See README's deferred mortgage issue and
+    # scripts/audit_accounting.py to reproduce both issuance settings.
     params = sim.params
     if not bool(params.get("old_loop_steady_state_warmup_enabled", False)):
         return {

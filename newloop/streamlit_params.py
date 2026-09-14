@@ -549,6 +549,7 @@ PARAMETER_CONTROLS: tuple[ParamControl, ...] = (
         help_text="Experimental consumption-priority control. Reserves this share of current revolving interest, mortgage payment, and rent from the household consumption budget.",
     ),
     ParamControl(("hh_equity_investment_enabled",), "HH Equity Investment Enabled", "Price & Capital", "bool", help_text="Experimental savings route: households invest part of excess deposits in newly issued IS/PS equity earmarked as non-distributable CAPEX reserve."),
+    ParamControl(("equity_issuance_needs_only",), "Limit Equity Issuance to Financing Needs", "Price & Capital", "bool", help_text="Limit new shares to maintenance and planned expansion funding that existing corporate cash cannot cover. Protect that capital budget before dividends. Off restores unrestricted subscriptions. Applies during prerun and visible quarters."),
     ParamControl(("hh_equity_investment_pre_consumption",), "HH Equity Investment Before Consumption", "Price & Capital", "bool", help_text="When enabled, planned HH equity investment is reserved before the consumption budget is allocated."),
     ParamControl(("hh_equity_investment_excess_rate_q",), "HH Equity Investment Excess Rate (q)", "Price & Capital", "float", 0.0, 1.0, 0.01),
     ParamControl(("hh_equity_investment_info_share",), "HH Equity Investment Info Share", "Price & Capital", "float", 0.0, 1.0, 0.01),

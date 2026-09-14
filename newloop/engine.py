@@ -1214,6 +1214,7 @@ class NewLoop:
         mort_payment_nom: np.ndarray,
         renter_rent_q: np.ndarray,
         owner_housing_payment_q: np.ndarray | None = None,
+        equity_funding_limits: Dict[str, float] | None = None,
     ) -> Dict[str, np.ndarray]:
         regime = normalize_economic_regime_name(self.params.get("economic_regime", "NewLoop"))
         spend_excess_rate = max(0.0, min(1.0, float(self.params.get("hh_buffer_spend_excess_rate_q", 0.10))))
@@ -1294,6 +1295,16 @@ class NewLoop:
                     invest_rate * np.maximum(0.0, dep0_arr - target_buffer_nom),
                 )
 
+        equity_offers_nom = planned_equity_investment_nom.copy()
+        planned_equity_info_nom = np.zeros_like(dep0_arr, dtype=float)
+        if bool(self.params.get("equity_issuance_needs_only", False)):
+            if equity_funding_limits is None:
+                targets = self._equity_funding_targets_nom(float(self.state.get("price_level", 1.0)))
+                equity_funding_limits = self._equity_funding_limits_nom(targets)
+            allocation = self._allocate_equity_offers(equity_offers_nom, equity_funding_limits)
+            planned_equity_info_nom = allocation["IS"]
+            planned_equity_investment_nom = allocation["IS"] + allocation["PS"]
+
         consumption_deposits_nom = np.maximum(0.0, dep0_arr - planned_equity_investment_nom)
         buffer_gap_nom = consumption_deposits_nom - target_buffer_nom
         c_hh_nom_des = (
@@ -1315,6 +1326,8 @@ class NewLoop:
             "buffer_gap_nom": np.asarray(buffer_gap_nom, dtype=float),
             "c_hh_nom_des": np.asarray(c_hh_nom_des, dtype=float),
             "planned_equity_investment_nom": np.asarray(planned_equity_investment_nom, dtype=float),
+            "planned_equity_info_nom": planned_equity_info_nom,
+            "equity_offers_nom": equity_offers_nom,
             "perm_income_nom": np.asarray(y_perm_nom, dtype=float),
         }
 
@@ -1640,7 +1653,14 @@ class NewLoop:
         target_buffer_nom: np.ndarray,
         price_level: float,
         planned_investment_nom: Optional[np.ndarray] = None,
+        planned_info_nom: Optional[np.ndarray] = None,
+        funding_targets: Optional[Dict[str, float]] = None,
+        opening_funding_limits: Optional[Dict[str, float]] = None,
+        offered_total: Optional[float] = None,
     ) -> None:
+        self.state["hh_equity_offered_total"] = 0.0
+        self.state["hh_equity_unfilled_total"] = 0.0
+        self.state["equity_funding_gap_total"] = 0.0
         self.state["hh_equity_investment_total"] = 0.0
         self.state["hh_equity_investment_info_total"] = 0.0
         self.state["hh_equity_investment_phys_total"] = 0.0
@@ -1665,7 +1685,41 @@ class NewLoop:
         else:
             excess_deposits = np.maximum(0.0, deposits - np.maximum(0.0, target_buffer_nom))
             investment_i = np.minimum(np.maximum(0.0, deposits), invest_rate * excess_deposits)
+        if bool(self.params.get("equity_issuance_needs_only", False)):
+            targets = funding_targets if funding_targets is not None else self._equity_funding_targets_nom(price_level)
+            limits = self._equity_funding_limits_nom(targets)
+            if opening_funding_limits is not None:
+                limits = {issuer: min(limit, opening_funding_limits[issuer]) for issuer, limit in limits.items()}
+            if (planned_info_nom is not None and planned_investment_nom is not None
+                    and bool(self.params.get("hh_equity_investment_pre_consumption", False))):
+                planned_total = np.maximum(0.0, np.asarray(planned_investment_nom, dtype=float))
+                info_fraction = np.divide(np.maximum(0.0, planned_info_nom), planned_total,
+                    out=np.zeros_like(planned_total), where=planned_total > 1e-12)
+                allocations = {"IS": investment_i * np.clip(info_fraction, 0.0, 1.0),
+                               "PS": investment_i * (1.0 - np.clip(info_fraction, 0.0, 1.0))}
+                for issuer, allocation in allocations.items():
+                    total = float(allocation.sum())
+                    if total > 1e-12:
+                        allocations[issuer] = allocation * min(1.0, limits[issuer] / total)
+            else:
+                allocations = self._allocate_equity_offers(investment_i, limits)
+            total_offered = float(np.sum(investment_i)) if offered_total is None else max(0.0, float(offered_total))
+            investment_i = allocations["IS"] + allocations["PS"]
+            self.state["hh_equity_offered_total"] = total_offered
+            self.state["hh_equity_unfilled_total"] = max(0.0, total_offered - float(investment_i.sum()))
+            self.state["equity_funding_gap_total"] = float(sum(limits.values()))
+            deposits[:] = deposits - investment_i
+            for issuer, suffix in (("IS", "info"), ("PS", "phys")):
+                allocation = allocations[issuer]
+                amount = float(allocation.sum())
+                if amount > 1e-12:
+                    self._issue_hh_equity_for_capex_reserve(issuer, amount, price_level, allocation / amount)
+                self.state[f"hh_equity_investment_{suffix}_total"] = amount
+            self.state["hh_equity_investment_total"] = float(investment_i.sum())
+            return
+
         total_investment = float(np.sum(np.maximum(0.0, investment_i)))
+        self.state["hh_equity_offered_total"] = total_investment
         if total_investment <= 1e-12:
             return
 
@@ -1686,9 +1740,6 @@ class NewLoop:
         half_sat = max(1e-9, float(self.params.get("sector_capex_gap_half_sat", 0.15)))
         share_min = max(0.0, min(1.0, float(self.params.get("sector_capex_share_min", 0.0))))
         share_max = max(share_min, min(1.0, float(self.params.get("sector_capex_share_max", share_min))))
-        gap_close = max(0.0, min(1.0, float(self.params.get("sector_capex_gap_close_rate", 0.25))))
-        growth_cap_rate = max(0.0, float(self.params.get("sector_capex_growth_cap_rate_q", 0.08)))
-        capacity_per_k = self._sector_capacity_per_k(firm_id)
 
         if firm_id == "IS":
             prev_capacity = max(0.0, float(self.state.get("sector_capacity_info_real_prev", 0.0)))
@@ -1736,6 +1787,23 @@ class NewLoop:
             expansion_cash_nom = max(0.0, prev_free_cash - maintenance_budget_nom)
             capex_budget_nom = maintenance_budget_nom + (expansion_cash_nom * capex_share) + capex_reserve_budget_nom
 
+        return float(max(0.0, min(capex_budget_nom, self._sector_capex_need_nom(firm_id, p_now))))
+
+    def _sector_capex_need_nom(self, firm_id: str, price_level: float) -> float:
+        """Maintenance plus desired expansion, before the financing constraint."""
+        if self._capex_and_depreciation_disabled():
+            return 0.0
+        p_now = max(1e-9, float(price_level))
+        suffix = "info" if firm_id == "IS" else "phys"
+        capacity_key = "sector_capacity_info_real_prev" if firm_id == "IS" else "sector_capacity_phys_real_prev"
+        prev_capacity = max(0.0, float(self.state.get(capacity_key, 0.0)))
+        prev_unmet = max(0.0, float(self.state.get(
+            f"sector_unmet_{suffix}_real_sm_prev", self.state.get(f"sector_unmet_{suffix}_real_prev", 0.0))))
+        maintenance_nom = self._sector_maintenance_capex_nom(firm_id, p_now)
+        capacity_per_k = self._sector_capacity_per_k(firm_id)
+        gap_close = max(0.0, min(1.0, float(self.params.get("sector_capex_gap_close_rate", 0.25))))
+        growth_cap_rate = max(0.0, float(self.params.get("sector_capex_growth_cap_rate_q", 0.08)))
+        regime = normalize_economic_regime_name(self.params.get("economic_regime", "NewLoop"))
         if capacity_per_k <= 1e-12:
             expand_need_nom = 0.0
             growth_cap_nom = maintenance_nom
@@ -1750,8 +1818,43 @@ class NewLoop:
                 expand_need_nom = max(expand_need_nom, normal_growth_nom)
             growth_cap_nom = maintenance_nom + (growth_cap_rate * max(0.0, prev_capacity) * (p_now / capacity_per_k))
 
-        capex_need_nom = maintenance_nom + expand_need_nom
-        return float(max(0.0, min(capex_budget_nom, capex_need_nom, growth_cap_nom)))
+        return float(max(0.0, min(maintenance_nom + expand_need_nom, growth_cap_nom)))
+
+    def _equity_funding_targets_nom(self, price_level: float) -> Dict[str, float]:
+        """One-quarter capital targets using opening stocks and lagged demand.
+
+        Existing queued investment shares the same installation limit. An operating
+        cash buffer is protected, but never itself financed by new equity.
+        """
+        targets = {}
+        for issuer, suffix in (("IS", "info"), ("PS", "phys")):
+            need = self._sector_capex_need_nom(issuer, price_level)
+            queued = max(0.0, float(self.state.get(f"sector_capex_queue_{suffix}_nom", 0.0)))
+            install = self._sector_installation_limit_nom(issuer, price_level, self._sector_capacity_real(issuer))
+            targets[issuer] = min(need + queued, install) if not self._capex_and_depreciation_disabled() else 0.0
+        return targets
+
+    def _equity_operating_buffer_nom(self, issuer: str) -> float:
+        return max(0.0, float(self.params.get("sector_dividend_cash_buffer_q", 0.0))) * max(
+            0.0, float(self.nodes[issuer].memo.get("revenue_prev", 0.0)))
+
+    def _equity_funding_limits_nom(self, targets: Dict[str, float]) -> Dict[str, float]:
+        # Count every existing corporate deposit, including subscribed CAPEX cash.
+        # A buffer may reduce usable internal cash, but offers never exceed CAPEX.
+        return {issuer: max(0.0, target - max(0.0,
+            self.nodes[issuer].get("deposits", 0.0) - self._equity_operating_buffer_nom(issuer)))
+            for issuer, target in targets.items()}
+
+    def _allocate_equity_offers(self, offers: np.ndarray, limits: Dict[str, float]) -> Dict[str, np.ndarray]:
+        """Keep the chosen sector split; ration each issuer proportionally."""
+        info_share = max(0.0, min(1.0, float(self.params.get("hh_equity_investment_info_share", self._sector_hh_demand_share_fa()))))
+        allocated = {}
+        for issuer, share in (("IS", info_share), ("PS", 1.0 - info_share)):
+            proposed = np.maximum(0.0, offers) * share
+            total = float(proposed.sum())
+            limit = max(0.0, float(limits.get(issuer, 0.0)))
+            allocated[issuer] = proposed * min(1.0, limit / total) if total > 1e-12 else np.zeros_like(proposed)
+        return allocated
 
     def _sector_installation_limit_nom(self, firm_id: str, price_level: float, capacity_real: float) -> float:
         if self._capex_and_depreciation_disabled():
@@ -2700,6 +2803,10 @@ class NewLoop:
         div_house_total_est = 0.0
         div_i_est = np.zeros(hh.n)
 
+        issuance_limited = bool(self.params.get("equity_issuance_needs_only", False))
+        funding_targets = self._equity_funding_targets_nom(P) if issuance_limited else {}
+        opening_funding_limits = self._equity_funding_limits_nom(funding_targets) if issuance_limited else {}
+
         max_delta = float("inf")
         for iter_idx in range(1, max_iter + 1):
             # 1) Household consumption (nominal), vectorized
@@ -2717,6 +2824,7 @@ class NewLoop:
                 mort_payment_nom=mort_payment_sched_q,
                 renter_rent_q=renter_rent_q,
                 owner_housing_payment_q=self._old_loop_owner_housing_payment_i(y_guess),
+                equity_funding_limits=opening_funding_limits if issuance_limited else None,
             )
             c_real_core = _as_np(consumption_targets["c_real_core"], dtype=float)
             c_hh_nom_core = _as_np(consumption_targets["c_hh_nom_income"], dtype=float)
@@ -2918,8 +3026,15 @@ class NewLoop:
 
             div_cash_buffer_fa = div_cash_buffer_share * rev_fa
             div_cash_buffer_fh = div_cash_buffer_share * rev_fh
+            funding_dividend_room = {}
+            for issuer, cash_profit, capex in (("IS", cash_profit_fa, capex_fa_nom), ("PS", cash_profit_fh, capex_fh_nom)):
+                funding_dividend_room[issuer] = max(0.0,
+                    self.nodes[issuer].get("deposits", 0.0) + cash_profit - capex
+                    - funding_targets[issuer] - self._equity_operating_buffer_nom(issuer)
+                ) if issuance_limited else float("inf")
             div_fa_total = min(
                 div_commit_fa,
+                funding_dividend_room["IS"],
                 max(
                     0.0,
                     self._firm_discretionary_deposits_nom("IS")
@@ -2935,6 +3050,7 @@ class NewLoop:
             )
             div_fh_total = min(
                 div_commit_fh,
+                funding_dividend_room["PS"],
                 max(
                     0.0,
                     self._firm_discretionary_deposits_nom("PS")
@@ -3115,6 +3231,10 @@ class NewLoop:
                     "c_hh_nom_budgeted_total": float(np.sum(np.maximum(0.0, c_hh_nom_budgeted))),
                     "target_buffer_nom_i": target_buffer_nom,
                     "planned_equity_investment_nom_i": planned_equity_investment_nom,
+                    "planned_equity_info_nom_i": consumption_targets["planned_equity_info_nom"],
+                    "equity_offered_total": float(consumption_targets["equity_offers_nom"].sum()),
+                    "equity_funding_targets_nom": funding_targets,
+                    "equity_opening_funding_limits_nom": opening_funding_limits,
                     "buffer_target_total": float(target_buffer_nom.sum()),
                     "buffer_gap_total": float(buffer_gap_nom.sum()),
                     "buffer_gap_positive_total": float(np.maximum(0.0, buffer_gap_nom).sum()),
@@ -4361,6 +4481,11 @@ class NewLoop:
             target_buffer_nom=target_buffer_nom_i,
             price_level=float(self.state.get("price_level", 1.0)),
             planned_investment_nom=planned_equity_investment_nom_i,
+            planned_info_nom=sol.get("planned_equity_info_nom_i"),
+            funding_targets=sol.get("equity_funding_targets_nom"),
+            opening_funding_limits=sol.get("equity_opening_funding_limits_nom"),
+            offered_total=(sol.get("equity_offered_total")
+                if bool(self.params.get("hh_equity_investment_pre_consumption", False)) else None),
         )
 
         # -------------------------------------------------
@@ -5111,6 +5236,9 @@ class NewLoop:
                 capex_maintenance_need_per_h=float(self.state.get("capex_maintenance_need_total", 0.0)) / float(self.hh.n),
                 capex_maintenance_gap_per_h=float(self.state.get("capex_maintenance_gap_total", 0.0)) / float(self.hh.n),
                 hh_equity_investment_per_h=float(self.state.get("hh_equity_investment_total", 0.0)) / float(self.hh.n),
+                hh_equity_offered_per_h=float(self.state.get("hh_equity_offered_total", 0.0)) / float(self.hh.n),
+                hh_equity_unfilled_per_h=float(self.state.get("hh_equity_unfilled_total", 0.0)) / float(self.hh.n),
+                equity_funding_gap_per_h=float(self.state.get("equity_funding_gap_total", 0.0)) / float(self.hh.n),
                 sector_capex_reserve_info_per_h=float(self.nodes["IS"].get("capex_reserve", 0.0)) / float(self.hh.n),
                 sector_capex_reserve_physical_per_h=float(self.nodes["PS"].get("capex_reserve", 0.0)) / float(self.hh.n),
                 sector_capacity_info_per_h=float(solp.get("capacity_fa_real", 0.0)) / float(self.hh.n),

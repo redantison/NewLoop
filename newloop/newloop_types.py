@@ -196,6 +196,9 @@ class TickResult:
     capex_maintenance_need_per_h: float
     capex_maintenance_gap_per_h: float
     hh_equity_investment_per_h: float
+    hh_equity_offered_per_h: float
+    hh_equity_unfilled_per_h: float
+    equity_funding_gap_per_h: float
     sector_capex_reserve_info_per_h: float
     sector_capex_reserve_physical_per_h: float
     sector_capacity_info_per_h: float

@@ -458,6 +458,7 @@ class PolicyAlignmentTests(unittest.TestCase):
     def test_household_equity_investment_routes_excess_deposits_to_capex_reserve(self):
         cfg = make_cfg()
         params = cfg["parameters"]
+        params["equity_issuance_needs_only"] = False
         params["hh_equity_investment_enabled"] = True
         params["hh_equity_investment_excess_rate_q"] = 0.10
         params["hh_equity_investment_info_share"] = 0.25
@@ -1066,6 +1067,7 @@ class PolicyAlignmentTests(unittest.TestCase):
     def test_nonbank_deployed_roe_excludes_prior_capex_reserve_from_denominator(self):
         cfg = make_cfg()
         params = cfg["parameters"]
+        params["equity_issuance_needs_only"] = False
         params["hh_equity_investment_enabled"] = True
         params["hh_equity_investment_excess_rate_q"] = 0.25
         sim = NewLoop(cfg)
