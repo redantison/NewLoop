@@ -236,6 +236,9 @@ def _sync_ubi_percentile_state(session_state: Dict[str, Any], fallback_default: 
 # Columns to deflate when display mode is "real".
 MONETARY_COLUMNS = {
     "private_eq_per_h",
+    "corporate_eq_info_per_h",
+    "corporate_eq_physical_per_h",
+    "corporate_eq_total_per_h",
     "vat_per_h",
     "inc_tax_per_h",
     "corp_tax_per_h",
@@ -1312,7 +1315,7 @@ def main() -> None:
                 income_group_policy_fig = plot_income_distribution_by_group(
                     income_groups_policy_after,
                     value_label=value_label,
-                    support_mode=support_mode,
+                    support_mode=plot_mode,
                     overall_income=income_after,
                     label_map={
                         "vat_credit_no_income_tax": "VAT Credit, No Income Tax",
