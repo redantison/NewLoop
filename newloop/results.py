@@ -163,7 +163,7 @@ def _household_wealth_snapshot(sim: NewLoop, *, comprehensive: bool = COMPREHENS
     housing_i = np.asarray(hh.housing_escrow, dtype=float)
     mort_i = np.asarray(hh.mortgage_loans, dtype=float)
     rev_i = np.asarray(hh.revolving_loans, dtype=float)
-    loan_i = mort_i + rev_i
+    loan_i = mort_i + rev_i + hh.mort_interest_arrears_q
     equity_i = np.zeros_like(deposits_i, dtype=float)
     trust_i = np.zeros_like(deposits_i, dtype=float)
 
@@ -206,7 +206,7 @@ def _household_wealth_snapshot(sim: NewLoop, *, comprehensive: bool = COMPREHENS
             + trust_equity_total
             - float(sim.nodes["FUND"].get("loans", 0.0))
         )
-        equity_i = equity_weights * max(0.0, float(hh_equity_total))
+        equity_i = sim._household_equity_values(price_level)
         trust_i = np.full(deposits_i.shape[0], trust_value_total / float(deposits_i.shape[0]), dtype=float)
 
     wealth_i = deposits_i + housing_i + equity_i + trust_i - loan_i
@@ -239,7 +239,7 @@ def _population_distribution_snapshot(
     housing_i = np.asarray(hh.housing_escrow, dtype=float)
     mort_i = np.asarray(hh.mortgage_loans, dtype=float)
     rev_i = np.asarray(hh.revolving_loans, dtype=float)
-    loan_i = mort_i + rev_i
+    loan_i = mort_i + rev_i + hh.mort_interest_arrears_q
     income_i = np.asarray(sol.get("y", []), dtype=float)
     if income_i.shape[0] != n:
         income_i = np.asarray(hh.prev_income, dtype=float)
@@ -1487,6 +1487,7 @@ def _activate_old_to_new_transition(sim: NewLoop, cfg: Dict[str, Any], visible_q
     sim.params = copy.deepcopy(next_cfg.get("parameters", {}))
     sim.income_support_policy = make_income_support_policy(sim.params)
     sim.tax_policy = make_tax_policy(sim.params)
+    sim.state["trust_launch_at_transition"] = transition_mode == "NewLoopPolicies"
     sim.state["old_to_new_transition_applied"] = True
     sim.state["old_to_new_transition_visible_quarter"] = int(visible_quarter)
     sim.state["old_to_new_transition_internal_t"] = int(current_t)

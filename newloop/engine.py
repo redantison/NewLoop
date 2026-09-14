@@ -386,6 +386,11 @@ class NewLoop:
         # Prior-quarter GOV obligations used to retain a stabilization buffer before rebating surpluses.
         self.gov_obligation_history: List[float] = []
 
+        if self.hh is not None:
+            weights = self._household_equity_weights()
+            for issuer in ("IS", "PS", "BANK"):
+                self.hh.shares_by_issuer[issuer] = weights * self.nodes["HH"].get("shares_" + issuer)
+                self.hh.dividend_weights_prev[issuer] = weights.copy()
         self._assert_sfc_ok(context="init")
 
     def _bootstrap_startup_lagged_retained(self) -> None:
@@ -515,7 +520,11 @@ class NewLoop:
             if embodied_capacity <= 1e-12:
                 continue
 
-            retained_nom = max(0.0, float(seed_sol.get(retained_key, 0.0)))
+            # Startup reclassifies existing legacy capacity into installed K.
+            # Its cash funding basis adds back the noncash depreciation expense.
+            suffix = "fa" if firm_id == "IS" else "fh"
+            retained_nom = max(0.0, float(seed_sol.get(retained_key, 0.0))
+                               + float(seed_sol.get("depreciation_" + suffix, 0.0)))
             if retained_nom <= 1e-12:
                 continue
 
@@ -880,7 +889,6 @@ class NewLoop:
             hh.mort_term_q[inactive] = 0.0
             hh.mort_payment_sched_q[inactive] = 0.0
             hh.mort_orig_principal[inactive] = 0.0
-            hh.mort_interest_arrears_q[inactive] = 0.0
             hh.mort_principal_arrears_q[inactive] = 0.0
             hh.mort_P0[inactive] = 0.0
             hh.mort_Y0[inactive] = 0.0
@@ -1490,7 +1498,7 @@ class NewLoop:
 
     def _lagged_dividend_commit_nom(self, issuer: str) -> float:
         commit = max(0.0, float(self.nodes[issuer].memo.get("dividend_commit_prev", 0.0)))
-        if commit > 0.0:
+        if "dividend_commit_prev" in self.nodes[issuer].memo:
             return commit
         if issuer == "BANK":
             payout_rate = max(0.0, min(1.0, float(self.params.get("dividend_payout_rate_bank", 1.0))))
@@ -1611,7 +1619,7 @@ class NewLoop:
         self.state[key] = float(issue_price)
         return float(issue_price)
 
-    def _issue_hh_equity_for_capex_reserve(self, firm_id: str, amount_nom: float, price_level: float) -> float:
+    def _issue_hh_equity_for_capex_reserve(self, firm_id: str, amount_nom: float, price_level: float, buyer_weights: np.ndarray) -> float:
         amount = max(0.0, float(amount_nom))
         if amount <= 1e-12:
             return 0.0
@@ -1622,6 +1630,7 @@ class NewLoop:
         self.nodes[firm_id].add("capex_reserve", amount)
         self.nodes[firm_id].add("shares_outstanding", new_shares)
         self.nodes["HH"].add(share_key, new_shares)
+        self.hh.shares_by_issuer[firm_id] += buyer_weights * new_shares
         return float(new_shares)
 
     def _apply_household_equity_investment(
@@ -1664,8 +1673,8 @@ class NewLoop:
         info_investment = total_investment * info_share
         phys_investment = total_investment - info_investment
         deposits[:] = deposits - investment_i
-        self._issue_hh_equity_for_capex_reserve("IS", info_investment, price_level)
-        self._issue_hh_equity_for_capex_reserve("PS", phys_investment, price_level)
+        self._issue_hh_equity_for_capex_reserve("IS", info_investment, price_level, investment_i / total_investment)
+        self._issue_hh_equity_for_capex_reserve("PS", phys_investment, price_level, investment_i / total_investment)
         self.state["hh_equity_investment_total"] = float(total_investment)
         self.state["hh_equity_investment_info_total"] = float(info_investment)
         self.state["hh_equity_investment_phys_total"] = float(phys_investment)
@@ -2110,7 +2119,7 @@ class NewLoop:
         self.nodes[payer].add("deposits", -amount)
         self.nodes[receiver].add("deposits", +amount)
 
-    def _xfer_deposits_to_households(self, payer: str, amount: float) -> None:
+    def _xfer_deposits_to_households(self, payer: str, amount: float, weights: Optional[np.ndarray] = None) -> None:
         """Transfer deposits from a payer to households (population-aware).
 
         In population mode we must credit the household vector, not only the aggregate HH node,
@@ -2124,14 +2133,15 @@ class NewLoop:
             w0 = _as_np(self.hh.wages0_q, dtype=float)
             w0_sum = float(w0.sum()) if w0.size == self.hh.n else 0.0
             fallback = w0 / w0_sum if w0_sum > 0.0 else np.full(self.hh.n, 1.0 / float(self.hh.n), dtype=float)
-            weights = self._household_equity_weights(fallback_weights=fallback)
+            if weights is None:
+                weights = self._household_equity_weights(fallback_weights=fallback)
             self.hh.deposits[:] = self.hh.deposits + (weights * amount)
             self.nodes["HH"].set("deposits", self.hh.sum_deposits())
         else:
             self.nodes["HH"].add("deposits", +amount)
 
     def _household_equity_weights(self, fallback_weights: Optional[np.ndarray] = None) -> np.ndarray:
-        """Return per-household weights for distributing aggregate private equity income/value."""
+        """Return initial ownership weights used to seed individual share holdings."""
         if self.hh is None or self.hh.n <= 0:
             return np.asarray([], dtype=float)
         if not bool(self.params.get("hh_equity_distribution_enabled", True)):
@@ -2153,6 +2163,20 @@ class NewLoop:
             if total > 1e-12:
                 return fallback / total
         return np.full(self.hh.n, 1.0 / float(self.hh.n), dtype=float)
+
+    def _household_issuer_weights(self, issuer: str) -> np.ndarray:
+        shares = self.hh.shares_by_issuer[issuer]
+        total = float(shares.sum())
+        return shares / total if total > 1e-12 else np.zeros(self.hh.n)
+
+    def _household_equity_values(self, price_level: float) -> np.ndarray:
+        values = np.zeros(self.hh.n)
+        for issuer in ("IS", "PS", "BANK"):
+            outstanding = self.nodes[issuer].get("shares_outstanding")
+            if outstanding > 0:
+                equity = self._firm_broad_equity_proxy(issuer, price_level) if issuer != "BANK" else self._firm_balance_sheet_equity_proxy(issuer, price_level)
+                values += self.hh.shares_by_issuer[issuer] * max(0.0, equity) / outstanding
+        return values
 
     def _create_loan(self, borrower: str, amount: float, memo_tag: Optional[str] = None) -> None:
         """
@@ -2250,6 +2274,22 @@ class NewLoop:
         loan_sum = self._sum_loans_borrowers()
 
         eps = 1e-6
+        bank_assets = loan_assets + bank.get("reserves") + bank.get("interest_receivable")
+        bank_claims = dep_liab + bank.get("equity")
+        if not math.isclose(bank_assets, bank_claims, rel_tol=1e-12, abs_tol=eps):
+            raise AssertionError(f"SFC FAIL ({context}): bank balance sheet gap={bank_assets - bank_claims}")
+        if self.hh is not None:
+            interest_due = float(self.hh.mort_interest_arrears_q.sum())
+            if not math.isclose(bank.get("interest_receivable"), interest_due, rel_tol=1e-12, abs_tol=eps):
+                raise AssertionError(f"SFC FAIL ({context}): interest receivable/payable mismatch")
+            if not math.isclose(self.nodes["HH"].get("interest_payable"), interest_due, rel_tol=1e-12, abs_tol=eps):
+                raise AssertionError(f"SFC FAIL ({context}): aggregate household interest payable mismatch")
+            for issuer, shares in self.hh.shares_by_issuer.items():
+                if not math.isclose(float(shares.sum()), self.nodes["HH"].get("shares_" + issuer), rel_tol=1e-12, abs_tol=eps):
+                    raise AssertionError(f"SFC FAIL ({context}): household {issuer} shares mismatch")
+                total_shares = self.nodes["HH"].get("shares_" + issuer) + self.nodes["FUND"].get("shares_" + issuer)
+                if not math.isclose(total_shares, self.nodes[issuer].get("shares_outstanding"), rel_tol=1e-12, abs_tol=eps):
+                    raise AssertionError(f"SFC FAIL ({context}): total {issuer} shares mismatch")
         if abs(dep_liab - dep_sum) > eps:
             raise AssertionError(f"SFC FAIL ({context}): deposit_liab={dep_liab} vs sum_deposits={dep_sum}")
         if abs(loan_assets - loan_sum) > eps:
@@ -2291,6 +2331,9 @@ class NewLoop:
             "bank_loan_assets": loan_assets,
             "sum_loans": loan_sum,
             "loan_gap": loan_assets - loan_sum,
+            "bank_interest_receivable": bank.get("interest_receivable"),
+            "interest_claim_gap": bank.get("interest_receivable") - self.nodes["HH"].get("interest_payable"),
+            "bank_balance_gap": loan_assets + bank.get("reserves") + bank.get("interest_receivable") - dep_liab - bank.get("equity"),
         })
 
         for nid, node in self.nodes.items():
@@ -2403,7 +2446,7 @@ class NewLoop:
             return
 
         # Allow one baseline quarter before any trigger logic (needed for baseline targeting)
-        if int(self.state["t"]) == 0:
+        if int(self.state["t"]) == 0 and not self.state.get("trust_launch_at_transition", False):
             return
 
         # Trigger metric: use last-quarter mortgage-payment stress.
@@ -2427,7 +2470,7 @@ class NewLoop:
         trigger_threshold = float(self.params.get("trust_trigger_dti", 0.10))
 
 
-        if dti_ratio <= trigger_threshold:
+        if not self.state.get("trust_launch_at_transition", False) and dti_ratio <= trigger_threshold:
             return
 
         self.state["trust_active"] = True
@@ -2478,9 +2521,12 @@ class NewLoop:
                         continue
 
                     cash_spent = shares_to_buy * price_per_share
+                    seller_weights = self._household_issuer_weights(issuer) if self.hh is not None else None
+                    if self.hh is not None:
+                        self.hh.shares_by_issuer[issuer] -= seller_weights * shares_to_buy
                     self.nodes[seller].add(key, -shares_to_buy)
                     self.nodes["FUND"].add(key, +shares_to_buy)
-                    self._xfer_deposits_to_households("FUND", cash_spent)
+                    self._xfer_deposits_to_households("FUND", cash_spent, weights=seller_weights)
 
             for _, key in issuers:
                 if self.nodes[seller].get(key, 0.0) < -1e-9:
@@ -2565,13 +2611,12 @@ class NewLoop:
         vat_rate = self._effective_vat_rate()
         P_cons = P * (1.0 + vat_rate)  # tax-exclusive VAT treated as higher consumer price
 
-        # Baseline wage weights used to distribute wages and (temporarily) dividends.
+        # Baseline wages determine wages; recorded issuer holdings determine dividends.
         w0 = hh.wages0_q
         w0_sum = float(w0.sum())
         if w0_sum <= 0:
             return None
         w_weights = w0 / w0_sum
-        equity_weights = self._household_equity_weights(fallback_weights=w_weights)
 
         # Taxable-income and eligibility-income ranks are invariant within the
         # fixed-point loop because both are affine transforms of baseline wages.
@@ -2653,6 +2698,7 @@ class NewLoop:
         div_commit_bk = self._lagged_dividend_commit_nom("BANK")
         div_cash_buffer_share = max(0.0, min(1.0, float(self.params.get("sector_dividend_cash_buffer_q", 0.0))))
         div_house_total_est = 0.0
+        div_i_est = np.zeros(hh.n)
 
         max_delta = float("inf")
         for iter_idx in range(1, max_iter + 1):
@@ -2754,6 +2800,32 @@ class NewLoop:
                     w_fa = w_total * wage_share_fa
                     w_fh = w_total - w_fa
 
+            # 4) Income-support policy (mode selected by parameters)
+            if self._income_support_disabled():
+                uis = 0.0
+            else:
+                raw_uis = self.income_support_policy.compute_per_household(
+                    wages_total=float(w_total),
+                    div_house_total=float(div_house_total_est),
+                    price_level=float(P),
+                    n_households=int(hh.n),
+                    previous_support_per_h=float(hh.prev_uis),
+                    state=self.state,
+                )
+                uis = self._apply_income_support_start_delay(
+                    raw_uis,
+                    allow_trigger=allow_income_support_trigger,
+                )
+
+            owner_housing_payment_i = self._old_loop_owner_housing_payment_i(
+                w0 * (w_total / w0_sum) + float(uis) + div_i_est
+            )
+            housing_revenue = float(np.sum(renter_rent_q) + np.sum(owner_housing_payment_i))
+            housing_revenue_fa = housing_revenue * self._sector_hh_demand_share_fa()
+            housing_revenue_fh = housing_revenue - housing_revenue_fa
+            rev_fa += housing_revenue_fa
+            rev_fh += housing_revenue_fh
+
             # Overhead is a cash sink tied to lagged revenue. Under the no-new-debt
             # sector rules it cannot exceed the quarter's actually available cash
             # after production inputs, wages, and planned CAPEX are covered.
@@ -2779,31 +2851,14 @@ class NewLoop:
             overhead_fh = min(overhead_target_fh, overhead_cash_room_fh)
 
             # profits pre-tax (capex is not expensed; it's a cash outflow later)
-            p_fa_pre_tax = max(0.0, rev_fa - w_fa - fa_interest - overhead_fa - input_cost_fa)
-            p_fh_pre_tax = max(0.0, rev_fh - w_fh - fh_interest - overhead_fh - input_cost_fh)
+            p_fa_pre_tax = rev_fa - w_fa - fa_interest - overhead_fa - input_cost_fa
+            p_fh_pre_tax = rev_fh - w_fh - fh_interest - overhead_fh - input_cost_fh
 
             mort_interest_due = mort * rL
             rev_interest = rev * rL
             interest_hh = mort_interest_due + rev_interest
             trust_interest = fund_loan * rL
             bank_interest_ex_mort = float(rev_interest.sum() + trust_interest + fa_interest + fh_interest)
-
-            # 4) Income-support policy (mode selected by parameters)
-            if self._income_support_disabled():
-                uis = 0.0
-            else:
-                raw_uis = self.income_support_policy.compute_per_household(
-                    wages_total=float(w_total),
-                    div_house_total=float(div_house_total_est),
-                    price_level=float(P),
-                    n_households=int(hh.n),
-                    previous_support_per_h=float(hh.prev_uis),
-                    state=self.state,
-                )
-                uis = self._apply_income_support_start_delay(
-                    raw_uis,
-                    allow_trigger=allow_income_support_trigger,
-                )
 
             # Mortgage index module: compute indexed required payment per household mortgage.
             mort_index_enable = bool(self.params.get("mort_index_enable", False)) and (not self._mortgage_index_disabled())
@@ -2831,7 +2886,8 @@ class NewLoop:
             mort_index_i = _as_np(mort_terms.get("mort_index_i", mort_one_vec), dtype=float)
             mort_dln_i = _as_np(mort_terms.get("mort_dln_i", mort_zero_vec), dtype=float)
             mort_dln_sm_i = _as_np(mort_terms.get("mort_dln_sm_i", mort_zero_vec), dtype=float)
-            bank_profit_pre_tax = float(bank_interest_ex_mort + np.sum(np.maximum(0.0, mort_interest_paid_i)))
+            mort_interest_accrued_i = mort_interest_due_i if regime_name == "OldLoop" else mort_interest_paid_i
+            bank_profit_pre_tax = float(bank_interest_ex_mort + np.sum(np.maximum(0.0, mort_interest_accrued_i)))
             corporate_tax = self.tax_policy.compute_corporate_taxes(
                 p_fa_pre_tax=float(p_fa_pre_tax),
                 p_fh_pre_tax=float(p_fh_pre_tax),
@@ -2852,9 +2908,13 @@ class NewLoop:
             corp_tax_fh = float(corporate_tax.corp_tax_fh)
             corp_tax_bk = float(corporate_tax.corp_tax_bk)
 
-            after_tax_profit_fa = max(0.0, p_fa_pre_tax - corp_tax_fa)
-            after_tax_profit_fh = max(0.0, p_fh_pre_tax - corp_tax_fh)
-            after_tax_profit_bk = max(0.0, bank_profit_pre_tax - corp_tax_bk)
+            cash_profit_fa = p_fa_pre_tax - corp_tax_fa
+            cash_profit_fh = p_fh_pre_tax - corp_tax_fh
+            depreciation_fa = self._sector_maintenance_capex_nom("IS", P)
+            depreciation_fh = self._sector_maintenance_capex_nom("PS", P)
+            after_tax_profit_fa = cash_profit_fa - depreciation_fa
+            after_tax_profit_fh = cash_profit_fh - depreciation_fh
+            after_tax_profit_bk = bank_profit_pre_tax - corp_tax_bk
 
             div_cash_buffer_fa = div_cash_buffer_share * rev_fa
             div_cash_buffer_fh = div_cash_buffer_share * rev_fh
@@ -2900,9 +2960,9 @@ class NewLoop:
             div_house_total = div_house_firms + (div_bk_total * (1.0 - f_bk))
             div_house_total_est = float(div_house_total)
 
-            retained_fa = max(0.0, after_tax_profit_fa - div_fa_total)
-            retained_fh = max(0.0, after_tax_profit_fh - div_fh_total)
-            retained_bk = max(0.0, after_tax_profit_bk - div_bk_total)
+            retained_fa = after_tax_profit_fa - div_fa_total
+            retained_fh = after_tax_profit_fh - div_fh_total
+            retained_bk = after_tax_profit_bk - div_bk_total
 
             # Keep after-tax profit diagnostics consistent with accounting identity:
             # after_tax_profit = distributed_dividends + retained_after_tax
@@ -2913,8 +2973,11 @@ class NewLoop:
             # 5) Allocate wages by baseline wage weights and dividends by private-equity weights.
             wage_scale = w_total / w0_sum
             wages_i = w0 * wage_scale
-            div_i = equity_weights * float(div_house_total)
-            owner_housing_payment_i = self._old_loop_owner_housing_payment_i(wages_i + float(uis) + div_i)
+            div_i = (
+                hh.dividend_weights_prev["IS"] * div_fa_total * (1.0 - f_fa)
+                + hh.dividend_weights_prev["PS"] * div_fh_total * (1.0 - f_fh)
+                + hh.dividend_weights_prev["BANK"] * div_bk_total * (1.0 - f_bk)
+            )
 
             # Poverty-line consumption in real units is anchored to baseline average real consumption per household.
             # If baseline is not yet stored, initialize it from the current iteration (baseline quarter t==0).
@@ -2960,6 +3023,7 @@ class NewLoop:
                 - income_tax_i
             )
             max_delta = float(np.max(np.abs(y_new - y_guess)))
+            max_delta = max(max_delta, float(np.max(np.abs(div_i - div_i_est))))
 
             if max_delta < tol:
                 return {
@@ -2971,6 +3035,13 @@ class NewLoop:
                     "w_fa": w_fa,
                     "w_fh": w_fh,
                     "w_total": w_total,
+                    "cash_profit_fa": cash_profit_fa,
+                    "cash_profit_fh": cash_profit_fh,
+                    "depreciation_fa": depreciation_fa,
+                    "depreciation_fh": depreciation_fh,
+                    "housing_revenue_fa": housing_revenue_fa,
+                    "housing_revenue_fh": housing_revenue_fh,
+                    "mort_interest_accrued_i": mort_interest_accrued_i,
                     "p_fa": p_fa,
                     "p_fh": p_fh,
                     "interest_hh": interest_hh,
@@ -3083,6 +3154,7 @@ class NewLoop:
                     "solver_max_delta": float(max_delta),
                 }
 
+            div_i_est = div_i.copy()
             y_guess = ((1.0 - solver_relax) * y_guess) + (solver_relax * y_new)
 
         raise RuntimeError(
@@ -3106,6 +3178,7 @@ class NewLoop:
         # Convenience
         n = int(hh.n)
         deposits = hh.deposits
+        deposits_opening = getattr(self, "_hh_deposits_opening", deposits).copy()
         mort = hh.mortgage_loans
         rev = hh.revolving_loans
         mort_interest_arrears = np.maximum(0.0, np.asarray(hh.mort_interest_arrears_q, dtype=float))
@@ -3597,17 +3670,25 @@ class NewLoop:
         mort_prin_paid_total = float(np.sum(np.maximum(0.0, actual_mort_principal_paid_i)))
         self.state["mort_principal_paid_total"] = float(mort_prin_paid_total)
 
+        # Accrue effective interest with matching lender assets and household
+        # liabilities. Cash collection settles the receivable, not a second income.
+        accrued_interest_i = np.maximum(0.0, _as_np(sol.get("mort_interest_accrued_i", mort_interest_paid_i), dtype=float))
+        accrued_interest_total = float(accrued_interest_i.sum())
+        bank.add("interest_receivable", accrued_interest_total)
+        bank.add("equity", accrued_interest_total)
+        mort_interest_arrears += accrued_interest_i - actual_mort_interest_paid_i
+        principal_due_i = np.maximum(0.0, mort_pay_ctr_i - mort_interest_due_i) if regime_name == "OldLoop" else np.maximum(0.0, mort_principal_paid_i)
+        mort_principal_arrears += np.maximum(0.0, principal_due_i - actual_mort_principal_paid_i)
+        mort_principal_arrears[:] = np.minimum(mort_principal_arrears, np.maximum(0.0, mort - actual_mort_principal_paid_i))
+
         # Track missed mortgage cashflow explicitly instead of folding it back
         # into next-quarter "income". Interest arrears remain a separate claim;
         # principal arrears remain eligible for later cure and also persist in
         # the outstanding mortgage balance until actually repaid.
-        if regime_name == "OldLoop":
-            mort_interest_arrears[:] = mort_interest_arrears + np.maximum(0.0, mort_interest_gap_i)
-            mort_principal_arrears[:] = mort_principal_arrears + np.maximum(0.0, mort_principal_gap_i)
 
         if mort_int_paid_total > 0.0:
             bank.add("deposit_liab", -mort_int_paid_total)
-            bank.add("equity", +mort_int_paid_total)
+            bank.add("interest_receivable", -mort_int_paid_total)
         if mort_prin_paid_total > 0.0:
             mort[:] = np.maximum(0.0, mort - actual_mort_principal_paid_i)
             bank.add("loan_assets", -mort_prin_paid_total)
@@ -3790,7 +3871,7 @@ class NewLoop:
         # -------------------------------------------------
         mort_interest_arrears_paid_total = 0.0
         mort_principal_arrears_paid_total = 0.0
-        if regime_name == "OldLoop":
+        if np.any(mort_interest_arrears > 0.0) or np.any(mort_principal_arrears > 0.0):
             positive_cash_i = np.maximum(0.0, deposits)
             mort_interest_arrears_paid_i = np.minimum(positive_cash_i, mort_interest_arrears)
             mort_interest_arrears_paid_total = float(np.sum(np.maximum(0.0, mort_interest_arrears_paid_i)))
@@ -3798,7 +3879,7 @@ class NewLoop:
                 deposits[:] = deposits - mort_interest_arrears_paid_i
                 mort_interest_arrears[:] = np.maximum(0.0, mort_interest_arrears - mort_interest_arrears_paid_i)
                 bank.add("deposit_liab", -mort_interest_arrears_paid_total)
-                bank.add("equity", +mort_interest_arrears_paid_total)
+                bank.add("interest_receivable", -mort_interest_arrears_paid_total)
 
             positive_cash_i = np.maximum(0.0, deposits)
             mort_principal_arrears_paid_i = np.minimum(positive_cash_i, mort_principal_arrears)
@@ -4129,7 +4210,7 @@ class NewLoop:
                             if desired_payment <= 1e-9 or desired_payment < max(1e-9, min_desired_payment):
                                 continue
                             principal = max(0.0, min(principal_cap, desired_payment / max(1e-9, unit_payment_q)))
-                            downpayment = max(0.0, house_value - principal)
+                            downpayment = house_value - principal
                             if float(deposits[renter_idx]) + 1e-9 < downpayment:
                                 continue
                             matched_pos = pos
@@ -4153,7 +4234,7 @@ class NewLoop:
             self_turnover_net_total = 0.0
             if np.any(self_turnover_mask):
                 sale_value_i = np.maximum(0.0, housing_value_i[self_turnover_mask])
-                downpayment_i = np.maximum(0.0, acquired_house_value[self_turnover_mask] - allocation[self_turnover_mask])
+                downpayment_i = acquired_house_value[self_turnover_mask] - allocation[self_turnover_mask]
                 self_turnover_net_total = float(np.sum(
                     sale_value_i
                     - np.maximum(0.0, mort[self_turnover_mask])
@@ -4195,7 +4276,6 @@ class NewLoop:
                 hh.mort_age_q[retired_old_mort_mask] = 0.0
                 hh.mort_payment_sched_q[retired_old_mort_mask] = 0.0
                 hh.mort_orig_principal[retired_old_mort_mask] = 0.0
-                mort_interest_arrears[retired_old_mort_mask] = 0.0
                 mort_principal_arrears[retired_old_mort_mask] = 0.0
                 hh.mort_t0[retired_old_mort_mask] = -1
 
@@ -4210,7 +4290,6 @@ class NewLoop:
                 # Turnover creates a fresh mortgage on the next housing-finance event.
                 hh.mort_payment_sched_q[new_mask] = new_schedule.payment_from_orig_principal(allocation[new_mask])
                 hh.mort_orig_principal[new_mask] = allocation[new_mask]
-                mort_interest_arrears[new_mask] = 0.0
                 mort_principal_arrears[new_mask] = 0.0
                 hh.mort_t0[new_mask] = -1
                 renter_rent_q[new_mask] = 0.0
@@ -4297,6 +4376,11 @@ class NewLoop:
         )
         self.nodes["HH"].set("loans", hh_total_loan)
         hh.mort_interest_arrears_q = mort_interest_arrears.astype(float, copy=True)
+        self.nodes["HH"].set("interest_payable", float(mort_interest_arrears.sum()))
+        self.state["mort_interest_arrears_total"] = float(mort_interest_arrears.sum())
+        self.state["mort_principal_arrears_total"] = float(mort_principal_arrears.sum())
+        self.state["hh_deposit_drawdown_total"] = float(np.maximum(0.0, deposits_opening - deposits).sum())
+        self.state["hh_other_debt_payments_total"] = float(mort_interest_arrears_paid_total + mort_principal_arrears_paid_total + self.state.get("rev_principal_paid_total", 0.0))
         hh.mort_principal_arrears_q = mort_principal_arrears.astype(float, copy=True)
 
         if y_vec.shape[0] == n:
@@ -4321,7 +4405,27 @@ class NewLoop:
         self.nodes["IS"].memo["retained_prev"] = float(sol.get("retained_fa", 0.0))
         self.nodes["PS"].memo["retained_prev"] = float(sol.get("retained_fh", 0.0))
         bank_neutralize_interest_inflow = float(max(0.0, self.state.get("bank_mort_neutralize_interest_inflow", 0.0)))
-        bank_retained_total = float(sol.get("retained_bk", 0.0)) + bank_neutralize_interest_inflow
+        # Neutralization interest is additional collected income, whereas its
+        # principal component only retires a loan asset. Tax the interest once.
+        neutral_tax = bank_neutralize_interest_inflow * float(sol.get("corp_tax_rate", 0.0))
+        if neutral_tax > 0:
+            bank.add("equity", -neutral_tax)
+            bank.add("deposit_liab", neutral_tax)
+            self.nodes["GOV"].add("deposits", neutral_tax)
+            self.state["corp_tax_total"] += neutral_tax
+        sol["corp_tax_bk"] = float(sol.get("corp_tax_bk", 0.0)) + neutral_tax
+        sol["bank_profit"] = float(sol.get("bank_profit", 0.0)) + bank_neutralize_interest_inflow - neutral_tax
+        sol["retained_bk"] = sol["bank_profit"] - float(sol.get("div_bk_total", 0.0))
+        bank_cash_income = (
+            float(np.sum(rev_interest_i)) + trust_interest
+            + float(sol.get("fa_interest", 0.0)) + float(sol.get("fh_interest", 0.0))
+            + mort_int_paid_total + mort_interest_arrears_paid_total + bank_neutralize_interest_inflow
+        )
+        sol["bank_cash_profit"] = bank_cash_income - sol["corp_tax_bk"]
+        self.state["bank_interest_accrued_total"] = accrued_interest_total
+        self.state["bank_interest_collected_total"] = mort_int_paid_total + mort_interest_arrears_paid_total
+        self.state["bank_cash_profit_total"] = sol["bank_cash_profit"]
+        bank_retained_total = float(sol["retained_bk"])
         self.nodes["BANK"].memo["retained_prev"] = float(bank_retained_total)
         self.state["sector_capex_queue_info_nom"] = float(sol.get("capex_queue_info_next", 0.0))
         self.state["sector_capex_queue_phys_nom"] = float(sol.get("capex_queue_phys_next", 0.0))
@@ -4334,18 +4438,20 @@ class NewLoop:
         service_ratio_phys = min(1.0, float(sol.get("hh_sales_fh_real", 0.0)) / max(1e-9, float(sol.get("hh_demand_fh_real", 0.0)))) if float(sol.get("hh_demand_fh_real", 0.0)) > 1e-12 else 1.0
         stress_scale_info = max(0.0, min(1.0, service_ratio_info / service_floor))
         stress_scale_phys = max(0.0, min(1.0, service_ratio_phys / service_floor))
-        profit_dividend_base_info = self._sector_profit_distributable_nom("IS", float(sol.get("p_fa", 0.0)), p_now)
-        profit_dividend_base_phys = self._sector_profit_distributable_nom("PS", float(sol.get("p_fh", 0.0)), p_now)
+        profit_dividend_base_info = self._sector_profit_distributable_nom("IS", float(sol.get("cash_profit_fa", sol.get("p_fa", 0.0))), p_now)
+        profit_dividend_base_phys = self._sector_profit_distributable_nom("PS", float(sol.get("cash_profit_fh", sol.get("p_fh", 0.0))), p_now)
         surplus_dist_info = self._sector_surplus_distribution_nom("IS", p_now)
         surplus_dist_phys = self._sector_surplus_distribution_nom("PS", p_now)
         self.nodes["IS"].memo["dividend_commit_prev"] = (payout_firms_info * profit_dividend_base_info * stress_scale_info) + surplus_dist_info
         self.nodes["PS"].memo["dividend_commit_prev"] = (payout_firms_phys * profit_dividend_base_phys * stress_scale_phys) + surplus_dist_phys
-        self.nodes["BANK"].memo["dividend_commit_prev"] = payout_bank * float(sol.get("bank_profit", 0.0))
+        self.nodes["BANK"].memo["dividend_commit_prev"] = payout_bank * max(0.0, float(sol["bank_cash_profit"]))
         self.nodes["IS"].memo["revenue_prev"] = float(sol.get("rev_fa", 0.0))
         self.nodes["PS"].memo["revenue_prev"] = float(sol.get("rev_fh", 0.0))
 
         self.state["sector_capacity_info_real_prev"] = float(capacity_fa_real)
         self.state["sector_capacity_phys_real_prev"] = float(capacity_fh_real)
+        for issuer in ("IS", "PS", "BANK"):
+            hh.dividend_weights_prev[issuer] = self._household_issuer_weights(issuer).copy()
         self.state["fund_dividend_ownership_fa_prev"] = float(max(0.0, min(1.0, self.nodes["FUND"].get("shares_IS", 0.0) / max(1e-9, self.nodes["IS"].get("shares_outstanding", 0.0)))))
         self.state["fund_dividend_ownership_fh_prev"] = float(max(0.0, min(1.0, self.nodes["FUND"].get("shares_PS", 0.0) / max(1e-9, self.nodes["PS"].get("shares_outstanding", 0.0)))))
         self.state["fund_dividend_ownership_bk_prev"] = float(max(0.0, min(1.0, self.nodes["FUND"].get("shares_BANK", 0.0) / max(1e-9, self.nodes["BANK"].get("shares_outstanding", 0.0)))))
@@ -4415,6 +4521,8 @@ class NewLoop:
     # ---------------------------------------------------------
 
     def step(self) -> None:
+        if self.hh is not None:
+            self._hh_deposits_opening = self.hh.deposits.copy()
         self.state["mort_actual_payment_total"] = 0.0
         # Set this quarter's policy rate from lagged inflation/DTI observables.
         self._update_policy_rate()
@@ -4615,7 +4723,7 @@ class NewLoop:
             housing_i = _as_np(self.hh.housing_escrow, dtype=float)
             mort_i = _as_np(self.hh.mortgage_loans, dtype=float)
             rev_i = _as_np(self.hh.revolving_loans, dtype=float)
-            loan_i = mort_i + rev_i
+            loan_i = mort_i + rev_i + self.hh.mort_interest_arrears_q
             active_mort_i = mort_i > 1e-9
             mort_orig_principal_i = _as_np(self.hh.mort_orig_principal, dtype=float)
             active_mort_orig_principal_total = (
@@ -4665,7 +4773,7 @@ class NewLoop:
                     - float(self.nodes["FUND"].get("loans", 0.0))
                 )
                 private_equity_total = float(max(0.0, hh_equity_total))
-                equity_i = equity_weights * hh_equity_total
+                equity_i = self._household_equity_values(P)
                 trust_i = np.full(dep_i.size, trust_value_total / float(dep_i.size), dtype=float)
                 wealth_i = dep_i + housing_i + equity_i + trust_i - loan_i
                 gini_wealth = calculate_gini_np(wealth_i)
@@ -4679,8 +4787,7 @@ class NewLoop:
 
             retained_fa = float(solp.get("retained_fa", 0.0))
             retained_fh = float(solp.get("retained_fh", 0.0))
-            bank_neutralize_interest_inflow = float(max(0.0, self.state.get("bank_mort_neutralize_interest_inflow", 0.0)))
-            retained_bk = float(solp.get("retained_bk", 0.0)) + bank_neutralize_interest_inflow
+            retained_bk = float(solp.get("retained_bk", 0.0))
             f_fa = float(solp.get("f_fa", 0.0))
             f_fh = float(solp.get("f_fh", 0.0))
             f_bk = float(solp.get("f_bk", 0.0))
@@ -5051,6 +5158,12 @@ class NewLoop:
                 trust_value_per_h=float(trust_value_total) / float(self.hh.n),
                 wages_total=wages_total,
                 total_consumption=c_total,
+                hh_deposit_drawdown_per_h=float(self.state.get("hh_deposit_drawdown_total", 0.0)) / float(self.hh.n),
+                hh_other_debt_payments_per_h=float(self.state.get("hh_other_debt_payments_total", 0.0)) / float(self.hh.n),
+                hh_interest_arrears_per_h=float(self.hh.mort_interest_arrears_q.sum()) / float(self.hh.n),
+                bank_interest_accrued_per_h=float(self.state.get("bank_interest_accrued_total", 0.0)) / float(self.hh.n),
+                bank_interest_collected_per_h=float(self.state.get("bank_interest_collected_total", 0.0)) / float(self.hh.n),
+                bank_cash_profit_per_h=float(self.state.get("bank_cash_profit_total", 0.0)) / float(self.hh.n),
                 hh_cash_income_per_h=hh_cash_income_total / float(self.hh.n),
                 hh_core_consumption_target_per_h=hh_core_consumption_target_total / float(self.hh.n),
                 hh_desired_consumption_per_h=hh_desired_consumption_total / float(self.hh.n),

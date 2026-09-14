@@ -238,6 +238,8 @@ class PolicyAlignmentTests(unittest.TestCase):
         params["economic_regime"] = "OldToNew"
         params["old_to_new_transition_quarters"] = 2
         params["neutral_warmup_quarters"] = 4
+        params["old_loop_steady_state_warmup_min_quarters"] = 4
+        params["old_loop_steady_state_warmup_max_quarters"] = 4
         params["automation_start_quarter"] = 0
 
         run = run_simulation(n_quarters=4, cfg=cfg)
@@ -247,12 +249,13 @@ class PolicyAlignmentTests(unittest.TestCase):
         transition = dict(run.startup_diagnostics.get("old_to_new_transition", {}))
         self.assertTrue(bool(transition.get("transition_applied", False)))
         self.assertEqual(int(transition.get("visible_quarter", -1)), 2)
-        self.assertEqual(int(transition.get("internal_t", -1)), 2)
+        self.assertEqual(len(run.sim.history) - len(run.rows), 4)
+        self.assertEqual(int(transition.get("internal_t", -1)), 6)
         self.assertEqual(str(transition.get("transition_mode", "")), "NewLoopPolicies")
         self.assertTrue(bool(transition.get("launch_newloop_policies", False)))
         self.assertEqual(str(transition.get("post_transition_regime", "")), "NewLoop")
         self.assertEqual(str(transition.get("post_transition_tax_policy_mode", "")), "current")
-        self.assertEqual(int(transition.get("post_transition_automation_start_quarter", -1)), 2)
+        self.assertEqual(int(transition.get("post_transition_automation_start_quarter", -1)), int(transition["internal_t"]))
         self.assertAlmostEqual(float(run.rows[0]["automation"]), 0.0, places=12)
         self.assertAlmostEqual(float(run.rows[1]["automation"]), 0.0, places=12)
         self.assertGreater(float(run.rows[2]["automation"]), 0.0)
@@ -265,6 +268,8 @@ class PolicyAlignmentTests(unittest.TestCase):
         params["old_to_new_transition_quarters"] = 2
         params["old_to_new_transition_mode"] = "AutomationOnly"
         params["neutral_warmup_quarters"] = 4
+        params["old_loop_steady_state_warmup_min_quarters"] = 4
+        params["old_loop_steady_state_warmup_max_quarters"] = 4
         params["automation_start_quarter"] = 0
 
         run = run_simulation(n_quarters=4, cfg=cfg)
@@ -277,7 +282,9 @@ class PolicyAlignmentTests(unittest.TestCase):
         self.assertEqual(str(transition.get("post_transition_regime", "")), "OldLoop")
         self.assertEqual(str(transition.get("post_transition_tax_policy_mode", "")), "old_loop")
         self.assertFalse(bool(transition.get("post_transition_automation_disabled", True)))
-        self.assertEqual(int(transition.get("post_transition_automation_start_quarter", -1)), 2)
+        self.assertEqual(int(transition.get("visible_quarter", -1)), 2)
+        self.assertEqual(int(transition.get("internal_t", -1)), 6)
+        self.assertEqual(int(transition.get("post_transition_automation_start_quarter", -1)), int(transition["internal_t"]))
         self.assertAlmostEqual(float(run.rows[0]["automation"]), 0.0, places=12)
         self.assertAlmostEqual(float(run.rows[1]["automation"]), 0.0, places=12)
         self.assertGreater(float(run.rows[2]["automation"]), 0.0)
@@ -293,6 +300,8 @@ class PolicyAlignmentTests(unittest.TestCase):
         params["old_to_new_transition_quarters"] = 2
         params["old_to_new_transition_mode"] = "StayOldLoop"
         params["neutral_warmup_quarters"] = 4
+        params["old_loop_steady_state_warmup_min_quarters"] = 4
+        params["old_loop_steady_state_warmup_max_quarters"] = 4
         params["automation_start_quarter"] = 0
 
         run = run_simulation(n_quarters=4, cfg=cfg)
@@ -479,6 +488,8 @@ class PolicyAlignmentTests(unittest.TestCase):
         weights = np.zeros(sim.hh.n, dtype=float)
         weights[-1] = 1.0
         sim.hh.equity_weight_i = weights
+        for issuer in ("IS", "PS", "BANK"):
+            sim.hh.shares_by_issuer[issuer] = weights * sim.nodes["HH"].get("shares_" + issuer)
 
         snapshot = _household_wealth_snapshot(sim)
         private_equity = np.asarray(snapshot["private_equity"], dtype=float)
@@ -931,6 +942,7 @@ class PolicyAlignmentTests(unittest.TestCase):
         cfg["parameters"]["economic_regime"] = "OldToNew"
         cfg["parameters"]["old_to_new_transition_quarters"] = 1
         cfg["parameters"]["neutral_warmup_quarters"] = 0
+        cfg["parameters"]["old_loop_steady_state_warmup_enabled"] = False
 
         run = run_simulation(n_quarters=2, cfg=cfg)
 
@@ -1106,11 +1118,18 @@ class PolicyAlignmentTests(unittest.TestCase):
         cfg = make_cfg()
         cfg["parameters"]["startup_bootstrap_firm_capital"] = True
         sim = NewLoop(cfg)
+        sim.solve_within_tick_population(allow_income_support_trigger=False)
+        capacity_before = {
+            issuer: sim.state[key] + sim.nodes[issuer].get("K") * sim._sector_capacity_per_k(issuer)
+            for issuer, key in (("IS", "sector_base_capacity_info_real"), ("PS", "sector_base_capacity_phys_real"))
+        }
 
         sim._bootstrap_startup_lagged_retained()
 
         self.assertGreater(float(sim.nodes["IS"].get("K", 0.0)), 0.0)
         self.assertGreater(float(sim.nodes["PS"].get("K", 0.0)), 0.0)
+        for issuer, key in (("IS", "sector_base_capacity_info_real"), ("PS", "sector_base_capacity_phys_real")):
+            self.assertAlmostEqual(sim.state[key] + sim.nodes[issuer].get("K") * sim._sector_capacity_per_k(issuer), capacity_before[issuer], places=6)
 
     def test_disable_capex_and_depreciation_freezes_capital_path(self):
         cfg = make_cfg()

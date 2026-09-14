@@ -29,6 +29,7 @@ from .plotting import (
 )
 from .config import apply_economic_regime_overrides, get_default_config
 from .results import run_simulation
+from .newloop_types import TickResult
 from .streamlit_params import (
     INCOME_SUPPORT_MODE_PATH,
     INCOME_SUPPORT_MODE_WIDGET_KEY,
@@ -262,6 +263,25 @@ MONETARY_COLUMNS = {
 }
 
 
+# All per-household financial stocks and flows use nominal currency in raw rows.
+# Capacity and demand quantities are already real and must not be deflated twice.
+_REAL_QUANTITY_COLUMNS = {
+    "sector_capacity_info_per_h", "sector_capacity_physical_per_h",
+    "sector_demand_info_per_h", "sector_demand_physical_per_h",
+    "unmet_demand_info_per_h", "unmet_demand_physical_per_h",
+}
+MONETARY_COLUMNS |= {
+    name for name in TickResult.__dataclass_fields__
+    if (name.endswith("_per_h") or name.endswith("_per_active"))
+    and name not in _REAL_QUANTITY_COLUMNS
+}
+MONETARY_COLUMNS |= {
+    "hh_mortgage_balance_total", "hh_mortgage_orig_principal_total",
+    "money_supply_total", "bank_deposit_liab_total", "bank_reserves_total",
+    "money_issued_total", "money_issued_flow_q", "mortgage_paid_off_reissue_total",
+}
+
+
 def _compact_number(value: float, decimals: int = 2) -> str:
     x = float(value)
     ax = abs(x)
@@ -312,7 +332,7 @@ def _build_styled_rows(rows: Sequence[Dict[str, Any]]) -> Any:
     if not rows:
         return pd.DataFrame(rows)
 
-    df = pd.DataFrame(rows)
+    df = pd.DataFrame([{k: v for k, v in row.items() if not k.startswith("_")} for row in rows])
     formatters: Dict[str, Any] = {}
 
     for col in df.columns:
@@ -606,6 +626,7 @@ def _cfg_json(cfg: Dict[str, Any]) -> str:
 
 
 def _rows_csv(rows: Sequence[Dict[str, Any]]) -> str:
+    rows = [{k: v for k, v in row.items() if not k.startswith("_")} for row in rows]
     if not rows:
         return ""
     out = io.StringIO()
@@ -628,6 +649,7 @@ def _rows_for_value_mode(rows: Sequence[Dict[str, Any]], value_mode: str) -> Lis
         if p <= 0.0:
             p = 1e-9
         out = dict(row)
+        out["_monetary_scale"] = 1.0 / p
         for key in MONETARY_COLUMNS:
             if key in out:
                 out[key] = float(out[key]) / p
@@ -677,13 +699,11 @@ def _population_dist_for_value_mode(
     if str(value_mode).strip().lower() != "real":
         return {"before": dict(before), "after": dict(after)}
 
-    p0_eff = float(p0) if float(p0) > 0.0 else 1e-9
-
     def _scaled(snapshot: Dict[str, Any]) -> Dict[str, Any]:
         p = float(snapshot.get("price_level", 1.0))
         if p <= 0.0:
             p = 1e-9
-        scale = p0_eff / p
+        scale = 1.0 / p
         income = [float(v) * scale for v in snapshot.get("income", [])]
         wealth = [float(v) * scale for v in snapshot.get("wealth", [])]
         def _scale_groups(key: str) -> dict[str, list[float]]:
@@ -1132,7 +1152,7 @@ def main() -> None:
 
     st.caption(
         "Gini labels: Disposable is the model's post-policy household income measure. "
-        "Wealth is deposits plus household housing value plus allocated household equity claims minus loans."
+        "Wealth is deposits plus housing, owned corporate shares, and trust value, minus loans and unpaid interest."
     )
     st.caption(
         "Mortgage-burden metrics use required mortgage payment divided by pre-debt disposable income "
@@ -1298,7 +1318,7 @@ def main() -> None:
         wealth_after = after.get("wealth", [])
         if income_before and income_after and wealth_before and wealth_after:
             st.subheader("Population Distributions")
-            value_label = "Base-period dollars (real)" if display_value_mode == "real" else "Nominal dollars"
+            value_label = "Real units (nominal / price level)" if display_value_mode == "real" else "Nominal dollars"
 
             income_fig = plot_income_distribution_dual(
                 income_before,

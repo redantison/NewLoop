@@ -51,6 +51,9 @@ class HouseholdState:
     initial_tenure_code: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=int))
     equity_weight_i: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=float))
 
+    shares_by_issuer: Dict[str, np.ndarray] = field(default_factory=dict)
+    dividend_weights_prev: Dict[str, np.ndarray] = field(default_factory=dict)
+
     prev_income: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=float))
     prev_perm_income: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=float))
     prev_uis: float = 0.0
@@ -215,6 +218,12 @@ class TickResult:
     trust_value_per_h: float
     wages_total: float
     total_consumption: float
+    hh_deposit_drawdown_per_h: float
+    hh_other_debt_payments_per_h: float
+    hh_interest_arrears_per_h: float
+    bank_interest_accrued_per_h: float
+    bank_interest_collected_per_h: float
+    bank_cash_profit_per_h: float
     hh_cash_income_per_h: float
     hh_core_consumption_target_per_h: float
     hh_desired_consumption_per_h: float

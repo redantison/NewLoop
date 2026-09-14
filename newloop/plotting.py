@@ -41,6 +41,12 @@ METRIC_LABELS: Dict[str, str] = {
     "hh_deposits_per_h": "Household Deposits / Household",
     "hh_housing_value_per_h": "Household Housing Value / Household",
     "hh_debt_per_h": "Household Debt / Household",
+    "hh_interest_arrears_per_h": "Unpaid Mortgage Interest / Household",
+    "hh_deposit_drawdown_per_h": "Deposit Drawdown / Household",
+    "hh_other_debt_payments_per_h": "Other Debt Payments / Household",
+    "bank_interest_accrued_per_h": "Mortgage Interest Accrued / Household",
+    "bank_interest_collected_per_h": "Mortgage Interest Collected / Household",
+    "bank_cash_profit_per_h": "Bank Cash Profit / Household",
     "hh_mortgage_debt_per_h": "Household Mortgage Debt / Household",
     "hh_revolving_debt_per_h": "Household Revolving Debt / Household",
     "hh_mortgage_balance_total": "Outstanding Mortgage Balance",
@@ -224,7 +230,7 @@ def _series(rows: Sequence[Mapping[str, Any]], metric: str) -> List[float]:
                 if idx == 0:
                     filtered.append(float("nan"))
                 else:
-                    prev_equity_per_h = float(rows[idx - 1].get(equity_key, 0.0))
+                    prev_equity_per_h = float(rows[idx - 1].get(equity_key, 0.0)) / float(rows[idx - 1].get("_monetary_scale", 1.0))
                     if prev_equity_per_h < SPLIT_ROE_EQUITY_FLOOR_PER_H:
                         filtered.append(float("nan"))
                     else:
@@ -647,7 +653,9 @@ def plot_household_shortfall_sources(rows: Sequence[Mapping[str, Any]], axes: Se
     owner_housing = np.asarray([float(r.get("hh_owner_housing_payment_per_h", 0.0)) for r in rows], dtype=float)
     tax = np.asarray([float(r.get("hh_income_tax_cash_per_h", 0.0)) for r in rows], dtype=float)
 
-    left_layers = [realized_cons, mort_actual, rev_interest, rent, owner_housing, tax]
+    other_debt = np.asarray([float(r.get("hh_other_debt_payments_per_h", 0.0)) for r in rows])
+    investment = np.asarray([float(r.get("hh_equity_investment_per_h", 0.0)) for r in rows])
+    left_layers = [realized_cons, mort_actual, rev_interest, rent, owner_housing, tax, other_debt, investment]
     left_labels = [
         "Realized Consumption",
         "Actual Mortgage Payment",
@@ -655,14 +663,16 @@ def plot_household_shortfall_sources(rows: Sequence[Mapping[str, Any]], axes: Se
         "Rent",
         "Owner Housing Payment",
         "Income Tax",
+        "Other Debt Payments",
+        "Equity Purchases",
     ]
-    left_colors = ["#4daf4a", "#377eb8", "#984ea3", "#ff7f00", "#a65628", "#e41a1c"]
+    left_colors = ["#4daf4a", "#377eb8", "#984ea3", "#ff7f00", "#a65628", "#e41a1c", "#777777", "#e6ab02"]
     ax_left.stackplot(t, *left_layers, labels=left_labels, colors=left_colors, alpha=0.72)
     ax_left.plot(t, inflow, color="black", linewidth=2.2, label="Cash Inflow")
     ax_left.plot(t, mort_req, color="#08519c", linewidth=1.8, linestyle="--", label="Required Mortgage Payment")
     ax_left.set_title("Household Cash Uses (Actual)")
     ax_left.set_xlabel("Quarter")
-    ax_left.set_ylabel("Nominal / Household")
+    ax_left.set_ylabel(("Real Units" if "_monetary_scale" in rows[0] else "Nominal") + " / Household")
     ax_left.grid(True, alpha=0.25)
     ax_left.legend(loc="upper left", fontsize=9)
 
@@ -676,13 +686,7 @@ def plot_household_shortfall_sources(rows: Sequence[Mapping[str, Any]], axes: Se
         np.asarray([float(r.get("hh_mortgage_unpaid_shortfall_per_h", 0.0)) for r in rows], dtype=float)
     )
     deposit_drawdown = _suppress_near_zero(
-        np.maximum(
-            0.0,
-            (realized_cons + mort_actual + rev_interest + rent + owner_housing + tax)
-            - inflow
-            - mort_bridge
-            - overdraft,
-        )
+        np.asarray([float(r.get("hh_deposit_drawdown_per_h", 0.0)) for r in rows], dtype=float)
     )
 
     right_layers = [deposit_drawdown, mort_bridge, overdraft, unpaid_mort]
@@ -695,7 +699,7 @@ def plot_household_shortfall_sources(rows: Sequence[Mapping[str, Any]], axes: Se
     right_colors = ["#4daf4a", "#377eb8", "#a65628", "#e41a1c"]
     ax_right.set_title("Household Funding Gap Response")
     ax_right.set_xlabel("Quarter")
-    ax_right.set_ylabel("Nominal / Household")
+    ax_right.set_ylabel(("Real Units" if "_monetary_scale" in rows[0] else "Nominal") + " / Household")
     has_material_response = max(float(np.max(layer)) for layer in right_layers) > 0.0
     if not has_material_response:
         ax_right.axhline(0.0, color="0.35", linewidth=1.0)
@@ -757,7 +761,7 @@ def plot_mortgagor_distress(rows: Sequence[Mapping[str, Any]], axes: Sequence[An
     ax_left.plot(t, mort_bridge, color="#7570b3", linewidth=1.6, linestyle="-.", label="Mortgage Bridge To Revolving")
     ax_left.set_title("Mortgagor Cash Pressure")
     ax_left.set_xlabel("Quarter")
-    ax_left.set_ylabel("Nominal / Active Mortgagor")
+    ax_left.set_ylabel(("Real Units" if "_monetary_scale" in rows[0] else "Nominal") + " / Active Mortgagor")
     ax_left.grid(True, alpha=0.25)
     ax_left.legend(loc="upper left", fontsize=9)
 
@@ -1404,6 +1408,7 @@ def plot_wealth_distributions_full_zoom(
     debt = [-float(row.get("hh_debt_per_h", 0.0)) for row in rows]
     mortgage_debt = [-float(row.get("hh_mortgage_debt_per_h", 0.0)) for row in rows]
     revolving_debt = [-float(row.get("hh_revolving_debt_per_h", 0.0)) for row in rows]
+    interest_arrears = [-float(row.get("hh_interest_arrears_per_h", 0.0)) for row in rows]
     net_worth = [
         float(dep + hv + eq + trust + debt_val)
         for dep, hv, eq, trust, debt_val in zip(deposits, housing_value, direct_equity, trust_value, debt)
@@ -1417,6 +1422,7 @@ def plot_wealth_distributions_full_zoom(
     ax_left.plot(t, debt, label="Debt", color="#d62728", linewidth=2.0)
     ax_left.plot(t, mortgage_debt, label="Mortgage Debt", color="#d62728", linewidth=1.8, linestyle=":")
     ax_left.plot(t, revolving_debt, label="Revolving Debt", color="#8c564b", linewidth=1.8, linestyle=":")
+    ax_left.plot(t, interest_arrears, label="Unpaid Interest", color="#e377c2", linewidth=1.8, linestyle=":")
     ax_left.plot(t, net_worth, label="Net Worth", color="#9467bd", linewidth=2.4, linestyle="--")
     ax_left.axhline(0.0, color="0.4", linewidth=1.0, alpha=0.6)
     ax_left.set_title(_title_with_mode("Household Wealth Reservoirs", support_mode))
@@ -1438,7 +1444,7 @@ def plot_wealth_distributions_full_zoom(
     ax_right.step(edges[:-1], after_share, where="post", color="#ff7f0e", linewidth=2.2, linestyle="--", label="After")
     ax_right.axvline(float(np.median(w_b)), color="#1f77b4", linestyle=":", linewidth=1.8, alpha=0.9)
     ax_right.axvline(float(np.median(w_a)), color="#ff7f0e", linestyle=":", linewidth=1.8, alpha=0.9)
-    ax_right.set_title(_title_with_mode("Wealth Distribution (Bucketed Lines, Median +/- 3 Robust Sigma)", support_mode))
+    ax_right.set_title(_title_with_mode("Wealth Distribution", support_mode))
     ax_right.set_xlabel(value_label)
     ax_right.set_ylabel("Share of Households")
     ax_right.set_xlim(x_lo, x_hi)
@@ -1452,8 +1458,8 @@ def plot_wealth_distributions_full_zoom(
     n_after_above = int(np.sum(w_a > x_hi))
     if n_before_below > 0 or n_after_below > 0 or n_before_above > 0 or n_after_above > 0:
         note = (
-            f"Clipped tails: below Before {n_before_below}, After {n_after_below}; "
-            f"above Before {n_before_above}, After {n_after_above}"
+            f"Outside view: Before {n_before_below + n_before_above:,}; "
+            f"After {n_after_below + n_after_above:,}"
         )
         ax_right.text(0.01, 0.99, note, transform=ax_right.transAxes, ha="left", va="top", fontsize=9, color="0.35")
     return fig
