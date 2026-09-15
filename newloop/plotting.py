@@ -126,6 +126,17 @@ METRIC_LABELS: Dict[str, str] = {
     "hh_mortgage_bridge_to_revolving_per_h": "Mortgage Bridge To Revolving / Household",
     "hh_overdraft_to_revolving_per_h": "Overdraft To Revolving / Household",
     "hh_mortgage_unpaid_shortfall_per_h": "Unpaid Mortgage Shortfall / Household",
+    "hh_unpaid_bills_per_h": "Unpaid Household Bills / Household",
+    "hh_unpaid_bills_added_per_h": "New Unpaid Bills / Household",
+    "hh_unpaid_bills_paid_per_h": "Arrears Payments / Household",
+    "hh_unpaid_interest_per_h": "Unpaid Revolving Interest / Household",
+    "hh_unpaid_rent_per_h": "Unpaid Rent / Household",
+    "hh_unpaid_owner_housing_per_h": "Unpaid Owner Housing / Household",
+    "hh_unpaid_income_tax_per_h": "Unpaid Income Tax / Household",
+    "hh_payment_shortfall_share": "Households With Payment Shortfalls",
+    "hh_in_arrears_share": "Households With Arrears",
+    "hh_ever_payment_shortfall_share": "Households Ever With Payment Shortfalls",
+    "hh_zero_consumption_share": "Households With Zero Consumption",
     "household_credit_created_per_h": "Household Credit Created / Household",
     "household_credit_retired_per_h": "Household Credit Retired / Household",
     "household_net_credit_flow_per_h": "Household Net Credit Flow / Household",
@@ -658,7 +669,8 @@ def plot_household_shortfall_sources(rows: Sequence[Mapping[str, Any]], axes: Se
 
     other_debt = np.asarray([float(r.get("hh_other_debt_payments_per_h", 0.0)) for r in rows])
     investment = np.asarray([float(r.get("hh_equity_investment_per_h", 0.0)) for r in rows])
-    left_layers = [realized_cons, mort_actual, rev_interest, rent, owner_housing, tax, other_debt, investment]
+    arrears_paid = np.asarray([float(r.get("hh_unpaid_bills_paid_per_h", 0.0)) for r in rows])
+    left_layers = [realized_cons, mort_actual, rev_interest, rent, owner_housing, tax, other_debt, arrears_paid, investment]
     left_labels = [
         "Realized Consumption",
         "Actual Mortgage Payment",
@@ -667,9 +679,10 @@ def plot_household_shortfall_sources(rows: Sequence[Mapping[str, Any]], axes: Se
         "Owner Housing Payment",
         "Income Tax",
         "Other Debt Payments",
+        "Arrears Payments",
         "Equity Purchases",
     ]
-    left_colors = ["#4daf4a", "#377eb8", "#984ea3", "#ff7f00", "#a65628", "#e41a1c", "#777777", "#e6ab02"]
+    left_colors = ["#4daf4a", "#377eb8", "#984ea3", "#ff7f00", "#a65628", "#e41a1c", "#777777", "#f781bf", "#e6ab02"]
     ax_left.stackplot(t, *left_layers, labels=left_labels, colors=left_colors, alpha=0.72)
     ax_left.plot(t, inflow, color="black", linewidth=2.2, label="Cash Inflow")
     ax_left.plot(t, mort_req, color="#08519c", linewidth=1.8, linestyle="--", label="Required Mortgage Payment")
@@ -692,14 +705,18 @@ def plot_household_shortfall_sources(rows: Sequence[Mapping[str, Any]], axes: Se
         np.asarray([float(r.get("hh_deposit_drawdown_per_h", 0.0)) for r in rows], dtype=float)
     )
 
-    right_layers = [deposit_drawdown, mort_bridge, overdraft, unpaid_mort]
+    unpaid_bills = _suppress_near_zero(
+        np.asarray([float(r.get("hh_unpaid_bills_added_per_h", 0.0)) for r in rows], dtype=float)
+    )
+    right_layers = [deposit_drawdown, mort_bridge, overdraft, unpaid_mort, unpaid_bills]
     right_labels = [
         "Deposit Drawdown",
         "Mortgage Bridge To Revolving",
         "Overdraft To Revolving",
         "Unpaid Mortgage Shortfall",
+        "Unpaid Household Bills",
     ]
-    right_colors = ["#4daf4a", "#377eb8", "#a65628", "#e41a1c"]
+    right_colors = ["#4daf4a", "#377eb8", "#a65628", "#e41a1c", "#984ea3"]
     ax_right.set_title("Household Funding Gap Response")
     ax_right.set_xlabel("Quarter")
     ax_right.set_ylabel(("Real Units" if "_monetary_scale" in rows[0] else "Nominal") + " / Household")
@@ -726,6 +743,119 @@ def plot_household_shortfall_sources(rows: Sequence[Mapping[str, Any]], axes: Se
     if has_material_response:
         ax_right.legend(loc="upper left", fontsize=9)
 
+    return fig
+
+
+def plot_shortfall_financing_comparison(
+    financing_on: Sequence[Mapping[str, Any]],
+    financing_off: Sequence[Mapping[str, Any]],
+    *,
+    household_count: int,
+) -> Any:
+    """Compare matching runs using raw rows: real consumption and nominal stocks."""
+    import matplotlib.pyplot as plt
+    from matplotlib.ticker import PercentFormatter
+
+    on, off = _require_rows(financing_on), _require_rows(financing_off)
+    if household_count <= 0:
+        raise ValueError("A positive household count is required for aggregate loan and bill balances.")
+    t = [r["t"] for r in on]
+    if t != [r["t"] for r in off]:
+        raise ValueError("Financing comparisons require matching visible quarters.")
+    if any("_monetary_scale" in r for rows in (on, off) for r in rows):
+        raise ValueError("Financing comparisons require raw nominal rows.")
+
+    def values(rows, key):
+        return np.asarray([float(r[key]) for r in rows])
+
+    blue, orange, charcoal = "#26688f", "#b85229", "#303840"
+    fig, axs = plt.subplots(2, 2, figsize=(13, 8.5), constrained_layout=True)
+    ax_cons, ax_share, ax_debt, ax_money = axs.flat
+    for rows, setting, color in ((on, "on", blue), (off, "off", orange)):
+        ax_cons.plot(t, values(rows, "real_consumption"), label=f"Financing {setting}", color=color, linewidth=2.4)
+        ax_money.plot(t, values(rows, "money_supply_total"), label=f"Financing {setting}", color=color, linewidth=2.4)
+    ax_cons.set_title("Real Consumption")
+    ax_cons.set_ylabel("Real Units / Quarter")
+    ax_money.set_title("Money Supply")
+    ax_money.set_ylabel("Nominal Total")
+
+    ax_share.plot(t, values(off, "hh_zero_consumption_share"), color=charcoal, linewidth=2.4,
+                  label="Zero consumption · financing off")
+    ax_share.plot(t, values(on, "hh_zero_consumption_share"), color=blue, linewidth=2, linestyle="--",
+                  label="Zero consumption · financing on")
+    ax_share.plot(t, values(off, "hh_in_arrears_share"), color=orange, linewidth=2.4,
+                  label="In arrears · financing off")
+    ax_share.set_title("Households Affected")
+    ax_share.set_ylabel("Share of All Households")
+    ax_share.yaxis.set_major_formatter(PercentFormatter(1.0))
+    ax_share.set_ylim(0, max(.05, min(1.0, ax_share.get_ylim()[1] * 1.2)))
+    first_shortfall = next((r["t"] for r in off if r["hh_payment_shortfall_share"] > 0), None)
+    if first_shortfall is not None:
+        ax_share.axvline(first_shortfall, color="0.6", linestyle=":", linewidth=1)
+        ax_share.text(.02, .97, f"First shortfall with financing off: Q{first_shortfall}",
+                      transform=ax_share.transAxes, va="top", fontsize=9)
+
+    for rows, key, label, color, style in (
+        (on, "hh_revolving_debt_per_h", "Revolving loans · financing on", blue, "-"),
+        (off, "hh_unpaid_bills_per_h", "Unpaid bills · financing off", orange, "-"),
+        (off, "hh_revolving_debt_per_h", "Revolving loans · financing off", charcoal, "--"),
+    ):
+        ax_debt.plot(t, household_count * values(rows, key), label=label, color=color, linestyle=style, linewidth=2.4)
+    ax_debt.set_title("Loan Balances and Unpaid Bills")
+    ax_debt.set_ylabel("Nominal Total")
+    for ax in axs.flat:
+        ax.set_xlabel("Visible Quarter")
+        ax.set_ylim(bottom=0)
+        ax.grid(alpha=.2)
+        if ax is ax_share:
+            ax.legend(loc="lower right", fontsize=9)
+        else:
+            _apply_compact_y_ticks(ax)
+            ax.legend(loc="upper left", fontsize=9)
+    return fig
+
+
+def plot_household_payment_distress(rows: Sequence[Mapping[str, Any]], axes: Sequence[Any] | None = None) -> Any:
+    """Show payment distress and the stock of unpaid nonmortgage bills."""
+    import matplotlib.pyplot as plt
+    from matplotlib.ticker import PercentFormatter
+
+    rows = _require_rows(rows)
+    t = [float(r.get("t", idx)) for idx, r in enumerate(rows)]
+    if axes is None:
+        fig, axs = plt.subplots(1, 2, figsize=(13, 4.5), constrained_layout=True)
+    else:
+        axs = list(axes)
+        if len(axs) != 2:
+            raise ValueError("plot_household_payment_distress requires exactly two axes.")
+        fig = axs[0].figure
+    ax_share, ax_bills = axs
+    for key, label, color, style in (
+        ("hh_ever_payment_shortfall_share", "Ever had a payment shortfall", "#984ea3", "-"),
+        ("hh_in_arrears_share", "Currently have arrears", "#e41a1c", "--"),
+        ("hh_payment_shortfall_share", "Payment shortfall this quarter", "#ff7f00", ":"),
+        ("hh_zero_consumption_share", "Zero consumption", "#333333", "-."),
+    ):
+        ax_share.plot(t, [float(r.get(key, 0.0)) for r in rows], label=label,
+                      color=color, linestyle=style, linewidth=2)
+    ax_share.set_title("Household Payment Distress")
+    ax_share.set_ylabel("Share of Households")
+    ax_share.set_ylim(bottom=0, top=max(0.05, min(1.0, ax_share.get_ylim()[1])))
+    ax_share.yaxis.set_major_formatter(PercentFormatter(1.0))
+    ax_share.legend(loc="upper left", fontsize=9)
+    keys = ("hh_unpaid_interest_per_h", "hh_unpaid_rent_per_h",
+            "hh_unpaid_owner_housing_per_h", "hh_unpaid_income_tax_per_h")
+    layers = [np.asarray([float(r.get(key, 0.0)) for r in rows]) for key in keys]
+    ax_bills.stackplot(t, *layers, labels=["Revolving Interest", "Rent", "Owner Housing", "Income Tax"],
+                      colors=["#984ea3", "#ff7f00", "#a65628", "#e41a1c"], alpha=0.8)
+    ax_bills.set_title("Accumulated Unpaid Household Bills")
+    ax_bills.set_ylabel(("Real Units" if "_monetary_scale" in rows[0] else "Nominal") + " / Household")
+    ax_bills.set_ylim(bottom=0)
+    _apply_compact_y_ticks(ax_bills)
+    ax_bills.legend(loc="upper left", fontsize=9)
+    for ax in axs:
+        ax.set_xlabel("Quarter")
+        ax.grid(alpha=0.25)
     return fig
 
 

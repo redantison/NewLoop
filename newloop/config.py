@@ -89,6 +89,7 @@ config = {
         "hh_buffer_spend_excess_rate_q": 0.09,
         "hh_buffer_shortfall_conserve_rate_q": 0.06,
         "hh_consumption_fixed_obligation_reserve_share": 0.0,
+        "hh_shortfall_financing_enabled": True,
         "hh_equity_investment_enabled": True,
         "equity_issuance_needs_only": True,  # raise only uncovered actionable CAPEX funding
         "hh_equity_investment_pre_consumption": True,

@@ -24,6 +24,10 @@ def main():
     parser.add_argument('--quarters', type=int, default=120)
     parser.add_argument('--limit-equity-issuance', action=argparse.BooleanOptionalAction,
                         default=None, help='Override the financing-needs issuance toggle.')
+    parser.add_argument('--finance-household-shortfalls', action=argparse.BooleanOptionalAction,
+                        default=None, help='Finance household payment shortfalls, or accumulate unpaid bills.')
+    parser.add_argument('--modes', nargs='+', choices=('OldLoop', 'AutomationOnly', 'NewLoopPolicies', 'MortgagePolicy'),
+                        default=('OldLoop', 'AutomationOnly', 'NewLoopPolicies', 'MortgagePolicy'))
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     original_post = NewLoop.post_tick_population
@@ -34,6 +38,10 @@ def main():
         before_cash = {issuer: sim.nodes[issuer].get('deposits') for issuer in ('IS', 'PS')}
         before_equity = {issuer: sim._firm_broad_equity_proxy(issuer, price) for issuer in ('IS', 'PS')}
         before_bank = sim.nodes['BANK'].get('equity')
+        before_hh_cash = sim.hh.sum_deposits()
+        before_rev = float(sim.hh.revolving_loans.sum())
+        before_bills = float(sim.hh.unpaid_bills_i().sum())
+        no_mortgages = not np.any(sim.hh.mortgage_loans)
         buffers = {issuer: sim._equity_operating_buffer_nom(issuer) for issuer in ('IS', 'PS')}
         result = original_post(sim, sol)
         record = dict(internal_t=sim.state['t'])
@@ -55,7 +63,19 @@ def main():
                     - max(0.0, before_dividend - target - buffers[issuer]))
         record['bank_earnings_gap'] = sim.nodes['BANK'].get('equity') - before_bank - sol['retained_bk']
         record['housing_revenue_gap'] = (sol['housing_revenue_fa'] + sol['housing_revenue_fh']
-            - sim.state['renter_rent_total'] - sim.state['owner_housing_payment_total'])
+            - sim.state['renter_rent_total'] - sim.state['owner_housing_payment_total']
+            - sim.state['hh_arrears_housing_receipts_total'])
+        record['unpaid_bill_rollforward_gap'] = (float(sim.hh.unpaid_bills_i().sum()) - before_bills
+            - sim.state['hh_unpaid_bills_added_total'] + sim.state['hh_unpaid_bills_paid_total'])
+        if no_mortgages and not np.any(sim.hh.mortgage_loans):
+            record['household_cash_gap'] = sim.hh.sum_deposits() - before_hh_cash - (
+                float(np.sum(sol['y']) - np.sum(sol['c_hh_nom']))
+                + float(sim.hh.revolving_loans.sum()) - before_rev
+                + sim.state['hh_unpaid_bills_added_total'] - sim.state['hh_unpaid_bills_paid_total']
+                + sim.state['tax_rebate_total'] + sim.state['hh_money_issuance_total']
+                - sim.state['hh_equity_investment_total'])
+        if not sim.params['hh_shortfall_financing_enabled']:
+            record['shortfall_credit_gap'] = sim.state['hh_overdraft_total'] + sim.state['mort_revolving_bridge_total']
         record['interest_claim_gap'] = sim.nodes['BANK'].get('interest_receivable') - float(sim.hh.mort_interest_arrears_q.sum())
         record['max_solver_delta'] = sol['solver_max_delta']
         records.append(record)
@@ -68,12 +88,14 @@ def main():
     summary = {}
     NewLoop.post_tick_population = post
     try:
-        for mode in ('OldLoop', 'AutomationOnly', 'NewLoopPolicies', 'MortgagePolicy'):
+        for mode in args.modes:
             print('START', mode, flush=True)
             records = []
             cfg = get_default_config()
             if args.limit_equity_issuance is not None:
                 cfg['parameters']['equity_issuance_needs_only'] = args.limit_equity_issuance
+            if args.finance_household_shortfalls is not None:
+                cfg['parameters']['hh_shortfall_financing_enabled'] = args.finance_household_shortfalls
             cfg['parameters'].update(economic_regime='OldToNew', hard_assert_sfc=True,
                 old_to_new_transition_mode={'OldLoop': 'StayOldLoop', 'MortgagePolicy': 'StayOldLoop'}.get(mode, mode))
             _apply_loop_mode_mortgage_defaults(cfg['parameters'], mode != 'MortgagePolicy')
@@ -81,6 +103,12 @@ def main():
             invariants = run.sim.inv_history
             summary[mode] = {
                 'equity_issuance_needs_only': cfg['parameters']['equity_issuance_needs_only'],
+                'finance_household_shortfalls': cfg['parameters']['hh_shortfall_financing_enabled'],
+                'first_payment_shortfall_quarter': next((r['t'] for r in run.rows if r['hh_payment_shortfall_share'] > 0), None),
+                'final_payment_shortfall_share': run.rows[-1]['hh_payment_shortfall_share'],
+                'final_in_arrears_share': run.rows[-1]['hh_in_arrears_share'],
+                'final_unpaid_bills_nominal_per_h': run.rows[-1]['hh_unpaid_bills_per_h'],
+                'final_zero_consumption_share': run.rows[-1]['hh_zero_consumption_share'],
                 'households': run.sim.hh.n,
                 'prerun_quarters': run.startup_diagnostics['old_loop_steady_state_warmup_completed'],
                 'prerun_converged': run.startup_diagnostics['old_loop_steady_state_warmup_converged'],

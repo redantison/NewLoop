@@ -163,7 +163,7 @@ def _household_wealth_snapshot(sim: NewLoop, *, comprehensive: bool = COMPREHENS
     housing_i = np.asarray(hh.housing_escrow, dtype=float)
     mort_i = np.asarray(hh.mortgage_loans, dtype=float)
     rev_i = np.asarray(hh.revolving_loans, dtype=float)
-    loan_i = mort_i + rev_i + hh.mort_interest_arrears_q
+    loan_i = mort_i + rev_i + hh.mort_interest_arrears_q + hh.unpaid_bills_i()
     equity_i = np.zeros_like(deposits_i, dtype=float)
     trust_i = np.zeros_like(deposits_i, dtype=float)
 
@@ -239,7 +239,7 @@ def _population_distribution_snapshot(
     housing_i = np.asarray(hh.housing_escrow, dtype=float)
     mort_i = np.asarray(hh.mortgage_loans, dtype=float)
     rev_i = np.asarray(hh.revolving_loans, dtype=float)
-    loan_i = mort_i + rev_i + hh.mort_interest_arrears_q
+    loan_i = mort_i + rev_i + hh.mort_interest_arrears_q + hh.unpaid_bills_i()
     income_i = np.asarray(sol.get("y", []), dtype=float)
     if income_i.shape[0] != n:
         income_i = np.asarray(hh.prev_income, dtype=float)

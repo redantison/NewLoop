@@ -537,6 +537,7 @@ PARAMETER_CONTROLS: tuple[ParamControl, ...] = (
         help_text="Experimental extra total-factor-productivity bonus for the Physical sector. Capacity and productivity scale as 1 + alpha * completed automation share.",
     ),
     ParamControl(("hh_buffer_spend_excess_rate_q",), "HH Spend Excess Buffer Rate (q)", "Price & Capital", "float", 0.0, 1.0, 0.01),
+    ParamControl(("hh_shortfall_financing_enabled",), "Finance Household Shortfalls with New Debt", "Price & Capital", "bool", help_text="On preserves automatic revolving credit for payment shortfalls. Off limits payments to household cash and accumulates unpaid bills as arrears while the economy keeps running. Existing debts remain; unpaid bills do not earn interest or fund creditor dividends."),
     ParamControl(("hh_buffer_shortfall_conserve_rate_q",), "HH Conserve Shortfall Buffer Rate (q)", "Price & Capital", "float", 0.0, 1.0, 0.01),
     ParamControl(
         ("hh_consumption_fixed_obligation_reserve_share",),

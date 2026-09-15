@@ -23,6 +23,8 @@ from .plotting import (
     plot_income_distribution_dual,
     plot_mortgagor_distress,
     plot_household_shortfall_sources,
+    plot_household_payment_distress,
+    plot_shortfall_financing_comparison,
     plot_mortgage_stock_over_time,
     plot_metric_lines,
     plot_wealth_distributions_full_zoom,
@@ -51,6 +53,10 @@ from .streamlit_params import (
 
 
 PERCENT_COLUMNS = {
+    "hh_payment_shortfall_share",
+    "hh_in_arrears_share",
+    "hh_ever_payment_shortfall_share",
+    "hh_zero_consumption_share",
     "automation",
     "automation_flow",
     "automation_info",
@@ -766,10 +772,14 @@ def _render_parameter_controls(
         st.session_state["startup_diagnostics"] = {}
         st.session_state["baseline_calibration"] = {}
         st.session_state["support_debug"] = {}
+        st.session_state["shortfall_comparison"] = {}
         st.session_state["last_run_cfg_json"] = ""
         st.session_state["last_run_quarters"] = 0
 
     def _render_control(control: Any) -> None:
+        if (st.session_state.get(LOOP_MODE_SELECT_KEY) == "AutomationOnly"
+                and tuple(control.path) == ("hh_shortfall_financing_enabled",)):
+            return  # AutomationOnly exposes this choice in Run Controls.
         key = control_widget_key(control)
         if control.kind == "bool":
             st.checkbox(control.label, key=key, help=control.help_text or None)
@@ -824,6 +834,16 @@ def _render_parameter_controls(
             if loop_mode != last_regime:
                 _apply_regime_ui_defaults(st.session_state, {"parameters": copy.deepcopy(base_params)}, loop_mode)
 
+        if loop_mode == "AutomationOnly":
+            st.radio(
+                "Shortfall financing",
+                options=(True, False),
+                key="param__hh_shortfall_financing_enabled",
+                format_func=lambda financed: "Financing on only (one run)" if financed else "Financing on, then off (two runs)",
+                help="Start with the single run to see automatic overdraft-to-revolving financing. "
+                     "Then select two runs to show what happens without it. The two-run dashboard ends with financing off.",
+            )
+
         quarters = st.slider(
             "Quarters",
             min_value=RUN_MIN_QUARTERS,
@@ -856,6 +876,14 @@ def _render_parameter_controls(
                 "Mortgage policy experiment: visible Old Loop quarters first, mortgages enabled, and no automation "
                 "or New Loop policy handoff unless you change the lower-level controls."
             )
+        if active_loop_mode == "AutomationOnly":
+            if st.session_state["param__hh_shortfall_financing_enabled"]:
+                st.caption("One run with automatic overdraft-to-revolving financing.")
+            else:
+                st.caption(
+                    "Runs financing on first, then off. Main charts, distributions, and CSV show financing off. "
+                    "The on/off comparison graphs appear last."
+                )
 
         for section in SECTION_ORDER:
             controls = grouped_controls.get(section, [])
@@ -972,6 +1000,50 @@ def _cached_run_payload(
     }
 
 
+def _run_dashboard_payload(
+    n_quarters: int,
+    cfg_json: str,
+    progress_callback: Callable[[str, int, int], None] | None = None,
+) -> Dict[str, Any]:
+    """Run once, or run AutomationOnly financing on then off and return the off case."""
+    cfg = json.loads(cfg_json)
+    params = cfg.get("parameters", {})
+    selected_financing = bool(params.get("hh_shortfall_financing_enabled", True))
+    compare = (params.get("economic_regime") == "OldToNew"
+               and params.get("old_to_new_transition_mode") == "AutomationOnly"
+               and not selected_financing)
+
+    if not compare:
+        selected = _cached_run_payload(n_quarters, cfg_json, progress_callback)
+        selected["shortfall_comparison"] = {}
+        return selected
+
+    def progress_for(financed: bool, number: int):
+        if progress_callback is None:
+            return progress_callback
+
+        def update(stage: str, completed: int, total: int) -> None:
+            setting = "on" if financed else "off"
+            progress_callback(f"Run {number} of 2 — financing {setting}: {stage}", completed, total)
+        return update
+
+    # Each run starts from the same configuration/seed. Only the financing rule
+    # changes, including during its own pre-run; never reuse a final simulation state.
+    params["hh_shortfall_financing_enabled"] = True
+    baseline = _cached_run_payload(n_quarters, _cfg_json(cfg), progress_for(True, 1))
+    selected = _cached_run_payload(n_quarters, cfg_json, progress_for(False, 2))
+    comparison = {}
+    for financed, payload in ((True, baseline), (False, selected)):
+        comparison["on" if financed else "off"] = {
+            "rows": payload.get("rows", []),
+            "startup_diagnostics": payload.get("startup_diagnostics", {}),
+            "household_count": payload.get("support_debug", {}).get("household_count", 0),
+            "error": payload.get("error", ""),
+        }
+    selected["shortfall_comparison"] = comparison
+    return selected
+
+
 def main() -> None:
     import matplotlib.pyplot as plt
     import streamlit as st
@@ -1005,6 +1077,8 @@ def main() -> None:
         st.session_state["baseline_calibration"] = {}
     if "support_debug" not in st.session_state:
         st.session_state["support_debug"] = {}
+    if "shortfall_comparison" not in st.session_state:
+        st.session_state["shortfall_comparison"] = {}
     if "last_run_error" not in st.session_state:
         st.session_state["last_run_error"] = ""
     if "last_run_cfg_json" not in st.session_state:
@@ -1039,7 +1113,7 @@ def main() -> None:
             except TypeError:
                 progress_bar.progress(fraction)
 
-        payload = _cached_run_payload(
+        payload = _run_dashboard_payload(
             quarters,
             current_cfg_json,
             progress_callback=_update_run_progress,
@@ -1050,6 +1124,7 @@ def main() -> None:
         st.session_state["startup_diagnostics"] = dict(payload.get("startup_diagnostics", {}))
         st.session_state["baseline_calibration"] = dict(payload.get("baseline_calibration", {}))
         st.session_state["support_debug"] = dict(payload.get("support_debug", {}))
+        st.session_state["shortfall_comparison"] = dict(payload.get("shortfall_comparison", {}))
         st.session_state["last_run_error"] = run_error
         st.session_state["last_run_cfg_json"] = current_cfg_json
         st.session_state["last_run_quarters"] = int(quarters)
@@ -1058,6 +1133,8 @@ def main() -> None:
             progress_bar.empty()
 
     rows_raw: List[Dict[str, Any]] = list(st.session_state["rows"])
+    saved_cfg = json.loads(st.session_state.get("last_run_cfg_json", "") or "{}")
+    displayed_financing = bool(saved_cfg.get("parameters", {}).get("hh_shortfall_financing_enabled", True))
     run_error = str(st.session_state.get("last_run_error", "")).strip()
     config_stale = bool(st.session_state.get("app__force_stale_after_reset", False)) or (
         st.session_state.get("last_run_cfg_json", "") != current_cfg_json
@@ -1102,6 +1179,12 @@ def main() -> None:
         if not has_selected_regime:
             st.info("Select a loop mode under `Run Model`, then click `Run Model` to start the simulation.")
         return
+
+    st.caption(
+        "Displayed run — shortfall financing: "
+        + ("ON (automatic overdraft to revolving)." if displayed_financing else "OFF (unpaid bills accumulate as arrears).")
+        + " Individual charts, distributions, and the run CSV use this case."
+    )
 
     line_metrics = selected_metrics or [m for m in DEFAULT_LINE_METRICS if m not in {"gini_market", "gini_disp", "gini_wealth"}]
     line_metrics = line_metrics[:2]
@@ -1152,7 +1235,7 @@ def main() -> None:
 
     st.caption(
         "Gini labels: Disposable is the model's post-policy household income measure. "
-        "Wealth is deposits plus housing, owned corporate shares, and trust value, minus loans and unpaid interest."
+        "Wealth is deposits plus housing, owned corporate shares, and trust value, minus loans, unpaid interest, and unpaid bills."
     )
     st.caption(
         "Mortgage-burden metrics use required mortgage payment divided by pre-debt disposable income "
@@ -1296,10 +1379,24 @@ def main() -> None:
 
     shortfall_fig, shortfall_axes = plt.subplots(1, 2, figsize=(13, 4.5), constrained_layout=True)
     plot_household_shortfall_sources(rows, axes=shortfall_axes)
+    shortfall_axes[1].set_title(
+        "Household Funding Gap Response\nShortfall financing: " + ("ON" if displayed_financing else "OFF")
+    )
     if config_stale:
         _mark_figure_stale(shortfall_fig)
     st.pyplot(shortfall_fig, clear_figure=False)
     plt.close(shortfall_fig)
+
+    distress_fig = plot_household_payment_distress(rows)
+    if config_stale:
+        _mark_figure_stale(distress_fig)
+    st.pyplot(distress_fig, clear_figure=False)
+    plt.close(distress_fig)
+    st.caption(
+        "Payment shortfalls can be financed by new debt or left unpaid, according to the run setting. "
+        "Unpaid bills accumulate without stopping the simulation; creditors receive cash only when paid. "
+        "Mortgage arrears are included in the household share and reported separately from unpaid bills."
+    )
 
     mortgagor_fig, mortgagor_axes = plt.subplots(1, 2, figsize=(13, 4.5), constrained_layout=True)
     plot_mortgagor_distress(rows, axes=mortgagor_axes)
@@ -1417,6 +1514,37 @@ def main() -> None:
         mime="text/csv",
     )
 
+
+    if selected_regime == "AutomationOnly" and not displayed_financing:
+        st.subheader("Shortfall Financing: On vs Off")
+        comparison = st.session_state["shortfall_comparison"]
+        if not comparison:
+            st.info("Run Model to generate both shortfall financing cases for comparison.")
+        else:
+            comparison_errors = [f"Financing {setting}: {case['error']}"
+                                 for setting, case in comparison.items() if case.get("error")]
+            if comparison_errors:
+                st.warning("The comparison could not complete. " + " ".join(comparison_errors))
+            else:
+                on_case, off_case = comparison["on"], comparison["off"]
+                comparison_fig = plot_shortfall_financing_comparison(
+                    on_case["rows"], off_case["rows"], household_count=on_case["household_count"])
+                if config_stale:
+                    _mark_figure_stale(comparison_fig)
+                st.pyplot(comparison_fig, clear_figure=False)
+                plt.close(comparison_fig)
+                st.caption(
+                    "Both cases use the same settings and population seed, changing only shortfall financing. "
+                    "Consumption is real; loan balances, unpaid bills, and money supply are nominal totals "
+                    "in this comparison, in both display modes. The main charts and distributions above show financing OFF."
+                )
+                preruns = []
+                for setting, case in comparison.items():
+                    diag = case["startup_diagnostics"]
+                    completed = int(diag.get("old_loop_steady_state_warmup_completed", 0) or 0)
+                    status = " (not converged)" if completed > 0 and diag.get("old_loop_steady_state_warmup_converged") is False else ""
+                    preruns.append(f"financing {setting}: {completed} quarters{status}")
+                st.caption("Independent pre-runs — " + "; ".join(preruns) + ".")
 
 if __name__ == "__main__":
     main()

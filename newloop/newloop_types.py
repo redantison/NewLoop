@@ -53,6 +53,8 @@ class HouseholdState:
 
     shares_by_issuer: Dict[str, np.ndarray] = field(default_factory=dict)
     dividend_weights_prev: Dict[str, np.ndarray] = field(default_factory=dict)
+    payment_arrears: Dict[str, np.ndarray] = field(default_factory=dict)
+    ever_payment_shortfall: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=bool))
 
     prev_income: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=float))
     prev_perm_income: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=float))
@@ -68,6 +70,12 @@ class HouseholdState:
     mort_dlnI_sm_prev: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=float))
 
     def ensure_memos(self) -> None:
+        from .household_payments import BILL_TYPES
+        for bill in BILL_TYPES:
+            if bill not in self.payment_arrears or self.payment_arrears[bill].shape != (self.n,):
+                self.payment_arrears[bill] = np.zeros(self.n, dtype=float)
+        if self.ever_payment_shortfall.shape != (self.n,):
+            self.ever_payment_shortfall = np.zeros(self.n, dtype=bool)
         if (self.liquid_buffer_months_target.size == 0) or (self.liquid_buffer_months_target.shape[0] != self.n):
             self.liquid_buffer_months_target = np.zeros(self.n, dtype=float)
         if (self.prev_income.size == 0) or (self.prev_income.shape[0] != self.n):
@@ -119,6 +127,9 @@ class HouseholdState:
 
     def sum_loans(self) -> float:
         return float(np.sum(self.mortgage_loans) + np.sum(self.revolving_loans))
+
+    def unpaid_bills_i(self) -> np.ndarray:
+        return sum(self.payment_arrears.values(), np.zeros(self.n, dtype=float))
 
 
 @dataclass
@@ -239,6 +250,17 @@ class TickResult:
     hh_income_tax_cash_per_h: float
     hh_mortgage_bridge_to_revolving_per_h: float
     hh_overdraft_to_revolving_per_h: float
+    hh_unpaid_bills_per_h: float
+    hh_unpaid_bills_added_per_h: float
+    hh_unpaid_bills_paid_per_h: float
+    hh_unpaid_interest_per_h: float
+    hh_unpaid_rent_per_h: float
+    hh_unpaid_owner_housing_per_h: float
+    hh_unpaid_income_tax_per_h: float
+    hh_payment_shortfall_share: float
+    hh_in_arrears_share: float
+    hh_ever_payment_shortfall_share: float
+    hh_zero_consumption_share: float
     hh_mortgage_unpaid_shortfall_per_h: float
     household_credit_created_per_h: float
     household_credit_retired_per_h: float

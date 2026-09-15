@@ -15,6 +15,7 @@ from .housing_affordability import (
     compute_affordable_housing_profile,
     compute_old_loop_mortgage_underwriting_profile,
 )
+from .household_payments import BILL_TYPES, SHORTFALL_TOLERANCE_NOM, allocate_household_payments
 from .mathutils import _as_np, _pct, _pct_np, automation_two_hump, calculate_gini_np
 from .mortgage import (
     DEFAULT_MORTGAGE_TERM_QUARTERS,
@@ -1265,7 +1266,8 @@ class NewLoop:
                 else np.zeros_like(y_guess_arr, dtype=float)
             )
             rev_pay_rate = max(0.0, min(1.0, float(self.params.get("revolving_principal_pay_rate_q", 0.0))))
-            debt_priority_nom = arrears_nom + (rev_pay_rate * rev_balance_arr)
+            unpaid_bills = sum(hh.payment_arrears.values(), np.zeros_like(y_guess_arr)) if hh is not None else 0.0
+            debt_priority_nom = arrears_nom + unpaid_bills + (rev_pay_rate * rev_balance_arr)
             debt_service_nom = rev_interest_arr + mort_payment_arr + arrears_nom
             target_buffer_nom = (target_months_arr / 3.0) * (
                 core_nom
@@ -1400,6 +1402,79 @@ class NewLoop:
         income_cap = max(0.0, float(self.params.get("old_loop_owner_housing_payment_income_cap", 0.0)))
         capped_payment = np.minimum(carry_payment, income_cap * income) if income_cap > 0.0 else carry_payment
         return np.where(owner_mask, np.maximum(0.0, capped_payment), 0.0).astype(float, copy=False)
+
+    def _household_cash_payment_plan(self, *, wages_i, div_i, uis, consumption,
+                                    mortgage_due, revolving_interest, owner_housing,
+                                    income_tax, vat_credit) -> Dict[str, Any]:
+        hh = self.hh
+        cash = hh.deposits + wages_i + div_i + float(uis) + vat_credit - consumption
+        due = {"revolving_interest": revolving_interest, "mortgage": mortgage_due,
+               "rent": hh.renter_rent_q, "owner_housing": owner_housing, "income_tax": income_tax}
+        if bool(self.params.get("hh_shortfall_financing_enabled", True)):
+            # If financing is restored after arrears have accumulated, current
+            # bills can be financed, but old bills use only residual cash.
+            cash = np.maximum(cash, sum(due.values(), np.zeros(hh.n)))
+        arrears = dict(hh.payment_arrears, mortgage_interest=hh.mort_interest_arrears_q,
+                       mortgage_principal=hh.mort_principal_arrears_q)
+        return allocate_household_payments(cash, due, arrears)
+
+    def _sync_unpaid_bill_claims(self) -> None:
+        """Keep gross claims matched; overdue bills carry a full collection allowance.
+
+        No cash or net creditor equity is created by an unpaid bill. Collection
+        releases the allowance and recognizes income, without charging HH twice.
+        Existing mortgage accrual accounting remains separate.
+        """
+        bills = self.hh.payment_arrears
+        housing = float(bills["rent"].sum() + bills["owner_housing"].sum())
+        info_share = self._sector_hh_demand_share_fa()
+        claims = {"BANK": float(bills["revolving_interest"].sum()),
+                  "IS": housing * info_share, "PS": housing * (1.0-info_share),
+                  "GOV": float(bills["income_tax"].sum())}
+        for creditor, amount in claims.items():
+            self.nodes[creditor].set("household_bill_receivable", amount)
+            self.nodes[creditor].set("household_bill_allowance", amount)
+        self.nodes["HH"].set("unpaid_bills", float(sum(claims.values())))
+
+    def _settle_unpaid_bills(self, sol: Dict[str, Any], deposits: np.ndarray) -> np.ndarray:
+        """Accumulate current missed payments and collect affordable old arrears."""
+        financed = bool(self.params.get("hh_shortfall_financing_enabled", True))
+        plan = sol.get("household_cash_payments")
+        due = {"revolving_interest": sol["rev_interest_i"], "rent": sol["renter_rent_q"],
+               "owner_housing": sol["owner_housing_payment_i"], "income_tax": sol["income_tax_i"]}
+        missed_i = np.zeros(self.hh.n)
+        added_total = paid_total = housing_receipts = interest_receipts = tax_receipts = 0.0
+        info_share = self._sector_hh_demand_share_fa()
+        for bill in BILL_TYPES:
+            current_paid = due[bill] if financed else plan["current"][bill]
+            missed = np.maximum(0.0, due[bill] - current_paid)
+            old = self.hh.payment_arrears[bill]
+            proposed = plan["arrears"][bill] if plan is not None else np.zeros_like(old)
+            paid = np.minimum(np.maximum(0.0, deposits), np.minimum(old, proposed))
+            amount = float(paid.sum())
+            deposits[:] -= paid
+            self.hh.payment_arrears[bill] = np.maximum(0.0, old - paid) + missed
+            missed_i += missed
+            added_total += float(missed.sum())
+            paid_total += amount
+            if bill == "revolving_interest":
+                self.nodes["BANK"].add("deposit_liab", -amount)
+                self.nodes["BANK"].add("equity", amount)
+                interest_receipts += amount
+            elif bill == "income_tax":
+                self.nodes["GOV"].add("deposits", amount)
+                tax_receipts += amount
+            else:
+                self.nodes["IS"].add("deposits", amount * info_share)
+                self.nodes["PS"].add("deposits", amount * (1.0-info_share))
+                housing_receipts += amount
+        self.state["hh_unpaid_bills_added_total"] = added_total
+        self.state["hh_unpaid_bills_paid_total"] = paid_total
+        self.state["hh_arrears_housing_receipts_total"] = housing_receipts
+        self.state["hh_arrears_interest_receipts_total"] = interest_receipts
+        self.state["hh_arrears_tax_receipts_total"] = tax_receipts
+        self._sync_unpaid_bill_claims()
+        return missed_i
 
     def _apply_housing_value_price_deflator(self) -> None:
         if self.hh is None or self.hh.n <= 0:
@@ -2382,6 +2457,18 @@ class NewLoop:
         if not math.isclose(bank_assets, bank_claims, rel_tol=1e-12, abs_tol=eps):
             raise AssertionError(f"SFC FAIL ({context}): bank balance sheet gap={bank_assets - bank_claims}")
         if self.hh is not None:
+            unpaid = float(self.hh.unpaid_bills_i().sum())
+            if not math.isclose(self.nodes["HH"].get("unpaid_bills"), unpaid, rel_tol=1e-12, abs_tol=eps):
+                raise AssertionError(f"SFC FAIL ({context}): unpaid household bills mismatch")
+            housing = float(self.hh.payment_arrears["rent"].sum() + self.hh.payment_arrears["owner_housing"].sum())
+            share = self._sector_hh_demand_share_fa()
+            bill_claims = {"BANK": float(self.hh.payment_arrears["revolving_interest"].sum()),
+                           "IS": housing * share, "PS": housing * (1.0-share),
+                           "GOV": float(self.hh.payment_arrears["income_tax"].sum())}
+            for creditor, amount in bill_claims.items():
+                for key in ("household_bill_receivable", "household_bill_allowance"):
+                    if not math.isclose(self.nodes[creditor].get(key), amount, rel_tol=1e-12, abs_tol=eps):
+                        raise AssertionError(f"SFC FAIL ({context}): {creditor} unpaid bill claim/allowance mismatch")
             interest_due = float(self.hh.mort_interest_arrears_q.sum())
             if not math.isclose(bank.get("interest_receivable"), interest_due, rel_tol=1e-12, abs_tol=eps):
                 raise AssertionError(f"SFC FAIL ({context}): interest receivable/payable mismatch")
@@ -2806,6 +2893,9 @@ class NewLoop:
         issuance_limited = bool(self.params.get("equity_issuance_needs_only", False))
         funding_targets = self._equity_funding_targets_nom(P) if issuance_limited else {}
         opening_funding_limits = self._equity_funding_limits_nom(funding_targets) if issuance_limited else {}
+        plan_cash_payments = (not bool(self.params.get("hh_shortfall_financing_enabled", True))
+                              or any(np.any(bills > 0.0) for bills in hh.payment_arrears.values()))
+        payment_plan = None
 
         max_delta = float("inf")
         for iter_idx in range(1, max_iter + 1):
@@ -2929,6 +3019,24 @@ class NewLoop:
                 w0 * (w_total / w0_sum) + float(uis) + div_i_est
             )
             housing_revenue = float(np.sum(renter_rent_q) + np.sum(owner_housing_payment_i))
+            if plan_cash_payments:
+                payment_mort_terms = self._compute_mortgage_index_terms(
+                    mort=mort, rL=rL, wages_total=w_total, div_house_total=float(div_house_total_est),
+                    uis_per_h=float(uis), commit_state=False)
+                payment_tax = self.tax_policy.compute_household_taxes(
+                    wages_i=w0 * (w_total / w0_sum), div_i=div_i_est,
+                    mort_interest_due_i=np.asarray(payment_mort_terms["mort_interest_due_i"]),
+                    support_per_h=float(uis), price_level=P, state=self.state,
+                    base_real_avg=float(self.state.get("baseline_real_cons_per_h") or np.mean(c_real)),
+                    baseline_wages_i=w0, current_tax_anchor_wage=it_anchor_w0,
+                    current_vc_start_anchor_wage=vc_start_anchor_w0, current_vc_end_anchor_wage=vc_end_anchor_w0)
+                payment_plan = self._household_cash_payment_plan(
+                    wages_i=w0 * (w_total / w0_sum), div_i=div_i_est, uis=uis, consumption=c_hh_nom,
+                    mortgage_due=np.asarray(payment_mort_terms["mort_pay_req_i"]),
+                    revolving_interest=rev_interest_pre, owner_housing=owner_housing_payment_i,
+                    income_tax=payment_tax.income_tax_i, vat_credit=payment_tax.vat_credit_i)
+                housing_revenue = sum(float(payment_plan[phase][bill].sum())
+                    for phase in ("current", "arrears") for bill in ("rent", "owner_housing"))
             housing_revenue_fa = housing_revenue * self._sector_hh_demand_share_fa()
             housing_revenue_fh = housing_revenue - housing_revenue_fa
             rev_fa += housing_revenue_fa
@@ -2967,6 +3075,9 @@ class NewLoop:
             interest_hh = mort_interest_due + rev_interest
             trust_interest = fund_loan * rL
             bank_interest_ex_mort = float(rev_interest.sum() + trust_interest + fa_interest + fh_interest)
+            if plan_cash_payments:
+                bank_interest_ex_mort = float(payment_plan["current"]["revolving_interest"].sum()
+                    + payment_plan["arrears"]["revolving_interest"].sum() + trust_interest + fa_interest + fh_interest)
 
             # Mortgage index module: compute indexed required payment per household mortgage.
             mort_index_enable = bool(self.params.get("mort_index_enable", False)) and (not self._mortgage_index_disabled())
@@ -3140,10 +3251,20 @@ class NewLoop:
             )
             max_delta = float(np.max(np.abs(y_new - y_guess)))
             max_delta = max(max_delta, float(np.max(np.abs(div_i - div_i_est))))
+            if plan_cash_payments:
+                check_plan = self._household_cash_payment_plan(
+                    wages_i=wages_i, div_i=div_i, uis=uis, consumption=c_hh_nom,
+                    mortgage_due=mort_pay_req_i, revolving_interest=rev_interest,
+                    owner_housing=owner_housing_payment_i, income_tax=income_tax_i, vat_credit=vat_credit_i)
+                # Reconcile cash receipts as well as individual incomes before posting.
+                for phase in ("current", "arrears"):
+                    for bill in payment_plan[phase]:
+                        max_delta = max(max_delta, float(np.abs(check_plan[phase][bill] - payment_plan[phase][bill]).sum()))
 
             if max_delta < tol:
                 return {
                     "c_firm_nom": c_firm_nom,
+                    "household_cash_payments": payment_plan,
                     "c_hh_nom": c_hh_nom,
                     "c_total": c_total,
                     "rev_fa": rev_fa,
@@ -3329,6 +3450,10 @@ class NewLoop:
         y_vec = _as_np(sol.get("y", []), dtype=float)
         target_buffer_nom_i = _as_np(sol.get("target_buffer_nom_i", []), dtype=float)
         planned_equity_investment_nom_i = _as_np(sol.get("planned_equity_investment_nom_i", []), dtype=float)
+        finance_shortfalls = bool(self.params.get("hh_shortfall_financing_enabled", True))
+        cash_payments = sol.get("household_cash_payments")
+        if not finance_shortfalls and cash_payments is None:
+            raise ValueError("Cash-limited settlement requires a household payment plan.")
         self.state["hh_buffer_target_total"] = float(sol.get("buffer_target_total", 0.0))
         self.state["hh_buffer_gap_total"] = float(sol.get("buffer_gap_total", 0.0))
         self.state["hh_buffer_gap_positive_total"] = float(sol.get("buffer_gap_positive_total", 0.0))
@@ -3751,8 +3876,10 @@ class NewLoop:
         mort_unpaid_cash_shortfall_i = np.zeros(n, dtype=float)
 
         # Revolving interest remains contractual in all mortgage regimes.
-        deposits[:] = deposits - rev_interest_i
-        rev_int_total = float(np.sum(np.maximum(0.0, rev_interest_i)))
+        rev_interest_cash_i = rev_interest_i if finance_shortfalls else cash_payments["current"]["revolving_interest"]
+        deposits[:] = deposits - rev_interest_cash_i
+        rev_int_total = float(np.sum(np.maximum(0.0, rev_interest_cash_i)))
+        self.state["hh_revolving_interest_paid_total"] = rev_int_total
         if rev_int_total > 0.0:
             bank.add("deposit_liab", -rev_int_total)
             bank.add("equity", +rev_int_total)
@@ -3766,7 +3893,11 @@ class NewLoop:
         cash_available_for_mort_i = np.maximum(0.0, dep_before_mort)
         mort_overdraft_need = np.maximum(0.0, mort_pay_req_i - cash_available_for_mort_i)
         mort_revolving_bridge_i = np.minimum(mort_overdraft_need, rev_headroom_i)
+        if not finance_shortfalls:
+            mort_revolving_bridge_i = np.zeros_like(mort_revolving_bridge_i)
         actual_mort_payment_i = np.minimum(mort_pay_req_i, cash_available_for_mort_i + mort_revolving_bridge_i)
+        if not finance_shortfalls:
+            actual_mort_payment_i = cash_payments["current"]["mortgage"]
         mort_unpaid_cash_shortfall_i = np.maximum(0.0, mort_pay_req_i - actual_mort_payment_i)
         deposits[:] = deposits - actual_mort_payment_i
         mort_bridge_total = float(np.sum(np.maximum(0.0, mort_revolving_bridge_i)))
@@ -3855,9 +3986,10 @@ class NewLoop:
         # -------------------------------------------------
         # 4a) Housing service payments: renter rent and OldLoop owner carrying costs -> sectors
         # -------------------------------------------------
-        rent_total = float(np.sum(np.maximum(0.0, renter_rent_q)))
+        renter_rent_cash_i = renter_rent_q if finance_shortfalls else cash_payments["current"]["rent"]
+        rent_total = float(np.sum(np.maximum(0.0, renter_rent_cash_i)))
         if rent_total > 0.0:
-            deposits[:] = deposits - renter_rent_q
+            deposits[:] = deposits - renter_rent_cash_i
             rent_to_fa = rent_total * self._sector_hh_demand_share_fa()
             rent_to_fh = rent_total - rent_to_fa
             self.nodes["IS"].add("deposits", rent_to_fa)
@@ -3869,9 +4001,10 @@ class NewLoop:
             self.state["renter_rent_to_phys_total"] = 0.0
         self.state["renter_rent_total"] = float(max(0.0, rent_total))
 
-        owner_housing_payment_total = float(np.sum(np.maximum(0.0, owner_housing_payment_i)))
+        owner_housing_cash_i = owner_housing_payment_i if finance_shortfalls else cash_payments["current"]["owner_housing"]
+        owner_housing_payment_total = float(np.sum(np.maximum(0.0, owner_housing_cash_i)))
         if owner_housing_payment_total > 0.0:
-            deposits[:] = deposits - owner_housing_payment_i
+            deposits[:] = deposits - owner_housing_cash_i
             owner_pay_to_fa = owner_housing_payment_total * self._sector_hh_demand_share_fa()
             owner_pay_to_fh = owner_housing_payment_total - owner_pay_to_fa
             self.nodes["IS"].add("deposits", owner_pay_to_fa)
@@ -3887,9 +4020,10 @@ class NewLoop:
         # 5) Income tax
         # -------------------------------------------------
         if income_tax_i.shape[0] == n:
-            income_tax_total = float(np.sum(np.maximum(0.0, income_tax_i)))
+            income_tax_cash_i = income_tax_i if finance_shortfalls else cash_payments["current"]["income_tax"]
+            income_tax_total = float(np.sum(np.maximum(0.0, income_tax_cash_i)))
             if income_tax_total > 0:
-                deposits[:] = deposits - income_tax_i
+                deposits[:] = deposits - income_tax_cash_i
                 self.nodes["GOV"].add("deposits", income_tax_total)
         else:
             income_tax_total = 0.0
@@ -3921,7 +4055,7 @@ class NewLoop:
                 # Per-household VAT paid is the VAT wedge on each household's consumption.
                 vat_paid_i = np.maximum(0.0, c_hh_nom - c_firm_nom)
                 if income_tax_i.shape[0] == n:
-                    income_tax_paid_i = np.maximum(0.0, income_tax_i)
+                    income_tax_paid_i = np.maximum(0.0, income_tax_cash_i)
                 else:
                     income_tax_paid_i = np.zeros(n, dtype=float)
 
@@ -4013,6 +4147,8 @@ class NewLoop:
                 self.state["mort_principal_paid_total"] = float(
                     float(self.state.get("mort_principal_paid_total", 0.0)) + mort_principal_arrears_paid_total
                 )
+
+        missed_bills_i = self._settle_unpaid_bills(sol, deposits)
 
         rev_pay_rate = float(self.params.get("revolving_principal_pay_rate_q", 0.0))
         rL = float(self.state.get("policy_rate_q", self.params.get("loan_rate_per_quarter", 0.0)))
@@ -4441,7 +4577,14 @@ class NewLoop:
         # -------------------------------------------------
         neg_mask = deposits < 0.0
         overdraft_total = 0.0
-        if np.any(neg_mask):
+        if not finance_shortfalls and np.any(deposits < -SHORTFALL_TOLERANCE_NOM):
+            raise AssertionError("Cash-limited settlement left an unfunded household overdraft.")
+        shortfall_i = (np.maximum(0.0, -deposits) + mort_revolving_bridge_i + mort_unpaid_cash_shortfall_i
+                      if finance_shortfalls else missed_bills_i + mort_unpaid_cash_shortfall_i)
+        shortfall_mask = shortfall_i > SHORTFALL_TOLERANCE_NOM
+        hh.ever_payment_shortfall |= shortfall_mask
+        self.state["hh_payment_shortfall_count"] = int(shortfall_mask.sum())
+        if finance_shortfalls and np.any(neg_mask):
             need = -deposits[neg_mask]
             deposits[neg_mask] = 0.0
             rev[neg_mask] = rev[neg_mask] + need
@@ -4542,7 +4685,7 @@ class NewLoop:
         sol["bank_profit"] = float(sol.get("bank_profit", 0.0)) + bank_neutralize_interest_inflow - neutral_tax
         sol["retained_bk"] = sol["bank_profit"] - float(sol.get("div_bk_total", 0.0))
         bank_cash_income = (
-            float(np.sum(rev_interest_i)) + trust_interest
+            rev_int_total + float(self.state.get("hh_arrears_interest_receipts_total", 0.0)) + trust_interest
             + float(sol.get("fa_interest", 0.0)) + float(sol.get("fh_interest", 0.0))
             + mort_int_paid_total + mort_interest_arrears_paid_total + bank_neutralize_interest_inflow
         )
@@ -4848,7 +4991,7 @@ class NewLoop:
             housing_i = _as_np(self.hh.housing_escrow, dtype=float)
             mort_i = _as_np(self.hh.mortgage_loans, dtype=float)
             rev_i = _as_np(self.hh.revolving_loans, dtype=float)
-            loan_i = mort_i + rev_i + self.hh.mort_interest_arrears_q
+            loan_i = mort_i + rev_i + self.hh.mort_interest_arrears_q + self.hh.unpaid_bills_i()
             active_mort_i = mort_i > 1e-9
             mort_orig_principal_i = _as_np(self.hh.mort_orig_principal, dtype=float)
             active_mort_orig_principal_total = (
@@ -5110,12 +5253,10 @@ class NewLoop:
             hh_desired_consumption_total = float(solp.get("c_hh_nom_des_total", 0.0))
             hh_realized_consumption_total = float(np.sum(np.maximum(0.0, _as_np(solp.get("c_hh_nom", []), dtype=float))))
             hh_mortgage_req_total = float(np.sum(np.maximum(0.0, _as_np(solp.get("mort_pay_req_i", []), dtype=float))))
-            hh_rev_interest_total = float(np.sum(np.maximum(0.0, _as_np(solp.get("rev_interest_i", []), dtype=float))))
-            hh_rent_total = float(np.sum(np.maximum(0.0, _as_np(solp.get("renter_rent_q", []), dtype=float))))
-            hh_owner_housing_payment_total = float(
-                np.sum(np.maximum(0.0, _as_np(solp.get("owner_housing_payment_i", []), dtype=float)))
-            )
-            hh_income_tax_cash_total = float(np.sum(np.maximum(0.0, _as_np(solp.get("income_tax_i", []), dtype=float))))
+            hh_rev_interest_total = float(self.state.get("hh_revolving_interest_paid_total", 0.0))
+            hh_rent_total = float(self.state.get("renter_rent_total", 0.0))
+            hh_owner_housing_payment_total = float(self.state.get("owner_housing_payment_total", 0.0))
+            hh_income_tax_cash_total = float(self.state.get("income_tax_total", 0.0))
             mort_req_i_row = np.maximum(0.0, _as_np(solp.get("mort_pay_req_i", []), dtype=float))
             mort_interest_due_i_row = np.maximum(0.0, _as_np(solp.get("mort_interest_due_i", []), dtype=float))
             mortgagor_active_mask = np.zeros(self.hh.n, dtype=bool)
@@ -5304,6 +5445,17 @@ class NewLoop:
                 hh_income_tax_cash_per_h=hh_income_tax_cash_total / float(self.hh.n),
                 hh_mortgage_bridge_to_revolving_per_h=float(self.state.get("mort_revolving_bridge_total", 0.0)) / float(self.hh.n),
                 hh_overdraft_to_revolving_per_h=float(self.state.get("hh_overdraft_total", 0.0)) / float(self.hh.n),
+                hh_unpaid_bills_per_h=float(self.hh.unpaid_bills_i().sum()) / float(self.hh.n),
+                hh_unpaid_bills_added_per_h=float(self.state.get("hh_unpaid_bills_added_total", 0.0)) / float(self.hh.n),
+                hh_unpaid_bills_paid_per_h=float(self.state.get("hh_unpaid_bills_paid_total", 0.0)) / float(self.hh.n),
+                hh_unpaid_interest_per_h=float(self.hh.payment_arrears["revolving_interest"].sum()) / float(self.hh.n),
+                hh_unpaid_rent_per_h=float(self.hh.payment_arrears["rent"].sum()) / float(self.hh.n),
+                hh_unpaid_owner_housing_per_h=float(self.hh.payment_arrears["owner_housing"].sum()) / float(self.hh.n),
+                hh_unpaid_income_tax_per_h=float(self.hh.payment_arrears["income_tax"].sum()) / float(self.hh.n),
+                hh_payment_shortfall_share=float(self.state.get("hh_payment_shortfall_count", 0)) / float(self.hh.n),
+                hh_in_arrears_share=float(np.mean((self.hh.unpaid_bills_i() + self.hh.mort_interest_arrears_q + self.hh.mort_principal_arrears_q) > SHORTFALL_TOLERANCE_NOM)),
+                hh_ever_payment_shortfall_share=float(np.mean(self.hh.ever_payment_shortfall)),
+                hh_zero_consumption_share=float(np.mean(np.asarray(solp["c_hh_nom"]) <= SHORTFALL_TOLERANCE_NOM)),
                 hh_mortgage_unpaid_shortfall_per_h=float(self.state.get("mort_unpaid_cash_shortfall_total", 0.0)) / float(self.hh.n),
                 household_credit_created_per_h=float(self.state.get("household_credit_created_total", 0.0)) / float(self.hh.n),
                 household_credit_retired_per_h=float(self.state.get("household_credit_retired_total", 0.0)) / float(self.hh.n),
