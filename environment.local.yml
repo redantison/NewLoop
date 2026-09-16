@@ -1,3 +1,4 @@
+# Local Conda setup; this filename keeps Streamlit Cloud on requirements.txt.
 name: perpetual
 channels:
   - defaults

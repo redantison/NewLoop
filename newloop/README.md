@@ -9,6 +9,26 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
+To create the optional local Conda environment, run from the repository root:
+
+```bash
+conda env create -f environment.local.yml
+conda activate perpetual
+streamlit run app.py
+```
+
+## Streamlit Community Cloud
+
+Deploy branch `main` with the entrypoint `app.py`. Python 3.12 is the locally
+tested version. Cloud installs dependencies through the root `requirements.txt`,
+which includes `newloop/requirements.txt`.
+
+Keep the local Conda specification named `environment.local.yml`. A file named
+`environment.yml` beside `app.py` takes precedence over `requirements.txt` in
+Cloud and triggers a Conda environment solve. The September 2026 deployment spent
+about 47 minutes in that solve before reporting dependencies installed; rebooting
+started another solve. The local filename avoids that deployment path.
+
 ## Developer Note
 
 When running Python checks in the `perpetual` environment, prefer the repo-local wrapper so bytecode goes to `/tmp` instead of `__pycache__` directories in the source tree:

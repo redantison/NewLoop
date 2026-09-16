@@ -1,1 +1,2 @@
+# Streamlit Community Cloud uses this pip file. Local Conda setup is in environment.local.yml.
 -r newloop/requirements.txt
