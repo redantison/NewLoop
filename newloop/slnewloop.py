@@ -23,6 +23,7 @@ from .plotting import (
     plot_income_distribution_dual,
     plot_mortgagor_distress,
     plot_household_shortfall_sources,
+    plot_household_cash_sources,
     plot_household_payment_distress,
     plot_shortfall_financing_comparison,
     plot_mortgage_stock_over_time,
@@ -134,6 +135,7 @@ MORTGAGE_POLICY_RUN_MODE = "MortgagePolicy"
 OLD_TO_NEW_RUN_MODES = CORE_LOOP_RUN_MODES | {MORTGAGE_POLICY_RUN_MODE, LEGACY_STAY_OLD_LOOP_RUN_MODE}
 UBI_PERCENTILE_PARAM_KEY = "param__ubi_target_percentile"
 UBI_PERCENTILE_UI_KEY = "ui__ubi_target_percentile"
+SHORTFALL_FINANCING_PARAM_KEY = "param__hh_shortfall_financing_enabled"
 MORTGAGE_RATE_PARAM_PATH: tuple[str, ...] = ("mortgage_fixed_rate_q",)
 MORTGAGE_TERM_PARAM_PATH: tuple[str, ...] = ("mortgage_term_quarters",)
 REGIME_UI_SYNC_PATHS: tuple[tuple[str, ...], ...] = (
@@ -759,6 +761,31 @@ def _inject_selectbox_chevron_fallback(st: Any) -> None:
     )
 
 
+def _render_shortfall_financing_choice(
+    st: Any, *, automation_only: bool, label: str, help_text: str | None = None,
+) -> None:
+    # Radio buttons and checkboxes have different widget identities. Reusing a
+    # widget key across them resets its value when the loop mode changes. Keep
+    # the model parameter independent of either widget's lifecycle instead.
+    widget_kind = "radio" if automation_only else "checkbox"
+    widget_key = f"ui__hh_shortfall_financing_{widget_kind}"
+    financed = bool(st.session_state.get(SHORTFALL_FINANCING_PARAM_KEY, True))
+    st.session_state[SHORTFALL_FINANCING_PARAM_KEY] = financed
+    st.session_state[widget_key] = financed
+
+    def _save_choice() -> None:
+        st.session_state[SHORTFALL_FINANCING_PARAM_KEY] = bool(st.session_state[widget_key])
+
+    if automation_only:
+        st.radio(
+            label, options=(True, False), key=widget_key, on_change=_save_choice,
+            format_func=lambda value: "Financing on only (one run)" if value else "Financing on, then off (two runs)",
+            help=help_text,
+        )
+    else:
+        st.checkbox(label, key=widget_key, on_change=_save_choice, help=help_text)
+
+
 def _render_parameter_controls(
     st: Any,
     grouped_controls: Dict[str, List[Any]],
@@ -777,8 +804,11 @@ def _render_parameter_controls(
         st.session_state["last_run_quarters"] = 0
 
     def _render_control(control: Any) -> None:
-        if (st.session_state.get(LOOP_MODE_SELECT_KEY) == "AutomationOnly"
-                and tuple(control.path) == ("hh_shortfall_financing_enabled",)):
+        if tuple(control.path) == ("hh_shortfall_financing_enabled",):
+            if st.session_state.get(LOOP_MODE_SELECT_KEY) != "AutomationOnly":
+                _render_shortfall_financing_choice(
+                    st, automation_only=False, label=control.label, help_text=control.help_text or None,
+                )
             return  # AutomationOnly exposes this choice in Run Controls.
         key = control_widget_key(control)
         if control.kind == "bool":
@@ -835,12 +865,9 @@ def _render_parameter_controls(
                 _apply_regime_ui_defaults(st.session_state, {"parameters": copy.deepcopy(base_params)}, loop_mode)
 
         if loop_mode == "AutomationOnly":
-            st.radio(
-                "Shortfall financing",
-                options=(True, False),
-                key="param__hh_shortfall_financing_enabled",
-                format_func=lambda financed: "Financing on only (one run)" if financed else "Financing on, then off (two runs)",
-                help="Start with the single run to see automatic overdraft-to-revolving financing. "
+            _render_shortfall_financing_choice(
+                st, automation_only=True, label="Shortfall financing",
+                help_text="Start with the single run to see automatic overdraft-to-revolving financing. "
                      "Then select two runs to show what happens without it. The two-run dashboard ends with financing off.",
             )
 
@@ -1377,8 +1404,24 @@ def main() -> None:
     st.pyplot(row_fig, clear_figure=False)
     plt.close(row_fig)
 
-    shortfall_fig, shortfall_axes = plt.subplots(1, 2, figsize=(13, 4.5), constrained_layout=True)
+    displayed_params = saved_cfg.get("parameters", {})
+    show_cash_sources = (displayed_params.get("economic_regime") == "OldToNew"
+                         and displayed_params.get("old_to_new_transition_mode") == "AutomationOnly")
+    if show_cash_sources:
+        shortfall_fig = plt.figure(figsize=(13, 8.5), constrained_layout=True)
+        cash_grid = shortfall_fig.add_gridspec(2, 2)
+        cash_sources_ax = shortfall_fig.add_subplot(cash_grid[0, 0])
+        cash_uses_ax = shortfall_fig.add_subplot(cash_grid[0, 1], sharey=cash_sources_ax)
+        shortfall_axes = [cash_uses_ax, shortfall_fig.add_subplot(cash_grid[1, 0])]
+        plot_household_cash_sources(rows, ax=cash_sources_ax)
+        cash_sources_ax.set_title(
+            "Household Sources of Cash\nShortfall financing: " + ("ON" if displayed_financing else "OFF")
+        )
+    else:
+        shortfall_fig, shortfall_axes = plt.subplots(1, 2, figsize=(13, 4.5), constrained_layout=True)
     plot_household_shortfall_sources(rows, axes=shortfall_axes)
+    if show_cash_sources:
+        shortfall_axes[0].set_ylabel(cash_sources_ax.get_ylabel())
     shortfall_axes[1].set_title(
         "Household Funding Gap Response\nShortfall financing: " + ("ON" if displayed_financing else "OFF")
     )
@@ -1386,6 +1429,13 @@ def main() -> None:
         _mark_figure_stale(shortfall_fig)
     st.pyplot(shortfall_fig, clear_figure=False)
     plt.close(shortfall_fig)
+    if show_cash_sources:
+        st.caption(
+            "Cash sources are quarterly amounts per household. Dividends include bank dividends; "
+            "new revolving borrowing is cash advanced during the quarter, including any principal re-advances. "
+            "Deposit drawdown sums the declines in individual household balances. "
+            "Sources can exceed cash uses because other households add to their deposits."
+        )
 
     distress_fig = plot_household_payment_distress(rows)
     if config_stale:

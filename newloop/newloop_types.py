@@ -239,6 +239,9 @@ class TickResult:
     bank_interest_collected_per_h: float
     bank_cash_profit_per_h: float
     hh_cash_income_per_h: float
+    hh_wages_per_h: float
+    hh_dividends_per_h: float
+    hh_new_revolving_borrowing_per_h: float
     hh_core_consumption_target_per_h: float
     hh_desired_consumption_per_h: float
     hh_realized_consumption_per_h: float

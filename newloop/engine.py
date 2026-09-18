@@ -5434,6 +5434,15 @@ class NewLoop:
                 bank_interest_collected_per_h=float(self.state.get("bank_interest_collected_total", 0.0)) / float(self.hh.n),
                 bank_cash_profit_per_h=float(self.state.get("bank_cash_profit_total", 0.0)) / float(self.hh.n),
                 hh_cash_income_per_h=hh_cash_income_total / float(self.hh.n),
+                hh_wages_per_h=float(np.sum(np.maximum(0.0, _as_np(solp.get("wages_i", []), dtype=float)))) / float(self.hh.n),
+                hh_dividends_per_h=float(np.sum(np.maximum(0.0, _as_np(solp.get("div_i", []), dtype=float)))) / float(self.hh.n),
+                # Gross cash advanced this quarter, including re-advances after
+                # principal repayment; outstanding debt is a separate stock.
+                hh_new_revolving_borrowing_per_h=(
+                    float(self.state.get("hh_overdraft_total", 0.0))
+                    + float(self.state.get("mort_revolving_bridge_total", 0.0))
+                    + float(self.state.get("rev_rollover_total", 0.0))
+                ) / float(self.hh.n),
                 hh_core_consumption_target_per_h=hh_core_consumption_target_total / float(self.hh.n),
                 hh_desired_consumption_per_h=hh_desired_consumption_total / float(self.hh.n),
                 hh_realized_consumption_per_h=hh_realized_consumption_total / float(self.hh.n),

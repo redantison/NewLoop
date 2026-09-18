@@ -202,6 +202,18 @@ including population distributions. Physical quantities and dimensionless ratios
 are not deflated. Deposit drawdown is the sum of each household's positive fall
 in deposits during the quarter; another household's saving does not offset it.
 
+AutomationOnly displays Household Sources of Cash alongside cash uses, followed
+by the funding-gap response. The source layers are wages, dividends (including
+bank dividends), gross new revolving advances, and deposit drawdown, all per
+household per quarter in the selected real/nominal units. New revolving advances
+include overdraft financing, mortgage bridges if present, and any re-advances
+after principal repayment; they are not the outstanding debt balance or its net
+change. Explicitly enabled household money issuance appears as an additional
+source. Sources less cash uses equals the sum of positive household deposit
+increases in this no-mortgage experiment. The chart uses the displayed run's
+financing choice, including financing off after a comparison. Existing live
+results from before the new source fields were added require a new model run.
+
 Run all tests and the independent 120-quarter accounting reconciliations from
 the repository root:
 

@@ -114,6 +114,9 @@ METRIC_LABELS: Dict[str, str] = {
     "wages_total": "Total Wage Base",
     "trust_value_per_h": "Trust Value / Household",
     "hh_cash_income_per_h": "Household Cash Inflow / Household",
+    "hh_wages_per_h": "Wages / Household",
+    "hh_dividends_per_h": "Dividends / Household",
+    "hh_new_revolving_borrowing_per_h": "New Revolving Borrowing / Household",
     "hh_core_consumption_target_per_h": "Core Consumption Target / Household",
     "hh_desired_consumption_per_h": "Desired Consumption / Household",
     "hh_realized_consumption_per_h": "Realized Consumption Spending / Household",
@@ -638,6 +641,46 @@ def plot_fund_inflows(
     _apply_compact_y_ticks(ax)
     ax.grid(alpha=0.25)
     ax.legend(loc="upper left")
+    return fig
+
+
+def plot_household_cash_sources(rows: Sequence[Mapping[str, Any]], ax: Any | None = None) -> Any:
+    """Quarterly sources of funds for the no-mortgage AutomationOnly experiment."""
+    import matplotlib.pyplot as plt
+
+    rows = _require_rows(rows)
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(7, 4.5), constrained_layout=True)
+    else:
+        fig = ax.figure
+    ax.set_title("Household Sources of Cash")
+    ax.set_xlabel("Quarter")
+    ax.set_ylabel(("Real Units" if "_monetary_scale" in rows[0] else "Nominal") + " / Household / Quarter")
+
+    components = [
+        ("hh_wages_per_h", "Wages", "#377eb8"),
+        ("hh_dividends_per_h", "Dividends", "#984ea3"),
+        ("hh_new_revolving_borrowing_per_h", "New Revolving Borrowing", "#a65628"),
+        ("hh_deposit_drawdown_per_h", "Deposit Drawdown", "#4daf4a"),
+    ]
+    if any(key not in row for row in rows for key, _, _ in components):
+        # A live session may still hold output produced before these flows were
+        # exported. Do not present missing data as zero wages or dividends.
+        ax.text(0.5, 0.5, "Run Model to generate cash-source data", transform=ax.transAxes,
+                ha="center", va="center")
+        return fig
+
+    # Normally zero in AutomationOnly; retain any explicitly enabled cash issue.
+    if any(float(row.get("hh_money_issuance_per_h", 0.0)) > 0.0 for row in rows):
+        components.append(("hh_money_issuance_per_h", "Government Money Issuance", "#e6ab02"))
+    t = [float(row.get("t", i)) for i, row in enumerate(rows)]
+    ax.stackplot(t, *[[float(row.get(key, 0.0)) for row in rows] for key, _, _ in components],
+                 labels=[label for _, label, _ in components],
+                 colors=[color for _, _, color in components], alpha=0.8)
+    ax.set_ylim(bottom=0.0)
+    _apply_compact_y_ticks(ax)
+    ax.grid(True, alpha=0.25)
+    ax.legend(loc="upper left", fontsize=9)
     return fig
 
 
