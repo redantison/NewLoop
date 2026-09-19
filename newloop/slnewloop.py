@@ -136,6 +136,12 @@ OLD_TO_NEW_RUN_MODES = CORE_LOOP_RUN_MODES | {MORTGAGE_POLICY_RUN_MODE, LEGACY_S
 UBI_PERCENTILE_PARAM_KEY = "param__ubi_target_percentile"
 UBI_PERCENTILE_UI_KEY = "ui__ubi_target_percentile"
 SHORTFALL_FINANCING_PARAM_KEY = "param__hh_shortfall_financing_enabled"
+AUTOMATION_FINANCING_MODE_KEY = "run__automation_financing_mode"
+AUTOMATION_FINANCING_MODES = {
+    "on": "Financing on (one run)",
+    "off": "Financing off (one run)",
+    "compare": "Compare financing on and off (two runs)",
+}
 MORTGAGE_RATE_PARAM_PATH: tuple[str, ...] = ("mortgage_fixed_rate_q",)
 MORTGAGE_TERM_PARAM_PATH: tuple[str, ...] = ("mortgage_term_quarters",)
 REGIME_UI_SYNC_PATHS: tuple[tuple[str, ...], ...] = (
@@ -512,6 +518,9 @@ def _apply_control_defaults(st: Any, base_params: Dict[str, Any]) -> None:
     st.session_state[LOOP_MODE_SELECT_KEY] = LOOP_MODE_PLACEHOLDER
     st.session_state["app__last_applied_regime_ui"] = ""
     st.session_state["run__quarters"] = RUN_DEFAULT_QUARTERS
+    st.session_state[AUTOMATION_FINANCING_MODE_KEY] = (
+        "on" if st.session_state[SHORTFALL_FINANCING_PARAM_KEY] else "off"
+    )
     raw_mode = str(base_params.get("dashboard_value_mode", "nominal")).strip().lower()
     st.session_state["view__value_mode"] = "real" if raw_mode in {"price_normalized", "price-normalized", "real"} else "nominal"
     _apply_metric_defaults(st)
@@ -767,22 +776,40 @@ def _render_shortfall_financing_choice(
     # Radio buttons and checkboxes have different widget identities. Reusing a
     # widget key across them resets its value when the loop mode changes. Keep
     # the model parameter independent of either widget's lifecycle instead.
-    widget_kind = "radio" if automation_only else "checkbox"
-    widget_key = f"ui__hh_shortfall_financing_{widget_kind}"
     financed = bool(st.session_state.get(SHORTFALL_FINANCING_PARAM_KEY, True))
     st.session_state[SHORTFALL_FINANCING_PARAM_KEY] = financed
-    st.session_state[widget_key] = financed
-
-    def _save_choice() -> None:
-        st.session_state[SHORTFALL_FINANCING_PARAM_KEY] = bool(st.session_state[widget_key])
 
     if automation_only:
+        mode = st.session_state.get(AUTOMATION_FINANCING_MODE_KEY)
+        if mode not in AUTOMATION_FINANCING_MODES:
+            # Preserve the old two-run radio selection in an existing live session.
+            legacy_comparison = st.session_state.get("ui__hh_shortfall_financing_radio") is False
+            mode = "on" if financed else ("compare" if legacy_comparison else "off")
+        if (mode == "on") != financed:
+            mode = "on" if financed else "off"
+        st.session_state[AUTOMATION_FINANCING_MODE_KEY] = mode
+        widget_key = "ui__automation_financing_mode"
+        st.session_state[widget_key] = mode
+
+        def _save_mode() -> None:
+            choice = st.session_state[widget_key]
+            st.session_state[AUTOMATION_FINANCING_MODE_KEY] = choice
+            st.session_state[SHORTFALL_FINANCING_PARAM_KEY] = choice == "on"
+
         st.radio(
-            label, options=(True, False), key=widget_key, on_change=_save_choice,
-            format_func=lambda value: "Financing on only (one run)" if value else "Financing on, then off (two runs)",
+            label, options=tuple(AUTOMATION_FINANCING_MODES), key=widget_key, on_change=_save_mode,
+            format_func=AUTOMATION_FINANCING_MODES.__getitem__,
             help=help_text,
         )
     else:
+        widget_key = "ui__hh_shortfall_financing_checkbox"
+        st.session_state[widget_key] = financed
+
+        def _save_choice() -> None:
+            choice = bool(st.session_state[widget_key])
+            st.session_state[SHORTFALL_FINANCING_PARAM_KEY] = choice
+            st.session_state[AUTOMATION_FINANCING_MODE_KEY] = "on" if choice else "off"
+
         st.checkbox(label, key=widget_key, on_change=_save_choice, help=help_text)
 
 
@@ -802,6 +829,7 @@ def _render_parameter_controls(
         st.session_state["shortfall_comparison"] = {}
         st.session_state["last_run_cfg_json"] = ""
         st.session_state["last_run_quarters"] = 0
+        st.session_state["last_run_compare_financing"] = False
 
     def _render_control(control: Any) -> None:
         if tuple(control.path) == ("hh_shortfall_financing_enabled",):
@@ -867,8 +895,8 @@ def _render_parameter_controls(
         if loop_mode == "AutomationOnly":
             _render_shortfall_financing_choice(
                 st, automation_only=True, label="Shortfall financing",
-                help_text="Start with the single run to see automatic overdraft-to-revolving financing. "
-                     "Then select two runs to show what happens without it. The two-run dashboard ends with financing off.",
+                help_text="Run either financing case by itself, or compare both. Comparison runs financing on "
+                     "then off; the main dashboard shows financing off, followed by comparison charts.",
             )
 
         quarters = st.slider(
@@ -904,8 +932,11 @@ def _render_parameter_controls(
                 "or New Loop policy handoff unless you change the lower-level controls."
             )
         if active_loop_mode == "AutomationOnly":
-            if st.session_state["param__hh_shortfall_financing_enabled"]:
+            financing_mode = st.session_state[AUTOMATION_FINANCING_MODE_KEY]
+            if financing_mode == "on":
                 st.caption("One run with automatic overdraft-to-revolving financing.")
+            elif financing_mode == "off":
+                st.caption("One run without new shortfall financing. Unpaid bills accumulate as arrears.")
             else:
                 st.caption(
                     "Runs financing on first, then off. Main charts, distributions, and CSV show financing off. "
@@ -1031,14 +1062,14 @@ def _run_dashboard_payload(
     n_quarters: int,
     cfg_json: str,
     progress_callback: Callable[[str, int, int], None] | None = None,
+    *, compare_financing: bool = False,
 ) -> Dict[str, Any]:
     """Run once, or run AutomationOnly financing on then off and return the off case."""
     cfg = json.loads(cfg_json)
     params = cfg.get("parameters", {})
-    selected_financing = bool(params.get("hh_shortfall_financing_enabled", True))
     compare = (params.get("economic_regime") == "OldToNew"
                and params.get("old_to_new_transition_mode") == "AutomationOnly"
-               and not selected_financing)
+               and compare_financing)
 
     if not compare:
         selected = _cached_run_payload(n_quarters, cfg_json, progress_callback)
@@ -1058,7 +1089,8 @@ def _run_dashboard_payload(
     # changes, including during its own pre-run; never reuse a final simulation state.
     params["hh_shortfall_financing_enabled"] = True
     baseline = _cached_run_payload(n_quarters, _cfg_json(cfg), progress_for(True, 1))
-    selected = _cached_run_payload(n_quarters, cfg_json, progress_for(False, 2))
+    params["hh_shortfall_financing_enabled"] = False
+    selected = _cached_run_payload(n_quarters, _cfg_json(cfg), progress_for(False, 2))
     comparison = {}
     for financed, payload in ((True, baseline), (False, selected)):
         comparison["on" if financed else "off"] = {
@@ -1106,6 +1138,8 @@ def main() -> None:
         st.session_state["support_debug"] = {}
     if "shortfall_comparison" not in st.session_state:
         st.session_state["shortfall_comparison"] = {}
+    if "last_run_compare_financing" not in st.session_state:
+        st.session_state["last_run_compare_financing"] = bool(st.session_state["shortfall_comparison"])
     if "last_run_error" not in st.session_state:
         st.session_state["last_run_error"] = ""
     if "last_run_cfg_json" not in st.session_state:
@@ -1117,6 +1151,8 @@ def main() -> None:
     current_cfg_json = _cfg_json(current_cfg)
     current_params = current_cfg.get("parameters", {}) if isinstance(current_cfg.get("parameters", {}), dict) else {}
     selected_regime = str(st.session_state.get(LOOP_MODE_SELECT_KEY, "")).strip()
+    compare_financing = (selected_regime == "AutomationOnly"
+                         and st.session_state.get(AUTOMATION_FINANCING_MODE_KEY) == "compare")
     has_selected_regime = _regime_for_loop_mode(selected_regime) is not None
     if _regime_for_loop_mode(selected_regime) == "OldLoop":
         wage_floor_share = float(current_params.get("old_loop_wage_floor_share", 0.0) or 0.0)
@@ -1144,6 +1180,7 @@ def main() -> None:
             quarters,
             current_cfg_json,
             progress_callback=_update_run_progress,
+            compare_financing=compare_financing,
         )
         run_error = str(payload.get("error", "")).strip()
         st.session_state["rows"] = list(payload.get("rows", []))
@@ -1155,6 +1192,7 @@ def main() -> None:
         st.session_state["last_run_error"] = run_error
         st.session_state["last_run_cfg_json"] = current_cfg_json
         st.session_state["last_run_quarters"] = int(quarters)
+        st.session_state["last_run_compare_financing"] = compare_financing
         st.session_state["app__force_stale_after_reset"] = False
         if run_error:
             progress_bar.empty()
@@ -1166,6 +1204,7 @@ def main() -> None:
     config_stale = bool(st.session_state.get("app__force_stale_after_reset", False)) or (
         st.session_state.get("last_run_cfg_json", "") != current_cfg_json
         or int(st.session_state.get("last_run_quarters", 0)) != int(quarters)
+        or bool(st.session_state["last_run_compare_financing"]) != compare_financing
     )
     if config_stale:
         progress_bar.empty()
@@ -1565,7 +1604,7 @@ def main() -> None:
     )
 
 
-    if selected_regime == "AutomationOnly" and not displayed_financing:
+    if st.session_state["last_run_compare_financing"]:
         st.subheader("Shortfall Financing: On vs Off")
         comparison = st.session_state["shortfall_comparison"]
         if not comparison:

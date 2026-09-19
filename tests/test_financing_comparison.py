@@ -29,6 +29,22 @@ class FinancingComparisonTests(unittest.TestCase):
         self.assertEqual(result['rows'], [{'t': 0}])
         self.assertEqual(result['shortfall_comparison'], {})
 
+    def test_financing_off_is_one_run_without_a_comparison(self):
+        cfg = self.automation_config(False)
+        primary = {'rows': [{'financed': False}], 'error': ''}
+        with patch('newloop.slnewloop._cached_run_payload', return_value=primary) as run:
+            result = _run_dashboard_payload(120, _cfg_json(cfg))
+        run.assert_called_once_with(120, _cfg_json(cfg), None)
+        self.assertEqual(result['rows'], [{'financed': False}])
+        self.assertEqual(result['shortfall_comparison'], {})
+
+    def test_comparison_always_returns_off_even_if_input_config_is_financed(self):
+        with patch('newloop.slnewloop._cached_run_payload', side_effect=[{'rows': [1]}, {'rows': [2]}]) as run:
+            result = _run_dashboard_payload(120, _cfg_json(self.automation_config(True)), compare_financing=True)
+        self.assertEqual([json.loads(call.args[1])['parameters']['hh_shortfall_financing_enabled']
+                          for call in run.call_args_list], [True, False])
+        self.assertEqual(result['rows'], [2])
+
     def test_comparison_runs_on_then_off_and_returns_all_off_outputs(self):
         cfg = self.automation_config(False)
         original = copy.deepcopy(cfg)
@@ -44,7 +60,7 @@ class FinancingComparisonTests(unittest.TestCase):
                         support_debug={'household_count': 64, 'financed': financed}, error='')
 
         with patch('newloop.slnewloop._cached_run_payload', side_effect=run):
-            result = _run_dashboard_payload(120, _cfg_json(cfg), lambda *args: messages.append(args))
+            result = _run_dashboard_payload(120, _cfg_json(cfg), lambda *args: messages.append(args), compare_financing=True)
         self.assertEqual(len(calls), 2)
         self.assertTrue(all(quarters == 120 for quarters, _ in calls))
         expected_off = json.loads(_cfg_json(original))
@@ -67,7 +83,7 @@ class FinancingComparisonTests(unittest.TestCase):
                 cfg = self.automation_config(False)
                 cfg['parameters'].update(economic_regime=regime, old_to_new_transition_mode=transition)
                 with patch('newloop.slnewloop._cached_run_payload', return_value={'rows': [1], 'error': ''}) as run:
-                    result = _run_dashboard_payload(120, _cfg_json(cfg))
+                    result = _run_dashboard_payload(120, _cfg_json(cfg), compare_financing=True)
                 self.assertEqual(run.call_count, 1)
                 self.assertEqual(result['shortfall_comparison'], {})
 
@@ -82,7 +98,7 @@ class FinancingComparisonTests(unittest.TestCase):
         off = {'rows': [{'t': 0}], 'error': '', 'support_debug': {'household_count': 64}}
         failed = {'rows': [], 'error': 'baseline failed'}
         with patch('newloop.slnewloop._cached_run_payload', side_effect=[failed, off]) as run:
-            result = _run_dashboard_payload(120, _cfg_json(self.automation_config(False)))
+            result = _run_dashboard_payload(120, _cfg_json(self.automation_config(False)), compare_financing=True)
         self.assertEqual(run.call_count, 2)
         self.assertEqual(result['rows'], [{'t': 0}])
         self.assertEqual(result['error'], '')
@@ -92,13 +108,13 @@ class FinancingComparisonTests(unittest.TestCase):
         on = {'rows': [{'t': 0}], 'error': '', 'support_debug': {'household_count': 64}}
         failed = {'rows': [], 'error': 'off case failed'}
         with patch('newloop.slnewloop._cached_run_payload', side_effect=[on, failed]):
-            result = _run_dashboard_payload(120, _cfg_json(self.automation_config(False)))
+            result = _run_dashboard_payload(120, _cfg_json(self.automation_config(False)), compare_financing=True)
         self.assertEqual(result['rows'], [])
         self.assertEqual(result['error'], 'off case failed')
         self.assertEqual(result['shortfall_comparison']['on']['rows'], [{'t': 0}])
 
     def test_actual_pair_runs_both_full_horizons_with_distinct_financing_outcomes(self):
-        result = _run_dashboard_payload(100, _cfg_json(self.automation_config(False)))
+        result = _run_dashboard_payload(100, _cfg_json(self.automation_config(False)), compare_financing=True)
         self.assertEqual(result['error'], '')
         cases = result['shortfall_comparison']
         on, off = cases['on']['rows'], cases['off']['rows']
@@ -110,6 +126,9 @@ class FinancingComparisonTests(unittest.TestCase):
         self.assertGreater(on[-1]['money_supply_total'], off[-1]['money_supply_total'])
         self.assertGreater(off[-1]['hh_unpaid_bills_per_h'], 0)
         self.assertEqual(on[-1]['hh_unpaid_bills_per_h'], 0)
+        single_off = _run_dashboard_payload(100, _cfg_json(self.automation_config(False)))
+        self.assertEqual(single_off['rows'], off)
+        self.assertEqual(single_off['shortfall_comparison'], {})
 
     def plot_rows(self):
         return [dict(t=t, real_consumption=10+t, price_level=2,

@@ -142,9 +142,11 @@ and verifies that no automatic shortfall loans are created when disabled.
 
 Under **AutomationOnly → Run Controls → Shortfall financing**, choose:
 
-- **Financing on only (one run)**, the default: the main dashboard shows automatic
+- **Financing on (one run)**, the default: the main dashboard shows automatic
   overdraft-to-revolving financing and performs one simulation.
-- **Financing on, then off (two runs)**: run the financed case first, then the
+- **Financing off (one run)**: run only the case without new shortfall financing;
+  unpaid bills accumulate as arrears. No comparison run is performed.
+- **Compare financing on and off (two runs)**: run the financed case first, then the
   case without shortfall financing. All main charts, distributions, quarterly
   data, and the run CSV show the second, financing-off case.
 
